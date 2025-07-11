@@ -15,14 +15,21 @@ using Pkg
 Pkg.add(url="https://github.com/BennyZhang-Codes/HighOrderMRI.jl.git")
 ```
 
-## Demo
-
-Several demo scripts are available to guide users through **simulations** and **reconstructions** using our **data stitching method** and conventional approaches. See the [demo directory](demo/) for details.
-
-[Reconstruction  Synchronization](demo/Recon)
+## Demo_2D
 
 For MRI reconstruction incorporating measured field dynamics, we first estimate the synchronization delay between the MRI data and the field measurements. The final reconstruction is then performed using the synchronized field dynamics.
 
-This demo includes single-shot spiral imaging data (7T, 1 mm in-plane resolution, ~29 ms readout), nominal kspace trajectory (Nominal) and measured field dynamics (using Dynamic Field Camera).
+This demo includes 2D single-shot spiral (7T, 1 mm in-plane resolution, ~29 ms readout) and 2D single-shot EPI (7T, 1 mm in-plane resolution, ~40 ms readout) imaging data, nominal kspace trajectory (Nominal) and measured field dynamics (using Dynamic Field Camera).
 
+<table>
+  <tr>
+    <th colspan="4" style="text-align:center">2D Spiral (left) & 2D EPI (right)</th>
+  </tr>
+  <tr>
+    <td><img src="demo_2D/result/7T_2D_Spiral_1p0_200_r4_Nominal.png" width="250"/></td>
+    <td><img src="demo_2D/result/7T_2D_Spiral_1p0_200_r4_Measured.png" width="250"/></td>
+    <td><img src="demo_2D/result/7T_2D_EPI_1p0_200_r4_Nominal.png" width="250"/></td>
+    <td><img src="demo_2D/result/7T_2D_EPI_1p0_200_r4_Measured.png" width="250"/></td>
+  </tr>
+</table>
 ## Copyright & License Notice
