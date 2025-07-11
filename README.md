@@ -32,4 +32,11 @@ This demo includes 2D single-shot spiral (7T, 1 mm in-plane resolution, ~29 ms r
     <td><img src="demo_2D/result/7T_2D_EPI_1p0_200_r4_Measured.png" width="250"/></td>
   </tr>
 </table>
+
 ## Copyright & License Notice
+
+This software is copyrighted by the Regents of the University of Minnesota and the Institute of Biophysics, Chinese Academy of Sciences. It can be freely used for educational and research purposes by non-profit institutions, US government agencies, and Chinese government agencies only.
+Other organizations are allowed to use this software only for evaluation purposes, and any further uses will require prior approval. The software may not be sold or redistributed without prior approval.
+One may make copies of the software for their use provided that the copies are not sold or distributed, and are used under the same terms and conditions.
+As unestablished research software, this code is provided on an "as is'' basis without warranty of any kind, either expressed or implied.
+The downloading, or executing any part of this software constitutes an implicit agreement to these terms. These terms and conditions are subject to change at any time without prior notice.
