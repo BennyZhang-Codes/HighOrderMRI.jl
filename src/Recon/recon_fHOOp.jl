@@ -1,0 +1,28 @@
+function recon_fHOOp(fHOOp::fHOOp{Complex{T}}, Data::AbstractArray{Complex{T},2}, recParams::Dict) where T<:AbstractFloat
+    recoParams = merge(defaultRecoParams(), recParams)
+
+    nSample, nCha = size(Data)
+    Data = vec(Data)
+    E = fHOOp
+    EᴴE = normalOperator(E)
+    solver = createLinearSolver(recParams[:solver], E; AᴴA=EᴴE, reg=recParams[:reg], recoParams...)
+    x = solve(solver, Data; recoParams...)
+    x = reshape(x, recParams[:reconSize])
+    return x
+end
+
+function recon_fHOOp(fHOOp::fHOOp{Complex{T}}, Data::AbstractArray{Complex{T},2}, weight::AbstractVector{Complex{T}}, recParams::Dict) where T<:AbstractFloat
+    recoParams = merge(defaultRecoParams(), recParams)
+
+    nSample, nCha = size(Data)
+    Data = vec(Data) .* repeat(weight, nCha)
+    W = WeightingOp(Complex{T}; weights=weight, rep=nCha)
+    @info size(W)
+    E = ∘(W, fHOOp)
+    @info size(E)
+    EᴴE = normalOperator(E)
+    solver = createLinearSolver(recParams[:solver], E; AHA=EᴴE, reg=recParams[:reg], recoParams...)
+    x = solve!(solver, Data)
+    x = reshape(x, recParams[:reconSize])
+    return x
+end

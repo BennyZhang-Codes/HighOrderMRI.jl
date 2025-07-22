@@ -6,6 +6,9 @@ include("SampleDensity/SampleDensity.jl")
 include("recon_HOOp.jl")
 export recon_HOOp
 
+include("recon_fHOOp.jl")
+export recon_fHOOp
+
 include("recon_ifft.jl")
 export convert_fft, convert_ifft
 

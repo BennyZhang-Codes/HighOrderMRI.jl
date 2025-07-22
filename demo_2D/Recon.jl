@@ -1,11 +1,12 @@
 using HighOrderMRI
 using RegularizedLeastSquares
+using MRIOperators, MRIReco
 using MAT
 using CUDA
 CUDA.device!(0)
 
 T             = Float64;
-path          = joinpath(@__DIR__, "demo_2D")
+path          = joinpath(@__DIR__)
 # data_mat      = "7T_2D_Spiral_1p0_200_r4.mat" 
 data_mat      = "7T_2D_EPI_1p0_200_r4.mat"  
 data_file     = joinpath(path, data_mat)
@@ -55,7 +56,7 @@ weightNominal  = SampleDensity( ksphaNominal'[2:3,:], (nX, nY));
 
 use_gpu = true;
 verbose = false;
-nBlock  = 20;
+nBlock  = 40;
 
 solver = CGNR; reg = L2Regularization(1.e-9); iter = 20;
 recParams = Dict{Symbol,Any}()
@@ -63,6 +64,7 @@ recParams[:reconSize]      = (nX, nY)
 recParams[:reg] = reg  # ["L2", "L1", "L21", "TV", "LLR", "Positive", "Proj", "Nuclear"]
 recParams[:iterations]     = iter
 recParams[:solver]         = solver
+recParams[:csm] = csm
 
 
 
@@ -70,7 +72,7 @@ recParams[:solver]         = solver
 # recon with field dynamics measured by Dynamic Field Camera
 ###########################################################################
 kdata = data["kdata"];
-kdata = kdata ./ exp.(2π*1im.*k0_ecc)';
+kdata = kdata .* exp.(-2π*1im.*k0_ecc)';
 kdata = kdata .* exp.(-2π*1im.*ksphaMeasured[:, 1]);
 
 labelMeasured = [    "Measured"];
@@ -109,6 +111,36 @@ for (idx, label, recon, kdata, weight, b0) in zip(idxs, labelNominal, recons, kd
         nBlock=nBlock, csm=Complex{T}.(csm), fieldmap=T.(b0), use_gpu=use_gpu, verbose=verbose);
     @time x = recon_HOOp(HOOp, Complex{T}.(kdata), Complex{T}.(weight), recParams);
     imgNominal[:, :, idx] = x;
+    fig = plt_image(abs.(x); title=label, vmaxp=99.9)
+    fig.savefig("$(path)/result/$(data_mat[1:end-4])_$(label).png", dpi=300, transparent=false, bbox_inches="tight", pad_inches=0.0)
+end
+
+###########################################################################
+# recon with fast Higher Order Op
+###########################################################################
+
+# NOTE: Sense maps and B0 maps are rotated by 90 degrees to match the orientation of the k-space data. This will be fixed soon. 
+kdata = data["kdata"];
+kdata = kdata .* exp.(-2π*1im.*k0_ecc)';
+kdata = kdata .* exp.(-2π*1im.*ksphaMeasured[:, 1]);
+
+labelMeasured = [    "Measured fast"];
+recons        = [        "0111"];
+kdatas        = [         kdata];
+weights       = [weightMeasured]; 
+b0s           = [            b0];
+imgMeasuredFast   = Array{Complex{T},3}(undef, nX, nY, length(labelMeasured));
+idxs          = collect(1:length(labelMeasured));
+
+rot_csm = cat([rotl90(Complex{T}.(csm)[:, :, i]) for i in 1:size(csm, 3)]..., dims=3)
+
+for (idx, label, recon, kdata, weight, b0) in zip(idxs, labelMeasured, recons, kdatas, weights, b0s)
+    @info "[$(idx)] $(label) $(recon)"
+    fHOOp = fastHighOrderOp(gridding, T.(ksphaMeasured'), T.(datatime); recon_terms=recon, 
+        nBlock=nBlock, csm=rot_csm, fieldmap=rotl90(T.(b0)), use_gpu=use_gpu, verbose=verbose);
+    @time x = recon_fHOOp(fHOOp, Complex{T}.(kdata), Complex{T}.(weight), recParams);
+    x = rotr90(x);
+    imgMeasuredFast[:, :, idx] = x;
     fig = plt_image(abs.(x); title=label, vmaxp=99.9)
     fig.savefig("$(path)/result/$(data_mat[1:end-4])_$(label).png", dpi=300, transparent=false, bbox_inches="tight", pad_inches=0.0)
 end
