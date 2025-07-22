@@ -349,10 +349,7 @@ function prod_fastHighOrderOp(
     x = reshape(x, shape[1], shape[2], 1)
 
     result = zeros(Complex{Float64}, size(cls))
-    # print(size(x))
-    # print(size(bls))
-    # print(size(cls))
-    # print(size(encoding_op))
+
     for l = 1:nL
         @views result[:, l] = cls[:, l] .* reshape(encoding_op * dropdims(conj.(bls[:, :, 1, l]) .* x, dims = 3)[:], size(cls, 1))
     end
