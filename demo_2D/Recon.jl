@@ -58,7 +58,7 @@ use_gpu = true;
 verbose = false;
 nBlock  = 40;
 
-solver = CGNR; reg = L2Regularization(1.e-9); iter = 20;
+solver = CGNR; reg = L2Regularization(1.e-6); iter = 10;
 recParams = Dict{Symbol,Any}()
 recParams[:reconSize]      = (nX, nY)
 recParams[:reg] = reg  # ["L2", "L1", "L21", "TV", "LLR", "Positive", "Proj", "Nuclear"]
@@ -124,6 +124,8 @@ kdata = data["kdata"];
 kdata = kdata .* exp.(-2π*1im.*k0_ecc)';
 kdata = kdata .* exp.(-2π*1im.*ksphaMeasured[:, 1]);
 
+gridding      = Grid(nX, nY, nZ, Δx, Δy, Δz; exchange_xy=true, reverse_x=false, reverse_y=true)
+
 labelMeasured = [    "Measured fast"];
 recons        = [        "0111"];
 kdatas        = [         kdata];
@@ -137,10 +139,14 @@ rot_csm = cat([rotl90(Complex{T}.(csm)[:, :, i]) for i in 1:size(csm, 3)]..., di
 for (idx, label, recon, kdata, weight, b0) in zip(idxs, labelMeasured, recons, kdatas, weights, b0s)
     @info "[$(idx)] $(label) $(recon)"
     fHOOp = fastHighOrderOp(gridding, T.(ksphaMeasured'), T.(datatime); recon_terms=recon, 
-        nBlock=nBlock, csm=rot_csm, fieldmap=rotl90(T.(b0)), use_gpu=use_gpu, verbose=verbose);
+        nBlock=nBlock, csm=Complex{T}.(rot_csm), fieldmap=rotl90(T.(b0)), use_gpu=use_gpu, verbose=verbose);
     @time x = recon_fHOOp(fHOOp, Complex{T}.(kdata), Complex{T}.(weight), recParams);
     x = rotr90(x);
     imgMeasuredFast[:, :, idx] = x;
     fig = plt_image(abs.(x); title=label, vmaxp=99.9)
     fig.savefig("$(path)/result/$(data_mat[1:end-4])_$(label).png", dpi=300, transparent=false, bbox_inches="tight", pad_inches=0.0)
 end
+
+diff_im = angle.(imgMeasuredFast[:, :, 1])- angle.(imgMeasured[:, :, 1])
+
+fig = plt_image(diff_im; title="Difference", vmaxp=99.9)

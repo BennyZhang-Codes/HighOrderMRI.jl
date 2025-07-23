@@ -90,92 +90,19 @@ function fastHighOrderOp(
     # since we modify kspha in place, import it new again before running
 
     kspha_stitched = kspha'
-    kspha = -kspha_stitched
+    kspha = kspha_stitched
 
-    # set up the undersampling scheme
-    num_L = 20 # number of basis functions to use, i.e., the number of singular values to keep
-    reduc_fac_space = 2 # reduction factor in space (linear interpolation by meanpooling and upsampling)
-    reduc_fac_time = 300 # reduction factor in time (linear interpolation by meanpooling and upsampling)
-    bf_choice = collect(5:9) # note, we intentionally skip the zeroth order term since we can directly demodulate the data by the zeroth order phase term
-    num_basis = length(bf_choice)
+    # This is to decompose the spatial and temporal parts of the higher order encoding operator
+    bls, cls = get_bl_cl_coeffs(grid, kspha; num_L = nTerm, use_gpu = use_gpu)
+    cls = repeat(cls, nCha, 1) # repeat the coefficients for each coil channel 
 
-    # compute basis functions (solid harmonics)
-    bf = basisfunc_spha(grid.x, grid.y, grid.z, bf_choice)
-    
-    # for ii = 1:size(bf,2)
-    #     bf[:,ii] = rotl90(reshape(bf[:,ii],nX,nY))[:]
-    # end
-
-    s_bf_orig = size(bf)
-
-    # put the basis functions on GPU
-    if use_gpu
-        bf = bf |> gpu
-    end
-
-    s_bf_orig = size(bf)
-
-    # put the basis functions on GPU
-    if use_gpu
-        bf = bf |> gpu
-    end
-
-    # subsample the basis functions by meanpooling
-    pooled_bf = meanpool(reshape(bf, s_bf_orig[1], 1, num_basis), (reduc_fac_space^3,))
-
-    if use_gpu
-        CUDA.unsafe_free!(bf)
-    end
-
-    s_kspha_orig = size(kspha)
-
-    # put kspha on GPU
-    if use_gpu
-        kspha = reshape(kspha[:, bf_choice], s_kspha_orig[1], 1, num_basis) |> gpu
-    else
-        kspha = reshape(kspha[:, bf_choice], s_kspha_orig[1], 1, num_basis)
-    end
-
-    pooled_kspha = meanpool(kspha, (reduc_fac_time,))
-
-    if use_gpu
-        CUDA.unsafe_free!(kspha)
-    end
-
-    # make the small version of E
-    E_lite = cispi.(-2 * dropdims(pooled_bf, dims = 2) * dropdims(pooled_kspha, dims = 2)')
-
-    U_e, S_e, V_e = svd(E_lite) # There may be better ways to compute such a decomposition! Remember, we don't need the singular values alone, we just need an orthogonal decomposition that approximates the encoding operator.
-
-    if use_gpu
-        CUDA.unsafe_free!(E_lite)
-    end
-
-    bls = reshape(U_e[:, 1:num_L], size(U_e, 1), 1, num_L)
-    bls_linear_fullsize = upsample_linear(bls; size = s_bf_orig[1])
-    bls_fullsize = reshape(bls_linear_fullsize, nX, nY, nZ, 1, num_L)
-
-    cls = reshape((V_e.*conj(S_e)')[:, 1:num_L], size(V_e, 1), 1, num_L)
-    cls_fullsize = upsample_linear(cls; size = s_kspha_orig[1])
-
-    if use_gpu
-        bls_fullsize = bls_fullsize |> cpu
-        cls_fullsize = cls_fullsize |> cpu
-        U_e = U_e |> cpu
-        S_e = S_e |> cpu
-        V_e = V_e |> cpu
-    end
-
-    bls = dropdims(bls_fullsize, dims = 4)
-    cls = repeat(dropdims(cls_fullsize, dims = 2), nCha,1)
-
-    kspha_nufft = kspha_stitched[:, 2:4]
+    kspha_nufft = kspha_stitched[:, 2:4] # get the first order encoding fields to set up the NUFFT operator
 
     # Prepare k-space trajectory for NUFFT (typically only 1st order: x and y, i.e., rows 2 and 3)
-    ktraj_nufft = kspha_nufft[:, 1:2]
+    ktraj_nufft = kspha_nufft[:, [1,2]]  # switch x and y for NUFFT
     ktraj_nufft = permutedims(ktraj_nufft, (2, 1))
 
-    traj_input = Trajectory("custom", convert_rad_per_m_to_nfft(ktraj_nufft, 0.001), times, 0.0, 0.0, 1, 25000, 1, false, false)
+    traj_input = Trajectory("custom", convert_rad_per_m_to_nfft(ktraj_nufft, 0.001), times, 0.0, 0.0, 1, size(ktraj_nufft,2), 1, false, false)
 
     encoding_op = FieldmapNFFTOp((nX, nY), traj_input, -2 * pi * 1im .* reshape(fieldmap, nX, nY))
 
@@ -407,3 +334,80 @@ function Base.copy(S::LinearOperator{T}) where T
     deepcopy(S)
 end
 
+function get_bl_cl_coeffs(grid, kspha; num_L = 10, reduc_fac_space = 2, reduc_fac_time = 90, bf_choice = collect(5:16), use_gpu = false)
+
+    num_basis = length(bf_choice)
+
+    # compute basis functions (solid harmonics)
+    bf = basisfunc_spha(grid.x, grid.y, grid.z, bf_choice)
+    
+    # for ii = 1:size(bf,2)
+    #     bf[:,ii] = rotl90(reshape(bf[:,ii],nX,nY))[:]
+    # end
+
+    s_bf_orig = size(bf)
+
+    # put the basis functions on GPU
+    if use_gpu
+        bf = bf |> gpu
+    end
+
+    s_bf_orig = size(bf)
+
+    # put the basis functions on GPU
+    if use_gpu
+        bf = bf |> gpu
+    end
+
+    # subsample the basis functions by meanpooling
+    pooled_bf = meanpool(reshape(bf, s_bf_orig[1], 1, num_basis), (reduc_fac_space^3,))
+
+    if use_gpu
+        CUDA.unsafe_free!(bf)
+    end
+
+    s_kspha_orig = size(kspha)
+
+    # put kspha on GPU
+    if use_gpu
+        kspha = reshape(kspha[:, bf_choice], s_kspha_orig[1], 1, num_basis) |> gpu
+    else
+        kspha = reshape(kspha[:, bf_choice], s_kspha_orig[1], 1, num_basis)
+    end
+
+    pooled_kspha = meanpool(kspha, (reduc_fac_time,))
+
+    if use_gpu
+        CUDA.unsafe_free!(kspha)
+    end
+
+    # make the small version of E
+    E_lite = cispi.(-2 * dropdims(pooled_bf, dims = 2) * dropdims(pooled_kspha, dims = 2)')
+
+    U_e, S_e, V_e = svd(E_lite) # There may be better ways to compute such a decomposition! Remember, we don't need the singular values alone, we just need an orthogonal decomposition that approximates the encoding operator.
+
+    if use_gpu
+        CUDA.unsafe_free!(E_lite)
+    end
+
+    bls = reshape(U_e[:, 1:num_L], size(U_e, 1), 1, num_L)
+    bls_linear_fullsize = upsample_linear(bls; size = s_bf_orig[1])
+    bls_fullsize = reshape(bls_linear_fullsize, grid.nX, grid.nY, grid.nZ, 1, num_L)
+
+    cls = reshape((V_e.*conj(S_e)')[:, 1:num_L], size(V_e, 1), 1, num_L)
+    cls_fullsize = upsample_linear(cls; size = s_kspha_orig[1])
+
+    if use_gpu
+        bls_fullsize = bls_fullsize |> cpu
+        cls_fullsize = cls_fullsize |> cpu
+        U_e = U_e |> cpu
+        S_e = S_e |> cpu
+        V_e = V_e |> cpu
+    end
+
+    bls = dropdims(bls_fullsize, dims = 4)
+    cls = dropdims(cls_fullsize, dims = 2)
+
+    return bls, cls
+
+end
