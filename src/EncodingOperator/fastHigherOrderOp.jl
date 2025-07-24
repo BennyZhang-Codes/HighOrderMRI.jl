@@ -105,7 +105,7 @@ function fastHighOrderOp(
 
     # Prepare k-space trajectory for NUFFT (typically only 1st order: x and y, i.e., rows 2 and 3)
     ktraj_nufft = kspha_nufft[:, [2,1]]
-    ktraj_nufft[:,2] = - ktraj_nufft[:,2] # reverse y  # switch x and y for NUFFT
+    ktraj_nufft[:,2] = - ktraj_nufft[:,2] # reverse y  # switch x and y for NUFFT (This changes per dataset or per scanner)
     ktraj_nufft = permutedims(ktraj_nufft, (2, 1))
 
     traj_input = Trajectory("custom", convert_rad_per_m_to_nfft(ktraj_nufft, 0.001), times, 0.0, 0.0, 1, size(ktraj_nufft, 2), 1, false, false)
@@ -503,7 +503,8 @@ function get_bl_cl_coeffs_isvd(grid, kspha; num_L=10, reduc_fac_space=2, reduc_f
     for ii = 2:10:80 # TODO update these parameters 
         IncrementalSVD.update!(U, s, cispi.(-2 * bf * kspha[ii:80:end, bf_choice]'))
     end
-    Vt = Diagonal(s) \ (U' * X)
+
+    Vt = Diagonal(s) \ (U' * X) # NEED to make sure we can always compute this, it may be extremely large!
 
     bls = reshape(U[:, 1:num_L], grid.nX, grid.nY, 1, num_L) # TODO add Z dimension
     cls = (Vt.*(s))[1:num_L, :]'

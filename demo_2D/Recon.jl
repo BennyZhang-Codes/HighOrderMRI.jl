@@ -7,8 +7,8 @@ CUDA.device!(0)
 
 T = Float64;
 path = joinpath(@__DIR__)
-data_mat      = "7T_2D_Spiral_1p0_200_r4.mat" 
-# data_mat = "7T_2D_EPI_1p0_200_r4.mat"
+# data_mat = "7T_2D_Spiral_1p0_200_r4.mat"
+data_mat = "7T_2D_EPI_1p0_200_r4.mat"
 data_file = joinpath(path, data_mat)
 
 @info "data file: $(data_file)"
@@ -127,7 +127,7 @@ kdata = kdata .* exp.(-2π * 1im .* k0_ecc)';
 kdata = kdata .* exp.(-2π * 1im .* ksphaMeasured[:, 1]);
 
 solver = CGNR;
-reg = L2Regularization(1.e-12);
+reg = L2Regularization(1.e-2);
 iter = 10;
 recParams = Dict{Symbol,Any}()
 recParams[:reconSize] = (nX, nY)
@@ -153,7 +153,6 @@ for (idx, label, recon, kdata, weight, b0) in zip(idxs, labelMeasured, recons, k
     fHOOp = fastHighOrderOp(gridding, T.(ksphaMeasured'), T.(datatime); recon_terms=recon,
         nBlock=nBlock, csm=Complex{T}.(csm), fieldmap=T.(b0), use_gpu=use_gpu, verbose=verbose)
     @time x = recon_fHOOp(fHOOp, Complex{T}.(kdata), Complex{T}.(weight), recParams)
-    
     imgMeasuredFast[:, :, idx] = x
     fig = plt_image(abs.(x); title=label, vmaxp=99.9)
     fig.savefig("$(path)/result/$(data_mat[1:end-4])_$(label).png", dpi=300, transparent=false, bbox_inches="tight", pad_inches=0.0)
