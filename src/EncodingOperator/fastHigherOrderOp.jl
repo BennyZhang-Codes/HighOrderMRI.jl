@@ -5,6 +5,11 @@ using NFFT
 using LinearAlgebra
 using CUDA
 using NNlib, cuDNN
+using IncrementalSVD
+
+
+BLAS.set_num_threads(64) # set number of threads
+
 
 """
 # A Julia implementation of the expanded signal encoding model.
@@ -56,14 +61,14 @@ function fastHighOrderOp(
     grid::Grid{T},
     kspha::AbstractArray{T,2},
     times::AbstractVector{T};
-    fieldmap::AbstractArray{T,2} = zeros(T, (grid.nX, grid.nY)),
-    csm::Array{Complex{T},3} = ones(Complex{T}, (grid.nX, grid.nY)..., 1),
-    recon_terms::String = nothing,
-    k_nominal::AbstractArray{T,2} = kspha[2:4, :],
-    kspha_dt = nothing,
-    nBlock::Int64 = 50,
-    use_gpu::Bool = true,
-    verbose::Bool = false,
+    fieldmap::AbstractArray{T,2}=zeros(T, (grid.nX, grid.nY)),
+    csm::Array{Complex{T},3}=ones(Complex{T}, (grid.nX, grid.nY)..., 1),
+    recon_terms::String=nothing,
+    k_nominal::AbstractArray{T,2}=kspha[2:4, :],
+    kspha_dt=nothing,
+    nBlock::Int64=50,
+    use_gpu::Bool=true,
+    verbose::Bool=false,
 ) where {T<:AbstractFloat}
 
     nX, nY, nZ = grid.nX, grid.nY, grid.nZ
@@ -81,7 +86,7 @@ function fastHighOrderOp(
     @assert size(csm)[1:2] == (nX, nY) "Coil-SensitivityMap must have same size as $((nX, nY)) in grid"
 
     # prepare data 
-    kspha = prep_kspha(kspha, k_nominal, nTerm; recon_terms = recon_terms)
+    kspha = prep_kspha(kspha, k_nominal, nTerm; recon_terms=recon_terms)
     csm = reshape(csm, nX * nY, nCha)      # [nX * nY, nCha]
     fieldmap = vec(fieldmap)                  # [nVox]
 
@@ -93,48 +98,64 @@ function fastHighOrderOp(
     kspha = kspha_stitched
 
     # This is to decompose the spatial and temporal parts of the higher order encoding operator
-    bls, cls = get_bl_cl_coeffs(grid, kspha; num_L = nTerm, use_gpu = use_gpu)
+    bls, cls = get_bl_cl_coeffs(grid, kspha; method=:streaming, num_L=8, use_gpu=use_gpu)
     cls = repeat(cls, nCha, 1) # repeat the coefficients for each coil channel 
 
     kspha_nufft = kspha_stitched[:, 2:4] # get the first order encoding fields to set up the NUFFT operator
 
     # Prepare k-space trajectory for NUFFT (typically only 1st order: x and y, i.e., rows 2 and 3)
-    ktraj_nufft = kspha_nufft[:, [1,2]]  # switch x and y for NUFFT
+    ktraj_nufft = kspha_nufft[:, [2,1]]
+    ktraj_nufft[:,2] = - ktraj_nufft[:,2] # reverse y  # switch x and y for NUFFT
     ktraj_nufft = permutedims(ktraj_nufft, (2, 1))
 
-    traj_input = Trajectory("custom", convert_rad_per_m_to_nfft(ktraj_nufft, 0.001), times, 0.0, 0.0, 1, size(ktraj_nufft,2), 1, false, false)
+    traj_input = Trajectory("custom", convert_rad_per_m_to_nfft(ktraj_nufft, 0.001), times, 0.0, 0.0, 1, size(ktraj_nufft, 2), 1, false, false)
 
     encoding_op = FieldmapNFFTOp((nX, nY), traj_input, -2 * pi * 1im .* reshape(fieldmap, nX, nY))
 
-    full_op = ∘(DiagOp(encoding_op,nCha),SensitivityOp(reshape(csm,:,nCha),1))
+    full_op = ∘(DiagOp(encoding_op, nCha), SensitivityOp(reshape(csm, :, nCha), 1))
 
     shape = (nX, nY)
 
     if isnothing(kspha_dt)
-        func_prod = (res, xm) -> (res .= prod_fastHighOrderOp(xm, bls, cls, full_op, shape, reshape(csm,:,nCha); use_gpu = use_gpu, verbose = verbose))
+        func_prod = (res, xm) -> (res .= prod_fastHighOrderOp(
+            xm,
+            bls,
+            cls,
+            full_op,
+            shape;
+            use_gpu=use_gpu,
+            verbose=verbose
+        )
+        )
     else # for calculation of Bx (2023, https://doi.org/10.1002/mrm.29460)
         @assert size(kspha_dt) == size(kspha) "kspha_dt must have same size as kspha"
-        func_prod =
-            (res, xm) -> (
-                res .= prod_dt_fastHighOrderOp(
-                    xm,
-                    bf,
-                    nVox,
-                    nSam,
-                    nCha,
-                    kspha,
-                    kspha_dt,
-                    times,
-                    fieldmap,
-                    csm;
-                    nBlock = nBlock,
-                    parts = parts,
-                    use_gpu = use_gpu,
-                    verbose = verbose,
-                )
-            )
+        func_prod = (res, xm) -> (res .= prod_dt_fastHighOrderOp(
+            xm,
+            bf,
+            nVox,
+            nSam,
+            nCha,
+            kspha,
+            kspha_dt,
+            times,
+            fieldmap,
+            csm;
+            nBlock=nBlock,
+            parts=parts,
+            use_gpu=use_gpu,
+            verbose=verbose,
+        )
+        )
     end
-    func_ctprod = (res, ym) -> (res .= ctprod_fastHighOrderOp(ym, bls, cls, full_op, shape, reshape(conj.(csm),:,nCha); use_gpu = use_gpu, verbose = verbose))
+    func_ctprod = (res, ym) -> (res .= ctprod_fastHighOrderOp(
+        ym,
+        bls,
+        cls,
+        full_op;
+        use_gpu=use_gpu,
+        verbose=verbose
+    )
+    )
 
     return fastHighOrderOp{Complex{T},Nothing,Function}(
         nRow,
@@ -216,10 +237,10 @@ function prod_dt_fastHighOrderOp(
     times::AbstractVector{D},
     fieldmap::AbstractVector{D},
     csm::AbstractArray{Complex{D},2};
-    nBlock::Int64 = 1,
-    parts::Vector{UnitRange{Int64}} = [1:nSam],
-    use_gpu::Bool = false,
-    verbose::Bool = false,
+    nBlock::Int64=1,
+    parts::Vector{UnitRange{Int64}}=[1:nSam],
+    use_gpu::Bool=false,
+    verbose::Bool=false,
 ) where {D<:AbstractFloat,T<:Union{Real,Complex}}
     x = Vector(x)
     if verbose
@@ -237,7 +258,7 @@ function prod_dt_fastHighOrderOp(
         e = exp.(2 * 1im * pi * ϕ) .* (bf * @view(kspha_dt[:, p]))' .* (2 * 1im * pi)
         out[p, :] = e * (x .* csm)
         if verbose
-            next!(progress_bar, showvalues = [(:nBlock, block)])
+            next!(progress_bar, showvalues=[(:nBlock, block)])
         end
         if use_gpu
             CUDA.unsafe_free!(ϕ)
@@ -258,15 +279,15 @@ end
 """
     Forward operator for fastHighOrderOp
 """
+
 function prod_fastHighOrderOp(
-    x::AbstractVector{T}, 
+    x::AbstractVector{T},
     bls::AbstractArray{T,4},
     cls::AbstractArray{T,2},
     encoding_op::AbstractLinearOperator{T},
-    shape,
-    csm;
-    use_gpu::Bool = false,
-    verbose::Bool = false,
+    shape;
+    use_gpu::Bool=false,
+    verbose::Bool=false,
 ) where {D<:AbstractFloat,T<:Union{Real,Complex}}
 
     # Perform the multiplication with the basis functions and coefficients
@@ -278,9 +299,9 @@ function prod_fastHighOrderOp(
     result = zeros(Complex{Float64}, size(cls))
 
     for l = 1:nL
-        @views result[:, l] = cls[:, l] .* reshape(encoding_op * dropdims(conj.(bls[:, :, 1, l]) .* x, dims = 3)[:], size(cls, 1))
+        @views result[:, l] = cls[:, l] .* reshape(encoding_op * dropdims(conj.(bls[:, :, 1, l]) .* x, dims=3)[:], size(cls, 1))
     end
-    return vec(sum(result, dims = 2))
+    return vec(sum(result, dims=2))
 end
 
 """
@@ -290,11 +311,9 @@ function ctprod_fastHighOrderOp(
     y::AbstractVector{T},
     bls::AbstractArray{T,4},
     cls::AbstractArray{T,2},
-    encoding_op::AbstractLinearOperator{T},
-    shape,
-    csmC;
-    use_gpu::Bool = false,
-    verbose::Bool = false,
+    encoding_op::AbstractLinearOperator{T};
+    use_gpu::Bool=false,
+    verbose::Bool=false,
 ) where {D<:AbstractFloat,T<:Union{Real,Complex}}
 
     # Perform the multiplication with the basis functions and coefficients
@@ -303,20 +322,20 @@ function ctprod_fastHighOrderOp(
 
     result = zeros(Complex{Float64}, size(bls, 1), size(bls, 2), nL)
     for l = 1:nL
-        @views result[:, :, l] = dropdims(bls, dims = 3)[:, :, l] .* reshape(encoding_op' * (conj.(cls[:, l]) .* y), (size(bls, 1), size(bls, 2)))
+        @views result[:, :, l] = dropdims(bls, dims=3)[:, :, l] .* reshape(encoding_op' * (conj.(cls[:, l]) .* y), (size(bls, 1), size(bls, 2)))
     end
-    return vec(sum(result, dims = 3))
+    return vec(sum(result, dims=3))
 end
 
 
 function Base.adjoint(op::fastHighOrderOp{T}) where {T}
     return LinearOperator{T}(
-        op.ncol, 
-        op.nrow, 
-        op.symmetric, 
-        op.hermitian, 
-        op.ctprod!, 
-        nothing, 
+        op.ncol,
+        op.nrow,
+        op.symmetric,
+        op.hermitian,
+        op.ctprod!,
+        nothing,
         op.prod!)
 end
 
@@ -334,13 +353,24 @@ function Base.copy(S::LinearOperator{T}) where T
     deepcopy(S)
 end
 
-function get_bl_cl_coeffs(grid, kspha; num_L = 10, reduc_fac_space = 2, reduc_fac_time = 90, bf_choice = collect(5:16), use_gpu = false)
+function get_bl_cl_coeffs(grid, kspha; method=:streaming, num_L=10, reduc_fac_space=2, reduc_fac_time=90, bf_choice=collect(4:16), use_gpu=true)
+
+    if method == :streaming
+        return get_bl_cl_coeffs_isvd(grid, kspha; num_L=num_L, reduc_fac_space=reduc_fac_space, reduc_fac_time=reduc_fac_time, bf_choice=bf_choice, use_gpu=use_gpu)
+    elseif method == :interp
+        return get_bl_cl_coeffs_interp(grid, kspha; num_L=num_L, reduc_fac_space=reduc_fac_space, reduc_fac_time=reduc_fac_time, bf_choice=bf_choice, use_gpu=use_gpu)
+    else
+        error("Unknown method: $method")
+    end
+end
+
+function get_bl_cl_coeffs_interp(grid, kspha; num_L=10, reduc_fac_space=2, reduc_fac_time=90, bf_choice=collect(5:16), use_gpu=true)
 
     num_basis = length(bf_choice)
 
     # compute basis functions (solid harmonics)
     bf = basisfunc_spha(grid.x, grid.y, grid.z, bf_choice)
-    
+
     # for ii = 1:size(bf,2)
     #     bf[:,ii] = rotl90(reshape(bf[:,ii],nX,nY))[:]
     # end
@@ -381,9 +411,14 @@ function get_bl_cl_coeffs(grid, kspha; num_L = 10, reduc_fac_space = 2, reduc_fa
         CUDA.unsafe_free!(kspha)
     end
 
-    # make the small version of E
-    E_lite = cispi.(-2 * dropdims(pooled_bf, dims = 2) * dropdims(pooled_kspha, dims = 2)')
+    # Compute the SVD of the higher order perturbations to the encoding operator
 
+
+    # make the small version of E
+    E_lite = cispi.(-2 * dropdims(pooled_bf, dims=2) * dropdims(pooled_kspha, dims=2)')
+    @info size(E_lite)
+    @info size(dropdims(pooled_bf, dims=2))
+    @info size(dropdims(pooled_kspha, dims=2))
     U_e, S_e, V_e = svd(E_lite) # There may be better ways to compute such a decomposition! Remember, we don't need the singular values alone, we just need an orthogonal decomposition that approximates the encoding operator.
 
     if use_gpu
@@ -391,11 +426,11 @@ function get_bl_cl_coeffs(grid, kspha; num_L = 10, reduc_fac_space = 2, reduc_fa
     end
 
     bls = reshape(U_e[:, 1:num_L], size(U_e, 1), 1, num_L)
-    bls_linear_fullsize = upsample_linear(bls; size = s_bf_orig[1])
+    bls_linear_fullsize = upsample_linear(bls; size=s_bf_orig[1])
     bls_fullsize = reshape(bls_linear_fullsize, grid.nX, grid.nY, grid.nZ, 1, num_L)
 
     cls = reshape((V_e.*conj(S_e)')[:, 1:num_L], size(V_e, 1), 1, num_L)
-    cls_fullsize = upsample_linear(cls; size = s_kspha_orig[1])
+    cls_fullsize = upsample_linear(cls; size=s_kspha_orig[1])
 
     if use_gpu
         bls_fullsize = bls_fullsize |> cpu
@@ -405,8 +440,76 @@ function get_bl_cl_coeffs(grid, kspha; num_L = 10, reduc_fac_space = 2, reduc_fa
         V_e = V_e |> cpu
     end
 
-    bls = dropdims(bls_fullsize, dims = 4)
-    cls = dropdims(cls_fullsize, dims = 2)
+    bls = dropdims(bls_fullsize, dims=4)
+    cls = dropdims(cls_fullsize, dims=2)
+    @info size(bls)
+    @info size(cls)
+
+    return bls, cls
+
+end
+
+function get_bl_cl_coeffs_isvd(grid, kspha; num_L=10, reduc_fac_space=2, reduc_fac_time=90, bf_choice=collect(5:16), use_gpu=true)
+
+    num_basis = length(bf_choice)
+
+    # compute basis functions (solid harmonics)
+    bf = basisfunc_spha(grid.x, grid.y, grid.z, bf_choice)
+
+    # for ii = 1:size(bf,2)
+    #     bf[:,ii] = rotl90(reshape(bf[:,ii],nX,nY))[:]
+    # end
+
+    s_bf_orig = size(bf)
+
+    # put the basis functions on GPU
+    if use_gpu
+        bf = bf |> gpu
+    end
+
+    s_bf_orig = size(bf)
+
+    # put the basis functions on GPU
+    if use_gpu
+        bf = bf |> gpu
+    end
+
+    # # subsample the basis functions by meanpooling
+    # pooled_bf = meanpool(reshape(bf, s_bf_orig[1], 1, num_basis), (reduc_fac_space^3,))
+
+    # if use_gpu
+    #     CUDA.unsafe_free!(bf)
+    # end
+
+    s_kspha_orig = size(kspha)
+
+    # put kspha on GPU
+    if use_gpu
+        kspha |> gpu
+    end
+
+    # pooled_kspha = meanpool(kspha, (reduc_fac_time,))
+
+    if use_gpu
+        CUDA.unsafe_free!(kspha)
+    end
+
+    # Compute the SVD of the higher order perturbations to the encoding operator
+    X = cispi.(-2 * bf * kspha[:, bf_choice]')
+
+    # Use an incremental streaming based-SVD to compute the basis functions and coefficients
+    # This is more memory efficient than the full SVD, especially for large datasets
+    U, s = IncrementalSVD.update!(nothing, nothing, cispi.(-2 * bf * kspha[1:80:end, bf_choice]'))
+    for ii = 2:10:80 # TODO update these parameters 
+        IncrementalSVD.update!(U, s, cispi.(-2 * bf * kspha[ii:80:end, bf_choice]'))
+    end
+    Vt = Diagonal(s) \ (U' * X)
+
+    bls = reshape(U[:, 1:num_L], grid.nX, grid.nY, 1, num_L) # TODO add Z dimension
+    cls = (Vt.*(s))[1:num_L, :]'
+
+    @info size(cls)
+    @info size(bls)
 
     return bls, cls
 
