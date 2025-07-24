@@ -90,12 +90,17 @@ function fastHighOrderOp(
     csm = reshape(csm, nX * nY, nCha)      # [nX * nY, nCha]
     fieldmap = vec(fieldmap)                  # [nVox]
 
-    use_gpu = false
-
     # since we modify kspha in place, import it new again before running
 
     kspha_stitched = kspha'
     kspha = kspha_stitched
+
+    if use_gpu
+        grid = grid |> gpu
+        kspha = kspha |> gpu
+        fieldmap = fieldmap |> gpu
+        csm = csm |> gpu
+    end
 
     # This is to decompose the spatial and temporal parts of the higher order encoding operator
     bls, cls = get_bl_cl_coeffs(grid, kspha; method=:streaming, num_L=8, use_gpu=use_gpu)
@@ -109,6 +114,15 @@ function fastHighOrderOp(
     ktraj_nufft = permutedims(ktraj_nufft, (2, 1))
 
     traj_input = Trajectory("custom", convert_rad_per_m_to_nfft(ktraj_nufft, 0.001), times, 0.0, 0.0, 1, size(ktraj_nufft, 2), 1, false, false)
+
+    if use_gpu
+        # traj_input = traj_input |> gpu
+        kspha = kspha |> gpu
+        bls = bls |> gpu
+        cls = cls |> gpu
+        fieldmap = fieldmap |> gpu
+        csm = csm |> gpu
+    end
 
     encoding_op = FieldmapNFFTOp((nX, nY), traj_input, -2 * pi * 1im .* reshape(fieldmap, nX, nY))
 
@@ -490,9 +504,9 @@ function get_bl_cl_coeffs_isvd(grid, kspha; num_L=10, reduc_fac_space=2, reduc_f
 
     # pooled_kspha = meanpool(kspha, (reduc_fac_time,))
 
-    if use_gpu
-        CUDA.unsafe_free!(kspha)
-    end
+    # if use_gpu
+    #     CUDA.unsafe_free!(kspha)
+    # end
 
     # Compute the SVD of the higher order perturbations to the encoding operator
     X = cispi.(-2 * bf * kspha[:, bf_choice]')
@@ -504,6 +518,15 @@ function get_bl_cl_coeffs_isvd(grid, kspha; num_L=10, reduc_fac_space=2, reduc_f
         IncrementalSVD.update!(U, s, cispi.(-2 * bf * kspha[ii:80:end, bf_choice]'))
     end
 
+    if use_gpu
+        U = U |> gpu
+        s = s |> gpu
+    end
+    
+    @info typeof(X)
+    @info typeof(U)
+    @info typeof(s)
+    
     Vt = Diagonal(s) \ (U' * X) # NEED to make sure we can always compute this, it may be extremely large!
 
     bls = reshape(U[:, 1:num_L], grid.nX, grid.nY, 1, num_L) # TODO add Z dimension

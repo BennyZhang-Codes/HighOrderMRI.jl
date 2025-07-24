@@ -151,7 +151,7 @@ rot_csm = cat([rotl90(Complex{T}.(csm)[:, :, i]) for i in 1:size(csm, 3)]..., di
 for (idx, label, recon, kdata, weight, b0) in zip(idxs, labelMeasured, recons, kdatas, weights, b0s)
     @info "[$(idx)] $(label) $(recon)"
     fHOOp = fastHighOrderOp(gridding, T.(ksphaMeasured'), T.(datatime); recon_terms=recon,
-        nBlock=nBlock, csm=Complex{T}.(csm), fieldmap=T.(b0), use_gpu=use_gpu, verbose=verbose)
+        nBlock=nBlock, csm=Complex{T}.(csm), fieldmap=T.(b0), use_gpu=false, verbose=verbose)
     @time x = recon_fHOOp(fHOOp, Complex{T}.(kdata), Complex{T}.(weight), recParams)
     imgMeasuredFast[:, :, idx] = x
     fig = plt_image(abs.(x); title=label, vmaxp=99.9)
