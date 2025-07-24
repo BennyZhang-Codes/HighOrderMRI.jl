@@ -7,8 +7,8 @@ CUDA.device!(0)
 
 T = Float64;
 path = joinpath(@__DIR__)
-# data_mat      = "7T_2D_Spiral_1p0_200_r4.mat" 
-data_mat = "7T_2D_EPI_1p0_200_r4.mat"
+data_mat      = "7T_2D_Spiral_1p0_200_r4.mat" 
+# data_mat = "7T_2D_EPI_1p0_200_r4.mat"
 data_file = joinpath(path, data_mat)
 
 @info "data file: $(data_file)"
