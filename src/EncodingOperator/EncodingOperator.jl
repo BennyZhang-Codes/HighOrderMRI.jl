@@ -6,3 +6,4 @@ include("HighOrderOp3D.jl")
 
 include("CUDA_kernel.jl")
 include("HighOrderOp_Kernel.jl")
+include("HighOrderOp3D_Kernel.jl")
