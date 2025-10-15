@@ -6,6 +6,7 @@ using LinearAlgebra
 using CUDA
 using NNlib, cuDNN
 using IncrementalSVD
+using Random
 
 
 BLAS.set_num_threads(64) # set number of threads
@@ -91,7 +92,6 @@ function fastHighOrderOp(
     fieldmap = vec(fieldmap)                  # [nVox]
 
     # since we modify kspha in place, import it new again before running
-
     kspha_stitched = kspha'
     kspha = kspha_stitched
 
@@ -103,9 +103,8 @@ function fastHighOrderOp(
     end
 
     # This is to decompose the spatial and temporal parts of the higher order encoding operator
-    bls, cls = get_bl_cl_coeffs(grid, kspha; method=:streaming, num_L=8, use_gpu=use_gpu)
+    bls, cls = get_bl_cl_coeffs(grid, kspha; method=:interp, num_L=12, reduc_fac_space = 2, reduc_fac_time = 90, use_gpu=use_gpu)
     cls = repeat(cls, nCha, 1) # repeat the coefficients for each coil channel 
-
     kspha_nufft = kspha_stitched[:, 2:4] # get the first order encoding fields to set up the NUFFT operator
 
     # Prepare k-space trajectory for NUFFT (typically only 1st order: x and y, i.e., rows 2 and 3)
@@ -125,7 +124,6 @@ function fastHighOrderOp(
     end
 
     encoding_op = FieldmapNFFTOp((nX, nY), traj_input, -2 * pi * 1im .* reshape(fieldmap, nX, nY))
-
     full_op = ∘(DiagOp(encoding_op, nCha), SensitivityOp(reshape(csm, :, nCha), 1))
 
     shape = (nX, nY)
@@ -315,6 +313,7 @@ function prod_fastHighOrderOp(
     for l = 1:nL
         @views result[:, l] = cls[:, l] .* reshape(encoding_op * dropdims(conj.(bls[:, :, 1, l]) .* x, dims=3)[:], size(cls, 1))
     end
+    
     return vec(sum(result, dims=2))
 end
 
@@ -340,7 +339,6 @@ function ctprod_fastHighOrderOp(
     end
     return vec(sum(result, dims=3))
 end
-
 
 function Base.adjoint(op::fastHighOrderOp{T}) where {T}
     return LinearOperator{T}(
@@ -373,6 +371,8 @@ function get_bl_cl_coeffs(grid, kspha; method=:streaming, num_L=10, reduc_fac_sp
         return get_bl_cl_coeffs_isvd(grid, kspha; num_L=num_L, reduc_fac_space=reduc_fac_space, reduc_fac_time=reduc_fac_time, bf_choice=bf_choice, use_gpu=use_gpu)
     elseif method == :interp
         return get_bl_cl_coeffs_interp(grid, kspha; num_L=num_L, reduc_fac_space=reduc_fac_space, reduc_fac_time=reduc_fac_time, bf_choice=bf_choice, use_gpu=use_gpu)
+    elseif method == :turnstile
+        return get_bl_cl_coeffs_turnstile(grid, kspha; num_L=num_L, reduc_fac_space=reduc_fac_space, reduc_fac_time=reduc_fac_time, bf_choice=bf_choice, use_gpu=use_gpu)
     else
         error("Unknown method: $method")
     end
@@ -514,6 +514,7 @@ function get_bl_cl_coeffs_isvd(grid, kspha; num_L=10, reduc_fac_space=2, reduc_f
     # Use an incremental streaming based-SVD to compute the basis functions and coefficients
     # This is more memory efficient than the full SVD, especially for large datasets
     U, s = IncrementalSVD.update!(nothing, nothing, cispi.(-2 * bf * kspha[1:80:end, bf_choice]'))
+
     for ii = 2:10:80 # TODO update these parameters 
         IncrementalSVD.update!(U, s, cispi.(-2 * bf * kspha[ii:80:end, bf_choice]'))
     end
@@ -537,4 +538,198 @@ function get_bl_cl_coeffs_isvd(grid, kspha; num_L=10, reduc_fac_space=2, reduc_f
 
     return bls, cls
 
+end
+
+function get_bl_cl_coeffs_turnstile(grid, kspha; num_L=10, reduc_fac_space=2, reduc_fac_time=90, bf_choice=collect(5:16), use_gpu=true)
+
+    num_basis = length(bf_choice)
+
+    # compute basis functions (solid harmonics)
+    bf = basisfunc_spha(grid.x, grid.y, grid.z, bf_choice)
+
+    # for ii = 1:size(bf,2)
+    #     bf[:,ii] = rotl90(reshape(bf[:,ii],nX,nY))[:]
+    # end
+
+    s_bf_orig = size(bf)
+
+    # put the basis functions on GPU
+    if use_gpu
+        bf = bf |> gpu
+    end
+
+    s_bf_orig = size(bf)
+
+    # put the basis functions on GPU
+    if use_gpu
+        bf = bf |> gpu
+    end
+
+    # # subsample the basis functions by meanpooling
+    # pooled_bf = meanpool(reshape(bf, s_bf_orig[1], 1, num_basis), (reduc_fac_space^3,))
+
+    # if use_gpu
+    #     CUDA.unsafe_free!(bf)
+    # end
+
+    s_kspha_orig = size(kspha)
+
+    # put kspha on GPU
+    if use_gpu
+        kspha |> gpu
+    end
+
+    # pooled_kspha = meanpool(kspha, (reduc_fac_time,))
+
+    # if use_gpu
+    #     CUDA.unsafe_free!(kspha)
+    # end
+
+    # Use an incremental streaming based-SVD to compute the basis functions and coefficients
+    # This is more memory efficient than the full SVD, especially for large datasets
+    Ω, Ψ = make_gaussian_sketches( size(kspha, 1), size(bf,1), 200, 200)
+
+    stream_blocks = row_blocks(kspha[:,bf_choice], bf; blocksize=10_000)
+
+    Y, Z = streaming_sketch(stream_blocks, Ω, Ψ)
+
+    U, s, Vt = reconstruct_from_sketch(Y, Z, Ψ; k=50)
+
+    if use_gpu
+        U = U |> gpu
+        s = s |> gpu
+    end
+    
+    @info size(U)
+    @info size(s)
+    @info size(Vt)
+    
+    bls = reshape((Vt.* s')[:,1:num_L], grid.nX, grid.nY, 1, num_L) # TODO add Z dimension
+    cls = U[:, 1:num_L]
+
+    @info size(cls)
+    @info size(bls)
+
+    return bls, cls
+
+end
+
+# Create Gaussian sketch matrices (you can replace with SRFT or CountSketch)
+# n = # columns of A, m = # rows of A
+function make_gaussian_sketches(m::Int, n::Int, ℓ::Int, s::Int; rng=Random.GLOBAL_RNG)
+    Ω = randn(rng,ComplexF64, (n, ℓ))   # for Y = A * Ω
+    Ψ = randn(rng,ComplexF64, (s, m))   # for Z = Ψ * A
+    return Ω, Ψ
+end
+
+"""
+    row_blocks(A; blocksize=10000)
+
+Iterate over row blocks of a dense matrix A, each of size at most blocksize × size(A,2).
+"""
+function row_blocks(kspha, bf; blocksize=10_000)
+    m = size(kspha,1)
+    @views return ( cispi.(-2 * bf * kspha[i:min(i+blocksize-1, m), :]')' for i in 1:blocksize:m )
+end
+
+# stream_blocks is an iterator that yields row-blocks of A as matrices (rows x n)
+# e.g., for i in 1:chunks read chunk_i = read_rows(i); yield chunk_i
+function streaming_sketch(stream_blocks, Ω, Ψ)
+    m = size(Ψ, 2)    # number of rows of A
+    n, ℓ = size(Ω)
+    s = size(Ψ, 1)
+
+    Y = zeros(ComplexF64, m, ℓ)
+    Z = zeros(ComplexF64, s, n)   # note: Z = Ψ * A, accumulates across row blocks
+
+    row_offset = 0
+    for block in stream_blocks
+        # block: r x n (r rows of A)
+        r = size(block, 1)
+        rows_range = (row_offset+1):(row_offset+r)
+
+        # Accumulate Y (note: adding into the corresponding rows)
+        # Y[rows_range, :] += block * Ω
+        Y[rows_range, :] .+= ComplexF64.(block) * Ω
+
+        # Accumulate Z = Ψ * A; but Ψ multiplies rows of A. We only need the rows of Ψ that correspond to this block.
+        # For simplicity here assume Ψ applies to full rows; if Ψ is structured we can compute Ψ_block * block
+        # Compute Ψ[:, rows_range] * block  (size s x n)
+        Z .+= Ψ[:, rows_range] * block
+
+        row_offset += r
+    end
+
+    return Y, Z
+end
+
+# reconstruct low-rank SVD from Y and Z
+function reconstruct_from_sketch(Y, Z, Ψ; k=50)
+    # thin QR on Y
+    Q, R = qr(Y, Val(true))  # economy QR; Q is m x ℓ
+    Q = Matrix(Q)
+
+    # compute PsiQ = Ψ * Q
+    PsiQ = Ψ * Q             # s x ℓ small
+
+    # solve X = pinv(PsiQ) * Z  -> more stable: compute QR or SVD of PsiQ and solve
+    U_p, Σ_p, Vt_p = svd(PsiQ; full=false)
+    # pseudo-inverse of PsiQ = V * diag(1/Σ) * U'
+    pinvPsiQ = Vt_p' * Diagonal(1.0 ./ Σ_p) * U_p'
+    X = pinvPsiQ * Z        # ℓ x n
+
+    # SVD of X (small, ℓ x n)
+    Ux, Sx, Vxt = svd(X; full=false)
+    # left singular vectors for A:
+    U = Q * Ux              # m x ℓ
+    # truncate to k
+    k = min(k, length(Sx))
+    return U[:,1:k], Sx[1:k], Vxt[:,1:k]
+end
+
+"""
+    streaming_sketch_columns(col_blocks, Ωc, Ψc; verbose=false)
+
+Compute column-wise sketches equivalent to applying SketchSVD on Aᵀ
+without ever forming Aᵀ.
+
+Arguments
+----------
+- `col_blocks`: iterator yielding column blocks of A, each (m × r)
+- `Ωc`: random matrix of size (s, n)
+- `Ψc`: random matrix of size (m, ℓ)
+
+Returns
+-------
+Yc (n × ℓ), Zc (s × m)
+"""
+function streaming_sketch_columns(col_blocks, Ωc::AbstractMatrix, Ψc::AbstractMatrix; verbose=false)
+    s, n = size(Ωc)
+    m, ℓ = size(Ψc)
+
+    Yc = zeros(Float64, n, ℓ)
+    Zc = zeros(Float64, s, m)
+
+    col_offset = 0
+    for (bid, block) in enumerate(col_blocks)
+        m_block, r = size(block)
+        @assert m_block == m "Column block height mismatch: expected $m rows"
+        cols_range = col_offset + (1:r)
+
+        # Update Yc (accumulate Ψcᵀ * A_c)
+        Yc[cols_range, :] .= block' * Ψc
+
+        # Update Zc (accumulate Ω_c[:, cols_range] * A_cᵀ)
+        Zc .+= Ωc[:, cols_range] * block'
+
+        col_offset += r
+        verbose && @info "Processed column block $bid ($r columns)"
+    end
+
+    return Yc, Zc
+end
+
+function col_blocks(A; blocksize=500)
+    m, n = size(A)
+    return ( @view(A[:, j:min(j+blocksize-1, n)]) for j in 1:blocksize:n )
 end

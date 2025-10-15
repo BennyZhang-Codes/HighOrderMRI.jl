@@ -191,37 +191,91 @@ function prod_dt_HighOrderOp(
     if verbose
         @info "HighOrderOp prod_dt nBlock=$nBlock, use_gpu=$use_gpu"
     end
-    if use_gpu
-        x   = x |> gpu
-        out = CUDA.zeros(Complex{D}, nSam, nCha)
-    else
+
+    # CPU fallback (simple / clear)
+    if !use_gpu
         out = zeros(Complex{D}, nSam, nCha)
+        progress_bar = Progress(nBlock)
+        for (block, p) = enumerate(parts)
+            ϕ = @view(times[p]) .* fieldmap' .+ (bf * @view(kspha[:,p]))'
+            # derivative factor (bf * kspha_dt[:,p])' times 2iπ
+            der = (bf * @view(kspha_dt[:,p]))' .* (2im*pi)
+            e = exp.(2im*pi*ϕ) .* der
+            out[p, :] = e * (x .* csm)
+            if verbose
+                next!(progress_bar, showvalues=[(:nBlock, block)])
+            end
+        end
+        out .= out ./ sqrt(nVox)
+        return vec(out)
     end
+
+    # --- GPU-optimized path: reuse buffers, minimize allocations ---
+    bf_gpu      = isa(bf, CuArray)       ? bf       : cu(bf)
+    kspha_gpu   = isa(kspha, CuArray)    ? kspha    : cu(kspha)
+    kspha_dt_gpu= isa(kspha_dt, CuArray) ? kspha_dt : cu(kspha_dt)
+    times_gpu   = isa(times, CuArray)    ? times    : cu(times)
+    field_gpu   = isa(fieldmap, CuArray) ? fieldmap : cu(fieldmap)
+    csm_gpu     = isa(csm, CuArray)      ? csm      : cu(csm)
+    x_gpu       = isa(x, CuArray)        ? x        : cu(x)
+
+    # precompute x .* csm once (nVox x nCha)
+    x_csm = x_gpu .* csm_gpu  # (nVox, nCha)
+
+    out_gpu = CUDA.zeros(Complex{D}, nSam, nCha)
+
+    # temporaries: layout (lenp, nVox)
+    max_block = maximum(length.(parts))
+    phi_gpu = CUDA.zeros(D, max_block, nVox)
+    e_gpu   = CUDA.zeros(Complex{D}, max_block, nVox)
+
     progress_bar = Progress(nBlock)
     for (block, p) = enumerate(parts)
-        ϕ = @view(times[p]) .* fieldmap' .+ (bf * @view(kspha[:,p]))'
-        e = exp.(2*1im*pi*ϕ) .* (bf * @view(kspha_dt[:,p]))' .* (2*1im*pi)
-        out[p, :] =  e * (x .* csm)
+        lenp = length(p)
+
+        ks_block    = view(kspha_gpu, :, p)       # (nTerm, lenp)
+        ks_block_dt = view(kspha_dt_gpu, :, p)    # (nTerm, lenp)
+
+        # tmp = bf * ks_block  -> (nVox, lenp)
+        tmp    = bf_gpu * ks_block
+        tmp_dt = bf_gpu * ks_block_dt
+
+        # write transpose into phi_gpu[1:lenp, :]  -> (lenp, nVox)
+        phi_view = view(phi_gpu, 1:lenp, :)
+        phi_view .= permutedims(tmp)
+
+        # add outer product times_block * field_gpu' -> (lenp, nVox)
+        times_block = view(times_gpu, p)         # (lenp,)
+        @. phi_view .+= times_block * field_gpu'
+
+        # compute complex exponentials (lenp x nVox)
+        @. e_gpu[1:lenp, :] = cispi(2.0 * phi_view)
+
+        # multiply by derivative term (tmp_dt' is lenp x nVox) and 2im*pi
+        # elementwise multiply: e .= e .* (tmp_dt' * (2im*pi))
+        @. e_gpu[1:lenp, :] .*= permutedims(tmp_dt) * (2im*pi)
+
+        # compute out_block = e * (x .* csm)  -> (lenp x nCha)
+        out_block = e_gpu[1:lenp, :] * x_csm   # (lenp x nCha)
+
+        # write into global output
+        @views out_gpu[p, :] .= out_block
+
         if verbose
             next!(progress_bar, showvalues=[(:nBlock, block)])
         end
-        if use_gpu
-            CUDA.unsafe_free!(ϕ)
-            CUDA.unsafe_free!(e)
-        end
     end
-    if use_gpu
-        CUDA.unsafe_free!(x)
-    end
-    out = out ./ sqrt(nVox)
-    if use_gpu
-        out = out |> cpu
-    end
-    return vec(out)
+
+    # normalization
+    out_gpu .= out_gpu ./ sqrt(nVox)
+
+    # bring result back to CPU
+    CUDA.@sync out_cpu = Array(out_gpu)
+    return vec(out_cpu)
 end
 
 
-"""
+""""
     Forward operator for HighOrderOp
 """
 function prod_HighOrderOp(
@@ -243,33 +297,85 @@ function prod_HighOrderOp(
     if verbose
         @info "HighOrderOp prod nBlock=$nBlock, use_gpu=$use_gpu"
     end
-    if use_gpu
-        x   = x |> gpu
-        out = CUDA.zeros(Complex{D}, nSam, nCha)
-    else
+
+    if !use_gpu
+        # fallback to original (CPU) implementation for simplicity / clarity
         out = zeros(Complex{D}, nSam, nCha)
+        progress_bar = Progress(nBlock)
+        for (block, p) = enumerate(parts)
+            ϕ = @view(times[p]) .* fieldmap' .+ (bf * @view(kspha[:,p]))'
+            e = exp.(2*1im*pi*ϕ)
+            out[p, :] =  e * (x .* csm)
+            if verbose
+                next!(progress_bar, showvalues=[(:nBlock, block)])
+            end
+        end
+        out .= out ./ sqrt(nVox)
+        return vec(out)
     end
+
+    # --- GPU path: minimize allocations, reuse buffers per-block ---
+    # ensure GPU arrays
+    bf_gpu      = isa(bf, CuArray)      ? bf      : cu(bf)
+    kspha_gpu   = isa(kspha, CuArray)   ? kspha   : cu(kspha)
+    times_gpu   = isa(times, CuArray)   ? times   : cu(times)
+    field_gpu   = isa(fieldmap, CuArray) ? fieldmap : cu(fieldmap)
+    csm_gpu     = isa(csm, CuArray)     ? csm     : cu(csm)
+    x_gpu       = isa(x, CuArray)       ? x       : cu(x)
+
+    # precompute x .* csm once (nVox x nCha)
+    x_csm = x_gpu .* csm_gpu  # CuArray (nVox, nCha)
+
+    # prepare output on GPU
+    out_gpu = CUDA.zeros(Complex{D}, nSam, nCha)
+
+    # determine largest block size to preallocate temporaries
+    max_block = maximum(length.(parts))
+
+    # phi: samples x voxels (Float) for the largest block, e: complex samples x voxels
+    phi_gpu = CUDA.zeros(D, max_block, nVox)
+    e_gpu   = CUDA.zeros(Complex{D}, max_block, nVox)
+
     progress_bar = Progress(nBlock)
     for (block, p) = enumerate(parts)
-        ϕ = @view(times[p]) .* fieldmap' .+ (bf * @view(kspha[:,p]))'
-        e = exp.(2*1im*pi*ϕ)
-        out[p, :] =  e * (x .* csm)
+        lenp = length(p)
+        # kspha block (nTerm x lenp)
+        ks_block = view(kspha_gpu, :, p)  # lazy view on GPU
+
+        # tmp = bf * ks_block  --> (nVox x lenp)
+        tmp = bf_gpu * ks_block  # CuArray (nVox, lenp)
+
+        # copy transpose into phi_gpu[1:lenp, :]
+        # phi = times[p] .* fieldmap' .+ (bf * kspha[:,p])'
+        # tmp' is (lenp x nVox); write into phi_gpu view
+        phi_view = view(phi_gpu, 1:lenp, :)
+        phi_view .= permutedims(tmp)             # copy tmp' into phi_view
+        # add outer product times_block * fieldmap'
+        times_block = view(times_gpu, p)         # lenp
+        # broadcasting outer product and add into phi_view
+        @. phi_view .+= times_block * field_gpu' # efficient GPU broadcast
+
+        # compute complex exponentials (samples x voxels)
+        @. e_gpu[1:lenp, :] = cispi(2.0 * phi_view)
+
+        # compute out_block = e * (x .* csm)  -> (lenp x nCha)
+        # note: x_csm is (nVox x nCha), e_gpu[1:lenp,:] is (lenp x nVox)
+        out_block = e_gpu[1:lenp, :] * x_csm   # CuArray (lenp x nCha)
+
+        # write into global output
+        @views out_gpu[p, :] .= out_block
+
         if verbose
             next!(progress_bar, showvalues=[(:nBlock, block)])
         end
-        if use_gpu
-            CUDA.unsafe_free!(ϕ)
-            CUDA.unsafe_free!(e)
-        end
     end
-    if use_gpu
-        CUDA.unsafe_free!(x)
-    end
-    out = out ./ sqrt(nVox)
-    if use_gpu
-        out = out |> cpu
-    end
-    return vec(out)
+
+    # normalization
+    out_gpu .= out_gpu ./ sqrt(nVox)
+
+    # bring result back to CPU
+    CUDA.@sync out_cpu = Array(out_gpu)
+    return vec(out_cpu)
 end
 
 
@@ -291,42 +397,82 @@ function ctprod_HighOrderOp(
     use_gpu   :: Bool                     = false    , 
     verbose   :: Bool                     = false    ,
     ) where {D<:AbstractFloat, T<:Union{Real,Complex}}
-    csmC = conj.(csm)
-    y    = reshape(y, nSam, nCha)
 
-    if verbose
-        @info "HighOrderOp ctprod nBlock=$nBlock, use_gpu=$use_gpu"
-    end
-    
-    if use_gpu
-        y   = y |> gpu
-        out = CUDA.zeros(Complex{D}, nVox, nCha)
-    else
+    # CPU fallback (kept simple / clear)
+    if !use_gpu
+        csmC = conj.(csm)
+        ymat = reshape(y, nSam, nCha)
         out = zeros(Complex{D}, nVox, nCha)
+        progress_bar = Progress(nBlock)
+        for (block, p) = enumerate(parts)
+            ϕ =  fieldmap .* @view(times[p])' .+ (bf * @view(kspha[:,p]))
+            e = exp.(2im*pi*ϕ)
+            out .+= conj(e) * ymat[p, :]
+            if verbose
+                next!(progress_bar, showvalues=[(:nBlock, block)])
+            end
+        end
+        out .= out ./ sqrt(nVox)
+        out .= out .* csmC
+        return vec(sum(out, dims=2))
     end
+
+    # --- GPU-optimized path: minimize allocations, reuse temporaries ---
+    # ensure GPU arrays
+    bf_gpu      = isa(bf, CuArray)      ? bf      : cu(bf)
+    kspha_gpu   = isa(kspha, CuArray)   ? kspha   : cu(kspha)
+    times_gpu   = isa(times, CuArray)   ? times   : cu(times)
+    field_gpu   = isa(fieldmap, CuArray) ? fieldmap : cu(fieldmap)
+    csm_gpu     = isa(csm, CuArray)     ? csm     : cu(csm)
+    y_gpu       = isa(y, CuArray)       ? reshape(y, nSam, nCha) : cu(reshape(y, nSam, nCha))
+
+    csmC_gpu = conj.(csm_gpu)
+
+    # prepare output on GPU
+    out_gpu = CUDA.zeros(Complex{D}, nVox, nCha)
+
+    # determine largest block size to preallocate temporaries (lenp x nVox layout)
+    max_block = maximum(length.(parts))
+    phi_gpu = CUDA.zeros(D, max_block, nVox)               # (lenp, nVox)
+    e_gpu   = CUDA.zeros(Complex{D}, max_block, nVox)      # (lenp, nVox)
 
     progress_bar = Progress(nBlock)
     for (block, p) = enumerate(parts)
-        ϕ =  fieldmap .* @view(times[p])' .+ (bf * @view(kspha[:,p]))
-        e = exp.(2*1im*pi*ϕ)
-        out +=  conj(e) * y[p, :]
+        lenp = length(p)
+        ks_block = view(kspha_gpu, :, p)          # (nTerm, lenp)
+
+        # tmp = bf * ks_block  -> (nVox, lenp)
+        tmp = bf_gpu * ks_block                  # (nVox, lenp)
+
+        # write transpose into phi_gpu[1:lenp, :]  -> (lenp, nVox)
+        phi_view = view(phi_gpu, 1:lenp, :)
+        phi_view .= permutedims(tmp)             # copy tmp' into phi_view
+
+        # add outer product times_block * field_gpu' -> (lenp, nVox)
+        times_block = view(times_gpu, p)         # (lenp,)
+        @. phi_view .+= times_block * field_gpu'  # broadcasted outer-product
+
+        # compute complex exponentials (lenp x nVox)
+        @. e_gpu[1:lenp, :] = cispi(2.0*phi_view)
+
+        # accumulate: out_gpu += conj(e_block)' * y_block  where conj+transpose = adjoint
+        e_block = view(e_gpu, 1:lenp, :)                 # (lenp, nVox)
+        y_block = view(y_gpu, p, :)                      # (lenp, nCha)
+        out_gpu .+= adjoint(e_block) * y_block           # (nVox, nCha)
+
         if verbose
             next!(progress_bar, showvalues=[(:nBlock, block)])
         end
-        if use_gpu
-            CUDA.unsafe_free!(ϕ)
-            CUDA.unsafe_free!(e)
-        end
     end
-    if use_gpu
-        CUDA.unsafe_free!(y)
-    end
-    out = out ./ sqrt(nVox)
-    out = out .* csmC
-    if use_gpu
-        out = out |> cpu
-    end
-  return vec(sum(out, dims=2))
+
+    # normalization and coil-multiplication
+    out_gpu ./= sqrt(nVox)
+    out_gpu .*= csmC_gpu
+
+    # sum across coils and return to CPU
+    sum_gpu = sum(out_gpu, dims=2)   # (nVox, 1)
+    CUDA.@sync out_cpu = Array(sum_gpu)
+    return vec(out_cpu)
 end
 
 

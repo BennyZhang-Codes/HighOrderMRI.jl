@@ -7,8 +7,8 @@ CUDA.device!(0)
 
 T = Float64;
 path = joinpath(@__DIR__)
-# data_mat = "7T_2D_Spiral_1p0_200_r4.mat"
-data_mat = "7T_2D_EPI_1p0_200_r4.mat"
+data_mat = "7T_2D_Spiral_1p0_200_r4.mat"
+# data_mat = "7T_2D_EPI_1p0_200_r4.mat"
 data_file = joinpath(path, data_mat)
 
 @info "data file: $(data_file)"
@@ -19,10 +19,12 @@ b0 = data["gre_b0"];             # ΔB0 map
 mask = data["gre_mask"];           # mask
 
 kdata = data["kdata"];              # spiral k-space data
-datatime = data["datatime"];           # time stamps of k-space data
+datatime = data["datatime"];           # time stamps of k-space data (Check by div of AQ window length by nSamples)
 matrixSize = data["matrixSize"];         # matrix size
 FOV = data["FOV"];                # field of view
 
+# extended time constant model (bunch of e^-exp filters (CSC or hardware parameter that controls this))
+# Check basic corrections node to see that it can be turned on or off or if it's applied at that point 
 k0_ecc = data["k0_adc"];             # b0 compensation of scanner from ECC model
 dt_Measured = data["dt_Measured"];
 dt_Nominal = data["dt_Nominal"];
@@ -59,7 +61,7 @@ verbose = false;
 nBlock = 40;
 
 solver = CGNR;
-reg = L2Regularization(1.e-9);
+reg = L2Regularization(1.e-8);
 iter = 20;
 recParams = Dict{Symbol,Any}()
 recParams[:reconSize] = (nX, nY)
@@ -78,7 +80,7 @@ kdata = kdata .* exp.(-2π * 1im .* k0_ecc)';
 kdata = kdata .* exp.(-2π * 1im .* ksphaMeasured[:, 1]);
 
 labelMeasured = ["Measured"];
-recons = ["0111"];
+recons = ["1111"];
 kdatas = [kdata];
 weights = [weightMeasured];
 b0s = [b0];
@@ -101,10 +103,10 @@ end
 kdata = data["kdata"];
 
 labelNominal = ["Nominal"];
-recons = ["010"];
+recons = ["000"];
 kdatas = [kdata];
 weights = [weightNominal];
-b0s = [b0];
+b0s = 0*[b0];
 imgNominal = Array{Complex{T},3}(undef, nX, nY, length(labelNominal));
 idxs = collect(1:length(labelNominal));
 for (idx, label, recon, kdata, weight, b0) in zip(idxs, labelNominal, recons, kdatas, weights, b0s)
@@ -128,7 +130,7 @@ kdata = kdata .* exp.(-2π * 1im .* ksphaMeasured[:, 1]);
 
 solver = CGNR;
 reg = L2Regularization(1.e-2);
-iter = 10;
+iter = 20;
 recParams = Dict{Symbol,Any}()
 recParams[:reconSize] = (nX, nY)
 recParams[:reg] = reg  # ["L2", "L1", "L21", "TV", "LLR", "Positive", "Proj", "Nuclear"]
@@ -139,7 +141,7 @@ recParams[:csm] = csm
 gridding = Grid(nX, nY, nZ, Δx, Δy, Δz; exchange_xy=true, reverse_x=false, reverse_y=true)
 
 labelMeasured = ["Measured fast"];
-recons = ["0111"];
+recons = ["1111"];
 kdatas = [kdata];
 weights = [weightMeasured];
 b0s = [b0];
@@ -157,11 +159,3 @@ for (idx, label, recon, kdata, weight, b0) in zip(idxs, labelMeasured, recons, k
     fig = plt_image(abs.(x); title=label, vmaxp=99.9)
     fig.savefig("$(path)/result/$(data_mat[1:end-4])_$(label).png", dpi=300, transparent=false, bbox_inches="tight", pad_inches=0.0)
 end
-
-diff_im = angle.(imgMeasuredFast[:, :, 1])
-
-r = ROMEO.unwrap(diff_im .+ pi)
-
-plt_image(r)
-
-fig = plt_image(diff_im; title="Difference", vmaxp=99.9)
