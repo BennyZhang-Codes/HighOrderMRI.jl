@@ -44,6 +44,7 @@ LinearOperators.storage_type(op::HighOrderOp_Kernel) = typeof(op.Mv5)
 * `kspha_dt`                        - [nSam, nTerm], time-derivative of the coefficients of field dynamics.
 * `nBlock::Int64`                   - split trajectory into `nBlock` blocks to avoid memory overflow.
 * `use_gpu::Bool`                   - use GPU for HighOrder encoding/decoding(default: `true`).
+* `gpus::Vector{Int}`               - GPU device ids to be used (default: `[0]`).
 * `verbose::Bool`                   - print progress information(default: `false`).
 """
 function HighOrderOp_Kernel(
@@ -57,6 +58,7 @@ function HighOrderOp_Kernel(
     kspha_dt                            = nothing                                   ,
     nBlock      :: Int64                = 50                                        , 
     use_gpu     :: Bool                 = true                                      , 
+    gpus        :: Vector{Int}          = [0]                                       ,
     verbose     :: Bool                 = false                                     , 
     ) where {T<:AbstractFloat}
 
@@ -87,7 +89,10 @@ function HighOrderOp_Kernel(
     if nSam%nBlock!= 0
         push!(parts, n*nBlock+1:nSam)
     end
-    
+
+    # compute basis functions (spherical harmonics)
+    bf = basisfunc_spha(grid.x, grid.y, grid.z, collect(1:nTerm))
+
     # if use_gpu, move all the variables to GPU
     if use_gpu
         kspha       = kspha       |> gpu
@@ -98,19 +103,32 @@ function HighOrderOp_Kernel(
         csm         = csm         |> gpu
     end
 
-    # compute basis functions (spherical harmonics)
-    bf = basisfunc_spha(grid.x, grid.y, grid.z, collect(1:nTerm))
+    if use_gpu
+        bf_d       = Dict{Int, CuArray{T, 2}}()
+        kspha_d    = Dict{Int, CuArray{T, 2}}()
+        times_d    = Dict{Int, CuArray{T, 1}}()
+        fieldmap_d = Dict{Int, CuArray{T, 1}}()
+        csm_d      = Dict{Int, CuArray{Complex{T}, 2}}()
 
+        for gpu_id in gpus
+            CUDA.device!(gpu_id)
+            bf_d[gpu_id]       = bf       |> gpu
+            kspha_d[gpu_id]    = kspha    |> gpu
+            times_d[gpu_id]    = times    |> gpu
+            fieldmap_d[gpu_id] = fieldmap |> gpu
+            csm_d[gpu_id]      = csm      |> gpu
+        end
+    end
     if isnothing(kspha_dt)
-        func_prod = (res,xm)->(res .= prod_HighOrderOp_Kernel(xm, bf, nVox, nSam, nCha, nTerm, kspha, times, fieldmap, csm; 
-                                            nBlock=nBlock, parts=parts, use_gpu=use_gpu, verbose=verbose))
+        func_prod = (res,xm)->(res .= prod_HighOrderOp_Kernel(xm, csm_d, times_d, fieldmap_d, bf_d, kspha_d, nSam, nCha, nTerm, nVox; 
+                                            gpus=gpus, verbose=verbose))
     else # for calculation of Bx (2023, https://doi.org/10.1002/mrm.29460)
         @assert size(kspha_dt) == size(kspha) "kspha_dt must have same size as kspha"
         func_prod = (res,xm)->(res .= prod_dt_HighOrderOp_Kernel(xm, bf, nVox, nSam, nCha, nTerm, kspha, kspha_dt, times, fieldmap, csm; 
                                             nBlock=nBlock, parts=parts, use_gpu=use_gpu, verbose=verbose))
     end
-    func_ctprod = (res,ym)->(res .= ctprod_HighOrderOp_Kernel(ym, bf, nVox, nSam, nCha, nTerm, kspha, times, fieldmap, csm; 
-                                            nBlock=nBlock, parts=parts, use_gpu=use_gpu, verbose=verbose))
+    func_ctprod = (res,ym)->(res .= ctprod_HighOrderOp_Kernel(ym, csm_d, times_d, fieldmap_d, bf_d, kspha_d, nSam, nCha, nTerm, nVox; 
+                                            gpus=gpus, verbose=verbose))
     
     return HighOrderOp_Kernel{Complex{T},Nothing,Function}(
                         nRow, nCol, 
@@ -120,51 +138,6 @@ function HighOrderOp_Kernel(
                         false, false, false, 
                         Complex{T}[], Complex{T}[])
 end
-
-
-# function prep_kspha(
-#     kspha         :: AbstractArray{T, 2} , 
-#     k_nominal     :: AbstractArray{T, 2} , 
-#     nTerm         :: Int64               ;
-#     recon_terms   :: String = nothing    ,
-#     verbose       :: Bool   = false      , 
-#     ) where T<:AbstractFloat
-#     if isnothing(recon_terms)
-#         recon_terms = nTerm == 9 ? "111" : "1111"
-#     end
-#     if nTerm == 9
-#         @assert length(recon_terms) == 3 "recon_terms must be 3 digits for up to 2nd order terms"
-#         t0 = Bool(parse(Int64, recon_terms[1]))
-#         t1 = Bool(parse(Int64, recon_terms[2]))
-#         t2 = Bool(parse(Int64, recon_terms[3]))
-#         t3 = false
-#     elseif nTerm == 16
-#         @assert length(recon_terms) == 4 "recon_terms must be 4 digits for up to 3rd order terms"
-#         t0 = Bool(parse(Int64, recon_terms[1]))
-#         t1 = Bool(parse(Int64, recon_terms[2]))
-#         t2 = Bool(parse(Int64, recon_terms[3]))
-#         t3 = Bool(parse(Int64, recon_terms[4]))
-#     else
-#         @error "nTerm must be 9 or 16"
-#     end
-
-#     if t0 == false
-#         kspha[1, :] = kspha[1, :] .* 0
-#     end
-#     if t1 == false
-#         kspha[2:4, :] = k_nominal[:, :]
-#     end
-#     if t2 == false
-#         kspha[5:9, :] = kspha[5:9, :] .* 0
-#     end
-#     if t3 == false && nTerm == 16
-#         kspha[10:16, :] = kspha[10:16, :] .* 0
-#     end
-#     if verbose
-#         @info "kspha prepared for flag: $(recon_terms)" zeroth=t0 first=t1 second=t2 third=t3
-#     end
-#     return kspha
-# end
 
 
 """
@@ -226,45 +199,63 @@ end
     Forward operator for HighOrderOp_Kernel
 """
 function prod_HighOrderOp_Kernel(
-    x         :: AbstractVector{T}                   , 
-    bf        :: AbstractArray{D, 2}                 ,
-    nVox      :: Int64                               ,
-    nSam      :: Int64                               , 
-    nCha      :: Int64                               ,
-    nTerm     :: Int64                               ,
-    kspha     :: AbstractArray{D, 2}                 , 
-    times     :: AbstractVector{D}                   , 
-    fieldmap  :: AbstractVector{D}                   ,
-    csm       :: AbstractArray{Complex{D}, 2}        ;
-    nBlock    :: Int64                    = 1        , 
-    parts     :: Vector{UnitRange{Int64}} = [1:nSam] , 
-    use_gpu   :: Bool                     = false    , 
-    verbose   :: Bool                     = false    ,
+    x         :: AbstractVector{T}                         ,   # [nVox] 
+    csm       :: Dict{Int, <:AbstractArray{Complex{D}, 2}} ,   # [nVox, nCha]
+    times     :: Dict{Int, <:AbstractVector{D}}            ,   # [nSam] 
+    fieldmap  :: Dict{Int, <:AbstractVector{D}}            ,   # [nVox]
+    bf        :: Dict{Int, <:AbstractArray{D, 2}}          ,   # [nVox, nTerm]
+    kspha     :: Dict{Int, <:AbstractArray{D, 2}}          ,   # [nTerm, nSam] 
+    nSam      :: Int64                                     , 
+    nCha      :: Int64                                     ,
+    nTerm     :: Int64                                     ,
+    nVox      :: Int64                                     ;
+    gpus      :: Vector{Int} = [0]                         ,
+    verbose   :: Bool = false                              ,
     ) where {D<:AbstractFloat, T<:Union{Real,Complex}}
-    x = Vector(x)
     if verbose
-        @info "HighOrderOp_Kernel prod use_gpu=$use_gpu"
+        @info "HighOrderOp: Kernel-based prod"
     end
-    if use_gpu
-        x   = x |> gpu
-        out = CUDA.zeros(Complex{D}, nSam, nCha)
-    else
+    t_total = @elapsed begin
+        x = Vector(x)
+
         out = zeros(Complex{D}, nSam, nCha)
-    end
+        nGPU = length(gpus)
+        nSamplePerGPU = cld(nSam, nGPU)
+        tasks = []
 
+        for (i, gpu_id) in enumerate(gpus)
+            i_s = (i-1)*nSamplePerGPU + 1
+            i_e = min(i*nSamplePerGPU, nSam)
+            if i_s > nSam
+                continue
+            end
+
+            push!(tasks, Threads.@spawn begin
+                CUDA.device!(gpu_id)
+                
+                x_i        = x |> gpu
+                csm_i      = csm[gpu_id] 
+                times_i    = @view times[gpu_id][i_s:i_e] 
+                fieldmap_i = fieldmap[gpu_id]
+                bf_i       = bf[gpu_id]
+                kspha_i    = @view kspha[gpu_id][:, i_s:i_e]
+                out_i      = CUDA.zeros(Complex{D}, i_e-i_s+1, nCha)
+
+                CUDA.@sync out_i = HighOrderMRI.run_kernel_prod!(
+                    out_i, x_i, csm_i, times_i, fieldmap_i, bf_i, kspha_i,
+                    i_e-i_s+1, nCha, nTerm, nVox)
+                out[i_s:i_e, :] .= Array(out_i)
+            end)
+        end
+
+        for t in tasks
+            fetch(t)
+        end
+
+        out ./= sqrt(nVox)
+    end
     if verbose
-        CUDA.@time CUDA.@sync run_kernel_prod!(out, x, csm, times, fieldmap, bf, kspha, nSam, nCha, nTerm, nVox)
-    else
-        CUDA.@sync run_kernel_prod!(out, x, csm, times, fieldmap, bf, kspha, nSam, nCha, nTerm, nVox)
-    end
-
-    if use_gpu
-        CUDA.unsafe_free!(x)
-    end
-
-    out = out ./ sqrt(nVox)
-    if use_gpu
-        out = out |> cpu
+        println("runtime: $(round(t_total, digits=5)) [s]")
     end
     return vec(out)
 end
@@ -274,51 +265,67 @@ end
     Adjoint of prod_HighOrderOp_Kernel
 """
 function ctprod_HighOrderOp_Kernel(
-    y         :: AbstractVector{T}                   , 
-    bf        :: AbstractArray{D, 2}                 ,
-    nVox      :: Int64                               , 
-    nSam      :: Int64                               , 
-    nCha      :: Int64                               ,
-    nTerm     :: Int64                               ,
-    kspha     :: AbstractArray{D, 2}                 , 
-    times     :: AbstractVector{D}                   , 
-    fieldmap  :: AbstractVector{D}                   ,
-    csm       :: AbstractArray{Complex{D}, 2}        ;
-    nBlock    :: Int64                    = 1        , 
-    parts     :: Vector{UnitRange{Int64}} = [1:nSam] , 
-    use_gpu   :: Bool                     = false    , 
-    verbose   :: Bool                     = false    ,
+    y         :: AbstractVector{T}                         ,   # [nSam, nCha] 
+    csm       :: Dict{Int, <:AbstractArray{Complex{D}, 2}} ,   # [nVox, nCha] 
+    times     :: Dict{Int, <:AbstractVector{D}}            ,   # [nSam] 
+    fieldmap  :: Dict{Int, <:AbstractVector{D}}            ,   # [nVox]
+    bf        :: Dict{Int, <:AbstractArray{D, 2}}          ,   # [nVox, nTerm]
+    kspha     :: Dict{Int, <:AbstractArray{D, 2}}          ,   # [nTerm, nSam] 
+    nSam      :: Int64                                     , 
+    nCha      :: Int64                                     ,
+    nTerm     :: Int64                                     ,
+    nVox      :: Int64                                     ;
+    gpus      :: Vector{Int} = [0]                         ,
+    verbose   :: Bool = false                              ,
     ) where {D<:AbstractFloat, T<:Union{Real,Complex}}
-    csmC = conj.(csm)
-    y    = reshape(y, nSam, nCha)
-
     if verbose
-        @info "HighOrderOp_Kernel ctprod use_gpu=$use_gpu"
+        @info "HighOrderOp: Kernel-based ctprod"
     end
-    
-    if use_gpu
-        y   = y |> gpu
-        out = CUDA.zeros(Complex{D}, nVox, nCha)
-    else
+    t_total = @elapsed begin
+        csmC = conj.(Array(csm[first(keys(csm))]))
+        y    = reshape(y, nSam, nCha)
+
         out = zeros(Complex{D}, nVox, nCha)
-    end
+        nGPU = length(gpus)
+        nVoxPerGPU = cld(nVox, nGPU)
+        tasks = []
 
+        for (i, gpu_id) in enumerate(gpus)
+            i_s = (i-1)*nVoxPerGPU + 1
+            i_e = min(i*nVoxPerGPU, nVox)
+            if i_s > nVox
+                continue
+            end
+
+            push!(tasks, Threads.@spawn begin
+                CUDA.device!(gpu_id)
+                
+                y_i        = y |> gpu
+                csm_i      = @view csm[gpu_id][i_s:i_e, :]
+                times_i    = times[gpu_id]
+                fieldmap_i = @view fieldmap[gpu_id][i_s:i_e]
+                bf_i       = @view bf[gpu_id][i_s:i_e, :]
+                kspha_i    = kspha[gpu_id]
+                out_i      = CUDA.zeros(Complex{D}, i_e-i_s+1, nCha)
+
+                CUDA.@sync out_i = run_kernel_ctprod!(
+                    out_i, y_i, csm_i, times_i, fieldmap_i, bf_i, kspha_i,
+                    nSam, nCha, nTerm, i_e-i_s+1)
+                out[i_s:i_e, :] .= Array(out_i)
+            end)
+        end
+
+        for t in tasks
+            fetch(t)
+        end
+
+        out = out ./ sqrt(nVox)
+        out = out .* csmC
+    end
     if verbose
-        CUDA.@time CUDA.@sync run_kernel_ctprod!(out, y, csm, times, fieldmap, bf, kspha, nSam, nCha, nTerm, nVox)
-    else
-        CUDA.@sync run_kernel_ctprod!(out, y, csm, times, fieldmap, bf, kspha, nSam, nCha, nTerm, nVox)
+        println("runtime: $(round(t_total, digits=5)) [s]")
     end
-
-    if use_gpu
-        CUDA.unsafe_free!(y)
-    end
-
-    out = out ./ sqrt(nVox)
-    out = out .* csmC
-    if use_gpu
-        out = out |> cpu
-    end
-  return vec(sum(out, dims=2))
+    return vec(sum(out, dims=2))
 end
 
 

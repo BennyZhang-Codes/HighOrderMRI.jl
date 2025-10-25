@@ -2,32 +2,82 @@ function run_kernel_prod!(
     out      ::CuMatrix{Complex{T}},   # [nSam, nCha]
     x        ::CuVector{Complex{T}},   # [nVox]
     csm      ::CuMatrix{Complex{T}},   # [nVox, nCha]
-    times    ::CuVector{T}         ,   # [nSam]
+    times    ::AbstractVector{T}   ,   # [nSam]
     fieldmap ::CuVector{T}         ,   # [nVox]
     bf       ::CuMatrix{T}         ,   # [nVox, nTerm]
-    kspha    ::CuMatrix{T}         ,   # [nTerm, nSam]
+    kspha    ::AbstractMatrix{T}   ,   # [nTerm, nSam]
     nSam::D, nCha::D, nTerm::D, nVox::D,
     ) where {T<:AbstractFloat, D<:Integer}
     threads = (256) 
     blocks = (cld(nSam, 1))
-    shmem_bytes = nTerm * sizeof(T) + nCha * cld(threads[1],32) * sizeof(T) * 2
-    @cuda threads=threads blocks=blocks shmem=shmem_bytes CUDA_kernel_prod_HighOrderOp!(out, x, csm, times, fieldmap, bf, kspha, Int32(nSam), Int32(nCha), Int32(nTerm), Int32(nVox));
+    shmem_bytes = nTerm * sizeof(T) + 32 * cld(threads[1],32) * sizeof(T) * 2
+
+    nCha_pad = 0
+    nBatch = 1
+    if nCha % 32  == 0
+        nBatch = nCha ÷ 32
+    else
+        nBatch = nCha ÷ 32 + 1
+        nCha_pad = nBatch * 32 - nCha
+        nCha = nBatch * 32
+    end
+
+    if nCha_pad > 0
+        out = cat(out, zeros(Complex{T}, size(out, 1), nCha_pad); dims=2)
+        csm = cat(csm, zeros(Complex{T}, size(csm, 1), nCha_pad); dims=2)
+    end
+
+    for i = 1:nBatch
+        ch_start = (i-1) * 32 + 1
+        ch_end   = i * 32
+        @cuda threads=threads blocks=blocks shmem=shmem_bytes CUDA_kernel_prod_HighOrderOp!(
+            @view(out[:, ch_start:ch_end]), x, @view(csm[:, ch_start:ch_end]), times, fieldmap, bf, kspha, 
+            Int32(nSam), Int32(32), Int32(nTerm), Int32(nVox));
+    end
+
+    return out[:, 1:nCha-nCha_pad]
 end
 
 function run_kernel_ctprod!(
-    out      ::CuMatrix{Complex{T}},   # [nVox, nCha]
-    y        ::CuMatrix{Complex{T}},   # [nSam, nCha]  
-    csm      ::CuMatrix{Complex{T}},   # [nVox, nCha]
-    times    ::CuVector{T}         ,   # [nSam]
-    fieldmap ::CuVector{T}         ,   # [nVox]
-    bf       ::CuMatrix{T}         ,   # [nVox, nTerm]
-    kspha    ::CuMatrix{T}         ,   # [nTerm, nSam]
+    out      ::CuMatrix{Complex{T}}      ,   # [nVox, nCha]
+    y        ::CuMatrix{Complex{T}}      ,   # [nSam, nCha]  
+    csm      ::AbstractMatrix{Complex{T}},   # [nVox, nCha]
+    times    ::CuVector{T}               ,   # [nSam]
+    fieldmap ::AbstractVector{T}         ,   # [nVox]
+    bf       ::AbstractMatrix{T}         ,   # [nVox, nTerm]
+    kspha    ::CuMatrix{T}               ,   # [nTerm, nSam]
     nSam::D, nCha::D, nTerm::D, nVox::D,
     ) where {T<:AbstractFloat, D<:Integer}
     threads = (512) 
     blocks = (cld(nVox, 1))
-    shmem_bytes = nTerm * sizeof(T) + nCha * cld(threads[1],32) * sizeof(T) * 2
-    @cuda threads=threads blocks=blocks shmem=shmem_bytes CUDA_kernel_ctprod_HighOrderOp!(out, y, csm, times, fieldmap, bf, kspha, Int32(nSam), Int32(nCha), Int32(nTerm), Int32(nVox));
+    shmem_bytes = nTerm * sizeof(T) + 32 * cld(threads[1],32) * sizeof(T) * 2
+
+    nCha_pad = 0
+    nBatch = 1
+    if nCha % 32  == 0
+        nBatch = nCha ÷ 32
+    else
+        nBatch = nCha ÷ 32 + 1
+        nCha_pad = nBatch * 32 - nCha
+        nCha = nBatch * 32
+    end
+
+    if nCha_pad > 0
+        out = cat(out, zeros(Complex{T}, size(out, 1), nCha_pad); dims=2)
+          y = cat(  y, zeros(Complex{T}, size(  y, 1), nCha_pad); dims=2)
+        # csm = cat(csm, zeros(Complex{T}, size(csm, 1), nCha_pad); dims=2)
+    end
+
+    for i = 1:nBatch
+        ch_start = (i-1) * 32 + 1
+        ch_end   = i * 32
+        @cuda threads=threads blocks=blocks shmem=shmem_bytes CUDA_kernel_ctprod_HighOrderOp!(
+            @view(out[:, ch_start:ch_end]), @view(y[:, ch_start:ch_end]), csm, times, fieldmap, bf, kspha, 
+            Int32(nSam), Int32(32), Int32(nTerm), Int32(nVox));
+    end
+
+    return out[:, 1:nCha-nCha_pad]
+    # @cuda threads=threads blocks=blocks shmem=shmem_bytes CUDA_kernel_ctprod_HighOrderOp!(out, y, csm, times, fieldmap, bf, kspha, Int32(nSam), Int32(nCha), Int32(nTerm), Int32(nVox));
 end
 
 
@@ -52,10 +102,10 @@ function CUDA_kernel_prod_HighOrderOp!(
     out      ::CuDeviceMatrix{Complex{T}},   # [nSam, nCha]
     x        ::CuDeviceVector{Complex{T}},   # [nVox]
     csm      ::CuDeviceMatrix{Complex{T}},   # [nVox, nCha]
-    times    ::CuDeviceVector{T}         ,   # [nSam]
+    times    ::AbstractVector{T}         ,   # [nSam]
     fieldmap ::CuDeviceVector{T}         ,   # [nVox]
     bf       ::CuDeviceMatrix{T}         ,   # [nVox, nTerm]
-    kspha    ::CuDeviceMatrix{T}         ,   # [nTerm, nSam]
+    kspha    ::AbstractMatrix{T}         ,   # [nTerm, nSam]
     nSam::Int32, nCha::Int32, nTerm::Int32, nVox::Int32,
 ) where {T<:AbstractFloat}
     @fastmath begin
@@ -339,10 +389,10 @@ end
 function CUDA_kernel_ctprod_HighOrderOp!(
     out      ::CuDeviceMatrix{Complex{T}},   # [nVox, nCha]
     y        ::CuDeviceMatrix{Complex{T}},   # [nSam, nCha]
-    csm      ::CuDeviceMatrix{Complex{T}},   # [nVox, nCha]
+    csm      ::AbstractMatrix{Complex{T}},   # [nVox, nCha]
     times    ::CuDeviceVector{T}         ,   # [nSam]
-    fieldmap ::CuDeviceVector{T}         ,   # [nVox]
-    bf       ::CuDeviceMatrix{T}         ,   # [nVox, nTerm]
+    fieldmap ::AbstractVector{T}         ,   # [nVox]
+    bf       ::AbstractMatrix{T}         ,   # [nVox, nTerm]
     kspha    ::CuDeviceMatrix{T}         ,   # [nTerm, nSam]
     nSam::Int32, nCha::Int32, nTerm::Int32, nVox::Int32
 ) where {T<:AbstractFloat}
