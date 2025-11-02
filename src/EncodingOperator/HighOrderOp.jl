@@ -54,16 +54,16 @@ function HighOrderOp(
     grid        :: Grid{T}                                                             ,
     kspha       :: AbstractArray{T, 2}                                                 , 
     times       :: AbstractVector{T}                                                   ;
-    fieldmap    :: AbstractArray{T, N}       = zeros(T, grid.matrixSize...)            , 
+    fieldmap    :: AbstractArray{T}          = zeros(T, grid.matrixSize...)            , 
     csm         :: AbstractArray{Complex{T}} = ones(Complex{T}, grid.matrixSize..., 1) , 
-    mask        :: AbstractArray{Bool, N}    = trues(grid.matrixSize...)               ,
+    mask        :: AbstractArray{Bool}       = trues(grid.matrixSize...)               ,
     recon_terms :: String                    = nothing                                 ,
     k_nominal   :: AbstractArray{T, 2}       = kspha[2:4, :]                           ,
     kspha_dt                                 = nothing                                 ,
     nBlock      :: Int64                     = 50                                      , 
     use_gpu     :: Bool                      = true                                    , 
     verbose     :: Bool                      = false                                   , 
-    ) where {T<:AbstractFloat, N}
+    ) where {T<:AbstractFloat}
 
     nX, nY, nZ = grid.nX, grid.nY, grid.nZ
     nTerm, nSam = size(kspha)
@@ -72,12 +72,9 @@ function HighOrderOp(
     nCol = prod(grid.matrixSize)
     nVox = sum(mask)
 
-    if N == 2
-        @assert nZ == 1 "grid is 3D, but mask and fieldmap are 2D arrays"
-        fieldmap = reshape(fieldmap, nX, nY, 1)
-        csm      = reshape(csm, nX, nY, 1, nCha)
-        mask     = reshape(mask, nX, nY, 1)
-    end
+    fieldmap = ndims(fieldmap) == 2 ? reshape(fieldmap, nX, nY, 1) : fieldmap
+    csm      = ndims(csm) == 3      ? reshape(csm, nX, nY, 1, nCha) : csm
+    mask     = ndims(mask) == 2     ? reshape(mask, nX, nY, 1) : mask
 
     @info "HighOrderOp nRow=$nRow [nSam*nCha=$nSam*$nCha], nCol=$nCol [prod(matrixSize=$((nX,nY,nZ))], nVox in mask=$nVox, nBlock=$nBlock, use_gpu=$use_gpu"
 
