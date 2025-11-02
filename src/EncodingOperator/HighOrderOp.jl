@@ -122,7 +122,7 @@ function HighOrderOp(
                                             nBlock=nBlock, parts=parts, use_gpu=use_gpu, verbose=verbose))
     else # for calculation of Bx (2023, https://doi.org/10.1002/mrm.29460)
         @assert size(kspha_dt) == size(kspha) "kspha_dt must have same size as kspha"
-        func_prod = (res,xm)->(res .= prod_dt_HighOrderOp(xm, bf, nVox, nSam, nCha, kspha, kspha_dt, times, fieldmap, csm; 
+        func_prod = (res,xm)->(res .= prod_dt_HighOrderOp(xm, mask, bf, nVox, nSam, nCha, kspha, kspha_dt, times, fieldmap, csm; 
                                             nBlock=nBlock, parts=parts, use_gpu=use_gpu, verbose=verbose))
     end
     func_ctprod = (res,ym)->(res .= ctprod_HighOrderOp(ym, mask, bf, nVox, nSam, nCha, kspha, times, fieldmap, csm; 
@@ -189,6 +189,7 @@ end
 """
 function prod_dt_HighOrderOp(
     x         :: AbstractVector{T}                   , 
+    mask      :: AbstractVector{Bool}                ,   # [prod(MatrixSize)]
     bf        :: AbstractArray{D, 2}                 ,
     nVox      :: Int64                               ,
     nSam      :: Int64                               , 
@@ -203,7 +204,7 @@ function prod_dt_HighOrderOp(
     use_gpu   :: Bool                     = false    , 
     verbose   :: Bool                     = false    ,
     ) where {D<:AbstractFloat, T<:Union{Real,Complex}}
-    x = Vector(x)
+    x = Vector(x)[mask.!=0]
     if verbose
         @info "HighOrderOp prod_dt nBlock=$nBlock, use_gpu=$use_gpu"
     end

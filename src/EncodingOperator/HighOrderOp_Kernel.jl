@@ -141,7 +141,7 @@ function HighOrderOp_Kernel(
                                             gpus=gpus, verbose=verbose))
     else # for calculation of Bx (2023, https://doi.org/10.1002/mrm.29460)
         @assert size(kspha_dt) == size(kspha) "kspha_dt must have same size as kspha"
-        func_prod = (res,xm)->(res .= prod_dt_HighOrderOp(xm, bf, nVox, nSam, nCha, kspha, kspha_dt, times, fieldmap, csm; 
+        func_prod = (res,xm)->(res .= prod_dt_HighOrderOp(xm, mask, bf, nVox, nSam, nCha, kspha, kspha_dt, times, fieldmap, csm; 
                                             nBlock=nBlock, parts=parts, use_gpu=use_gpu, verbose=verbose))
     end
     func_ctprod = (res,ym)->(res .= ctprod_HighOrderOp_Kernel(ym, mask, csm_d, times_d, fieldmap_d, bf_d, kspha_d, nSam, nCha, nTerm, nVox; 
@@ -154,61 +154,6 @@ function HighOrderOp_Kernel(
                         0, 0, 0, 
                         false, false, false, 
                         Complex{T}[], Complex{T}[])
-end
-
-
-"""
-    prod_dt_HighOrderOp_Kernel
-    for calculation of Bx (2023, https://doi.org/10.1002/mrm.29460)
-"""
-function prod_dt_HighOrderOp_Kernel(
-    x         :: AbstractVector{T}                   , 
-    bf        :: AbstractArray{D, 2}                 ,
-    nVox      :: Int64                               ,
-    nSam      :: Int64                               , 
-    nCha      :: Int64                               ,
-    nTerm     :: Int64                               ,
-    kspha     :: AbstractArray{D, 2}                 , 
-    kspha_dt  :: AbstractArray{D, 2}                 ,
-    times     :: AbstractVector{D}                   , 
-    fieldmap  :: AbstractVector{D}                   ,
-    csm       :: AbstractArray{Complex{D}, 2}        ;
-    nBlock    :: Int64                    = 1        , 
-    parts     :: Vector{UnitRange{Int64}} = [1:nSam] , 
-    use_gpu   :: Bool                     = false    , 
-    verbose   :: Bool                     = false    ,
-    ) where {D<:AbstractFloat, T<:Union{Real,Complex}}
-    x = Vector(x)
-    if verbose
-        @info "HighOrderOp_Kernel prod_dt nBlock=$nBlock, use_gpu=$use_gpu"
-    end
-    if use_gpu
-        x   = x |> gpu
-        out = CUDA.zeros(Complex{D}, nSam, nCha)
-    else
-        out = zeros(Complex{D}, nSam, nCha)
-    end
-    progress_bar = Progress(nBlock)
-    for (block, p) = enumerate(parts)
-        ϕ = @view(times[p]) .* fieldmap' .+ (bf * @view(kspha[:,p]))'
-        e = exp.(2*1im*pi*ϕ) .* (bf * @view(kspha_dt[:,p]))' .* (2*1im*pi)
-        out[p, :] =  e * (x .* csm)
-        if verbose
-            next!(progress_bar, showvalues=[(:nBlock, block)])
-        end
-        if use_gpu
-            CUDA.unsafe_free!(ϕ)
-            CUDA.unsafe_free!(e)
-        end
-    end
-    if use_gpu
-        CUDA.unsafe_free!(x)
-    end
-    out = out ./ sqrt(nVox)
-    if use_gpu
-        out = out |> cpu
-    end
-    return vec(out)
 end
 
 
