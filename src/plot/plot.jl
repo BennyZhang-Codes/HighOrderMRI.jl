@@ -18,3 +18,6 @@ export plt_kspha, plt_ksphas
 
 include("plt_bfield.jl")
 export plt_bfield, plt_bfield_com
+
+include("mosaic.jl")
+export mosaic

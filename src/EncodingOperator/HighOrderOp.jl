@@ -1,9 +1,12 @@
 export HighOrderOp
 
 """
-# A Julia implementation of the expanded signal encoding model.
-- This implementation using GPU with CUDA.jl to accelerate the calculation.
-- If the GPU memory is not enough, the calculation can be divided into blocks.
+# Array-based implementation of the expanded signal encoding model.
+- support 2D or 3D reconstruction with up to third-order high-order dynamic field changes.
+- support GPU acceleration: Array-based programming in CUDA.jl.
+- support multiple coil channels.
+- support off-resonance correction.
+- support masking of target reconstruction region.
 """
 mutable struct HighOrderOp{T,F1,F2} <: HOOp{T}
     nrow       :: Int
@@ -37,9 +40,10 @@ LinearOperators.storage_type(op::HighOrderOp) = typeof(op.Mv5)
 * `times::AbstractVector{T}`        - [nSam], time points for trajectory.
 
 # Keywords:
-* `fieldmap::Matrix{T}`             - [nX, nY], fieldmap for off-resonance correction.
-* `csm::Array{Complex{T}, 3}`       - [nX, nY, nCha], coil sensitivity map.
-* `recon_terms::String`             - digits flag (e.g. "111") to indicate terms to be used in the HOOp.
+* `fieldmap::Matrix{T}`             - [nX, nY, nZ], fieldmap for off-resonance correction.
+* `csm::Array{Complex{T}, 3}`       - [nX, nY, nZ, nCha], coil sensitivity map.
+* `mask::AbstractArray{Bool, 2}`    - [nX, nY, nZ], mask for target recon region.
+* `recon_terms::String`             - digits flag (e.g. "1111") to indicate terms to be used in the HOOp.
 * `k_nominal::AbstractArray{T, 2}`  - [nSam, 3], nominal kspace trajectory.
 * `kspha_dt`                        - [nSam, nTerm], time-derivative of the coefficients of field dynamics.
 * `nBlock::Int64`                   - split trajectory into `nBlock` blocks to avoid memory overflow.
@@ -47,37 +51,45 @@ LinearOperators.storage_type(op::HighOrderOp) = typeof(op.Mv5)
 * `verbose::Bool`                   - print progress information(default: `false`).
 """
 function HighOrderOp(
-    grid        :: Grid{T}                                                          ,
-    kspha       :: AbstractArray{T, 2}                                              , 
-    times       :: AbstractVector{T}                                                ;
-    fieldmap    :: AbstractArray{T, 2}  = zeros(T,(grid.nX, grid.nY))               , 
-    csm         :: Array{Complex{T}, 3} = ones(Complex{T},(grid.nX, grid.nY)..., 1) , 
-    recon_terms :: String               = nothing                                   ,
-    k_nominal   :: AbstractArray{T, 2}  = kspha[2:4, :]                             ,
-    kspha_dt                            = nothing                                   ,
-    nBlock      :: Int64                = 50                                        , 
-    use_gpu     :: Bool                 = true                                      , 
-    verbose     :: Bool                 = false                                     , 
+    grid        :: Grid{T}                                                             ,
+    kspha       :: AbstractArray{T, 2}                                                 , 
+    times       :: AbstractVector{T}                                                   ;
+    fieldmap    :: AbstractArray{T}          = zeros(T, grid.matrixSize...)            , 
+    csm         :: AbstractArray{Complex{T}} = ones(Complex{T}, grid.matrixSize..., 1) , 
+    mask        :: AbstractArray{Bool}       = trues(grid.matrixSize...)               ,
+    recon_terms :: String                    = nothing                                 ,
+    k_nominal   :: AbstractArray{T, 2}       = kspha[2:4, :]                           ,
+    kspha_dt                                 = nothing                                 ,
+    nBlock      :: Int64                     = 50                                      , 
+    use_gpu     :: Bool                      = true                                    , 
+    verbose     :: Bool                      = false                                   , 
     ) where {T<:AbstractFloat}
 
     nX, nY, nZ = grid.nX, grid.nY, grid.nZ
     nTerm, nSam = size(kspha)
-    nCha = size(csm, 3)
+    nCha = size(csm)[end]
     nRow = nSam * nCha
-    nCol = nVox = prod(grid.matrixSize)
-    if verbose
-        @info "HighOrderOp nRow=$nRow, nCol=$nCol, nSam=$nSam, nCha=$nCha, nBlock=$nBlock, use_gpu=$use_gpu"
-    end
+    nCol = prod(grid.matrixSize)
+    nVox = sum(mask)
 
-    @assert nTerm              in [9, 16]   "kspha must have 9 or 16 terms (row) for up to 2nd or 3rd order terms"
-    @assert size(k_nominal, 1) == 3         "k_nominal must have 3 terms (row) for kx, ky, kz"
-    @assert size(fieldmap)     == (nX, nY)  "FieldMap must have same size as $((nX, nY)) in grid"
-    @assert size(csm)[1:2]     == (nX, nY)  "Coil-SensitivityMap must have same size as $((nX, nY)) in grid"
-    
+    fieldmap = ndims(fieldmap) == 2 ? reshape(fieldmap, nX, nY, 1) : fieldmap
+    csm      = ndims(csm) == 3      ? reshape(csm, nX, nY, 1, nCha) : csm
+    mask     = ndims(mask) == 2     ? reshape(mask, nX, nY, 1) : mask
+
+    @info "HighOrderOp nRow=$nRow [nSam*nCha=$nSam*$nCha], nCol=$nCol [prod(matrixSize=$((nX,nY,nZ))], nVox in mask=$nVox, nBlock=$nBlock, use_gpu=$use_gpu"
+
+    @assert nTerm              in [9, 16]       "kspha must have 9 or 16 terms (row) for up to 2nd or 3rd order terms"
+    @assert size(k_nominal, 1) == 3             "k_nominal must have 3 terms (row) for kx, ky, kz"
+    @assert size(fieldmap)     == (nX, nY, nZ)  "FieldMap must have same size as $((nX, nY, nZ)) in grid"
+    @assert size(csm)[1:3]     == (nX, nY, nZ)  "Coil-SensitivityMap must have same size as $((nX, nY, nZ)) in grid"
+    @assert size(mask)         == (nX, nY, nZ)  "Mask must have same size as $((nX, nY, nZ)) in grid"
+
+    mask     = vec(mask)                               # [prod(MatrixSize)]
+
     # prepare data 
     kspha    = prep_kspha(kspha, k_nominal, nTerm; recon_terms=recon_terms)
-    csm      = reshape(csm, nX*nY, nCha)      # [nX * nY, nCha]
-    fieldmap = vec(fieldmap)                  # [nVox]
+    csm      = reshape(csm, :, nCha)[mask.!=0, :]      # [nVox, nCha]
+    fieldmap = vec(fieldmap)[mask.!=0]                 # [nVox]
 
     # divide the calculation into blocks (nBlock) to avoid memory overflow
     nBlock = nBlock > nSam  ? nSam  : nBlock  # nBlock must be <= k
@@ -88,28 +100,29 @@ function HighOrderOp(
         push!(parts, n*nBlock+1:nSam)
     end
     
+    # compute basis functions (spherical harmonics)
+    bf = basisfunc_spha(grid.x[mask.!=0], grid.y[mask.!=0], grid.z[mask.!=0], collect(1:nTerm))
+
     # if use_gpu, move all the variables to GPU
     if use_gpu
         kspha       = kspha       |> gpu
         kspha_dt    = kspha_dt    |> gpu
-        grid        = grid        |> gpu
+        bf          = bf          |> gpu
         times       = times       |> gpu
         fieldmap    = fieldmap    |> gpu
         csm         = csm         |> gpu
     end
 
-    # compute basis functions (spherical harmonics)
-    bf = basisfunc_spha(grid.x, grid.y, grid.z, collect(1:nTerm))
 
     if isnothing(kspha_dt)
-        func_prod = (res,xm)->(res .= prod_HighOrderOp(xm, bf, nVox, nSam, nCha, kspha, times, fieldmap, csm; 
+        func_prod = (res,xm)->(res .= prod_HighOrderOp(xm, mask, bf, nVox, nSam, nCha, kspha, times, fieldmap, csm; 
                                             nBlock=nBlock, parts=parts, use_gpu=use_gpu, verbose=verbose))
     else # for calculation of Bx (2023, https://doi.org/10.1002/mrm.29460)
         @assert size(kspha_dt) == size(kspha) "kspha_dt must have same size as kspha"
-        func_prod = (res,xm)->(res .= prod_dt_HighOrderOp(xm, bf, nVox, nSam, nCha, kspha, kspha_dt, times, fieldmap, csm; 
+        func_prod = (res,xm)->(res .= prod_dt_HighOrderOp(xm, mask, bf, nVox, nSam, nCha, kspha, kspha_dt, times, fieldmap, csm; 
                                             nBlock=nBlock, parts=parts, use_gpu=use_gpu, verbose=verbose))
     end
-    func_ctprod = (res,ym)->(res .= ctprod_HighOrderOp(ym, bf, nVox, nSam, nCha, kspha, times, fieldmap, csm; 
+    func_ctprod = (res,ym)->(res .= ctprod_HighOrderOp(ym, mask, bf, nVox, nSam, nCha, kspha, times, fieldmap, csm; 
                                             nBlock=nBlock, parts=parts, use_gpu=use_gpu, verbose=verbose))
     
     return HighOrderOp{Complex{T},Nothing,Function}(
@@ -173,6 +186,7 @@ end
 """
 function prod_dt_HighOrderOp(
     x         :: AbstractVector{T}                   , 
+    mask      :: AbstractVector{Bool}                ,   # [prod(MatrixSize)]
     bf        :: AbstractArray{D, 2}                 ,
     nVox      :: Int64                               ,
     nSam      :: Int64                               , 
@@ -187,7 +201,7 @@ function prod_dt_HighOrderOp(
     use_gpu   :: Bool                     = false    , 
     verbose   :: Bool                     = false    ,
     ) where {D<:AbstractFloat, T<:Union{Real,Complex}}
-    x = Vector(x)
+    x = Vector(x)[mask.!=0]
     if verbose
         @info "HighOrderOp prod_dt nBlock=$nBlock, use_gpu=$use_gpu"
     end
@@ -226,6 +240,7 @@ end
 """
 function prod_HighOrderOp(
     x         :: AbstractVector{T}                   , 
+    mask      :: AbstractVector{Bool}                ,   # [prod(MatrixSize)]
     bf        :: AbstractArray{D, 2}                 ,
     nVox      :: Int64                               ,
     nSam      :: Int64                               , 
@@ -239,7 +254,7 @@ function prod_HighOrderOp(
     use_gpu   :: Bool                     = false    , 
     verbose   :: Bool                     = false    ,
     ) where {D<:AbstractFloat, T<:Union{Real,Complex}}
-    x = Vector(x)
+    x = Vector(x)[mask.!=0]
     if verbose
         @info "HighOrderOp prod nBlock=$nBlock, use_gpu=$use_gpu"
     end
@@ -278,6 +293,7 @@ end
 """
 function ctprod_HighOrderOp(
     y         :: AbstractVector{T}                   , 
+    mask      :: AbstractVector{Bool}                ,   # [prod(MatrixSize)]
     bf        :: AbstractArray{D, 2}                 ,
     nVox      :: Int64                               , 
     nSam      :: Int64                               , 
@@ -326,7 +342,9 @@ function ctprod_HighOrderOp(
     if use_gpu
         out = out |> cpu
     end
-  return vec(sum(out, dims=2))
+    x = zeros(Complex{D}, size(mask))
+    x[mask] .= vec(sum(out, dims=2))
+    return x
 end
 
 
