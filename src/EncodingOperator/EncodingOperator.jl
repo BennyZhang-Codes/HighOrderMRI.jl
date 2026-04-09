@@ -5,3 +5,7 @@ include("HighOrderOp.jl")         # Array-based implementation
 
 include("CUDA_kernel.jl")         # Kernel functions for CUDA
 include("HighOrderOp_Kernel.jl")  # Kernel-based implementation
+
+
+include("perform_rsvd.jl")          # randomized SVD for low-rank approximation
+include("HighOrderNFFTOp.jl")       # NFFT-based implementation
