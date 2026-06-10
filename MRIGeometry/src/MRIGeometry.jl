@@ -3,18 +3,19 @@ module MRIGeometry
 using LinearAlgebra
 using Statistics
 using PyPlot
+using PyCall
 
-include("PCS.jl")
+using MRIBase
+
+include("PCS2DCS.jl")
+
+include("geometry/geo.jl")
+
 
 include("Grid.jl")
-export generate_rps_grid
+export gen_RPS_grid, RPS2PCS, PCS2RPS, RPS2DCS, DCS2RPS
 
-
-include("Geometry.jl")
-export Geometry
-
-include("plot/plt_grid.jl")
-export plt_grid
+include("plot/plot.jl")
 
 
 
