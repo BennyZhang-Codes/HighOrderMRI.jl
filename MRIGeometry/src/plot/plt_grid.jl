@@ -16,17 +16,22 @@ automatically map to the Readout (Red), Phase (Green), and Slice (Blue) logical 
 - `color_facecolor`: Background color of the plot (default: "#1F1F1F").
 - `color_label`: Color for axes, ticks, and labels (default: "#CCCCCC").
 - `plot_RPS_vectors`: Boolean. If true, draws the true 3D bounding vectors for the Readout (Red), Phase (Green), and Slice (Blue) directions starting from the matrix origin (1,1,1).
+- `elev`: Float. Initial camera elevation angle in degrees (default: 15).
+- `azim`: Float. Initial camera azimuth angle in degrees (default: 135).
 """
 function plt_grid(grid::Array{T,4}; step::Int=4, space::Symbol=:DCS,   
     title              = ""       ,
-    width              = 5        ,
-    height             = 5        ,
-    fontsize_title     = 10       ,
-    fontsize_label     = 8        ,
-    fontsize_tick      = 6        ,
+    width              = 18       ,
+    height             = 15       ,
+    fontsize_title     = 12       ,
+    fontsize_label     = 10       ,
+    fontsize_tick      = 8        ,
     color_facecolor    = "#1F1F1F",
     color_label        = "#CCCCCC",
-    plot_RPS_vectors   = true     ) where T <: Real
+    plot_RPS_vectors   = true     ,
+    elev               = 15       ,  
+    azim               = 135      ,
+    ) where T <: Real
     grid_sub = @views grid[1:step:end, 1:step:end, 1:step:end, :]
     coords = reshape(grid_sub, :, 3)
     x, y, z = coords[:, 1], coords[:, 2], coords[:, 3]
@@ -93,27 +98,21 @@ function plt_grid(grid::Array{T,4}; step::Int=4, space::Symbol=:DCS,
 
     ax.scatter(x_mm, y_mm, z_mm, s=2, alpha=1, c=colors)
 
-    if space == :XYZ
-        ax.set_xlabel("X [mm]"       , color=color_label, fontsize=fontsize_label)
-        ax.set_ylabel("Y [mm]"       , color=color_label, fontsize=fontsize_label)
-        ax.set_zlabel("Z [mm]"       , color=color_label, fontsize=fontsize_label)
-        ax.set_title(title == "" ? "XYZ Gradient Coordinate System" : title, color=color_label, fontsize=fontsize_title)
-    elseif space == :RPS
-        ax.set_xlabel("Readout (R) [mm]", color=color_label, fontsize=fontsize_label)
-        ax.set_ylabel("Phase (P) [mm]"  , color=color_label, fontsize=fontsize_label)
-        ax.set_zlabel("Slice (S) [mm]"  , color=color_label, fontsize=fontsize_label)
-        ax.set_title(title == "" ? "Readout-Phase-Slice (RPS)" : title, color=color_label, fontsize=fontsize_title)
-    elseif space == :DCS
-        ax.set_xlabel("X (Right) [mm]"  , color=color_label, fontsize=fontsize_label)
-        ax.set_ylabel("Y (Up) [mm]"     , color=color_label, fontsize=fontsize_label)
-        ax.set_zlabel("Z (Out) [mm]"    , color=color_label, fontsize=fontsize_label)
+    if space == :DCS
+        ax.set_xlabel("X (Right) [mm]"   , color=color_label, fontsize=fontsize_label)
+        ax.set_ylabel("Y (Up) [mm]"      , color=color_label, fontsize=fontsize_label)
+        ax.set_zlabel("Z (Out) [mm]"     , color=color_label, fontsize=fontsize_label)
         ax.set_title(title == "" ? "Device Coordinate System (DCS)" : title, color=color_label, fontsize=fontsize_title)
     elseif space == :PCS
         ax.set_xlabel("dSag (Left) [mm]" , color=color_label, fontsize=fontsize_label)
         ax.set_ylabel("dCor (Post) [mm]" , color=color_label, fontsize=fontsize_label)
         ax.set_zlabel("dTra (Head) [mm]" , color=color_label, fontsize=fontsize_label)
         ax.set_title(title == "" ? "Patient Coordinate System (PCS)" : title, color=color_label, fontsize=fontsize_title)
-    else
+    elseif space == :RPS
+        ax.set_xlabel("Readout (R) [mm]" , color=color_label, fontsize=fontsize_label)
+        ax.set_ylabel("Phase (P) [mm]"   , color=color_label, fontsize=fontsize_label)
+        ax.set_zlabel("Slice (S) [mm]"   , color=color_label, fontsize=fontsize_label)
+        ax.set_title(title == "" ? "Readout-Phase-Slice (RPS)" : title, color=color_label, fontsize=fontsize_title)
         error("Unsupported coordinate space: choose :XYZ, :RPS, :DCS or :PCS")
     end
 
@@ -152,25 +151,29 @@ function plt_grid(grid::Array{T,4}; step::Int=4, space::Symbol=:DCS,
         # ---- Draw the Readout vector: from index [1, 1, 1] to [end, 1, 1] ----
         if nx_full > 1
             v_r = (grid[end, 1, 1, :] .- grid[1, 1, 1, :]) .* 1e3 * 1.1
-            ax.quiver(cx, cy, cz, v_r[1], v_r[2], v_r[3], color="#FF5555", arrow_length_ratio=0.05, linewidth=1.5)
-            ax.text(cx + v_r[1], cy + v_r[2], cz + v_r[3], " Readout", color="#FF5555", fontsize=fontsize_label)
+            ax.quiver(cx, cy, cz, v_r[1], v_r[2], v_r[3], color="#FF5252", arrow_length_ratio=0.05, linewidth=1.5)
+            ax.text(cx + v_r[1], cy + v_r[2], cz + v_r[3], " Readout", color="#FF5252", fontsize=fontsize_label)
         end
 
         # ---- Draw the Phase vector: from index [1, 1, 1] to [1, end, 1] ----
         if ny_full > 1
             v_p = (grid[1, end, 1, :] .- grid[1, 1, 1, :]) .* 1e3 * 1.1
-            ax.quiver(cx, cy, cz, v_p[1], v_p[2], v_p[3], color="#55FF55", arrow_length_ratio=0.05, linewidth=1.5)
-            ax.text(cx + v_p[1], cy + v_p[2], cz + v_p[3], " Phase", color="#55FF55", fontsize=fontsize_label)
+            ax.quiver(cx, cy, cz, v_p[1], v_p[2], v_p[3], color="#00E676", arrow_length_ratio=0.05, linewidth=1.5)
+            ax.text(cx + v_p[1], cy + v_p[2], cz + v_p[3], " Phase", color="#00E676", fontsize=fontsize_label)
         end
 
         # ---- Draw the Slice vector: from index [1, 1, 1] to [1, 1, end] ----
         if nz_full > 1
             v_s = (grid[1, 1, end, :] .- grid[1, 1, 1, :]) .* 1e3 * 1.1
-            ax.quiver(cx, cy, cz, v_s[1], v_s[2], v_s[3], color="#5555FF", arrow_length_ratio=0.05, linewidth=1.5)
-            ax.text(cx + v_s[1], cy + v_s[2], cz + v_s[3], " Slice", color="#5555FF", fontsize=fontsize_label)
+            ax.quiver(cx, cy, cz, v_s[1], v_s[2], v_s[3], color="#448AFF", arrow_length_ratio=0.05, linewidth=1.5)
+            ax.text(cx + v_s[1], cy + v_s[2], cz + v_s[3], " Slice", color="#448AFF", fontsize=fontsize_label)
         end
     end
 
-    fig.tight_layout(pad=0.1)
+    ax.set_box_aspect((1, 1, 1))
+
+    ax.view_init(elev=elev, azim=azim)
+
+    fig.subplots_adjust(left=0.05, right=0.95, bottom=0.05, top=0.95)
     return fig
 end

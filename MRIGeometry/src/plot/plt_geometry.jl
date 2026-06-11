@@ -12,20 +12,25 @@ Highly optimized: Computes only the 8 extreme corner points per geometry instead
 - `plot_RPS_vectors`: Boolean. Draws the RPS physical spanning vectors (default: false).
 - `vol_alpha`: Float. Transparency of the volume faces (default: 0.15).
 - `colors`: Vector of Strings. Palette used for different geometries.
+- `elev`: Float. Initial camera elevation angle in degrees (default: 15).
+- `azim`: Float. Initial camera azimuth angle in degrees (default: 135).
 """
 function plt_geometry(geos::Vector{<:Geometry}; 
     space::Symbol      = :DCS,
     plot_RPS_vectors   = false,
     title              = "",
-    width              = 6,
-    height             = 6,
-    fontsize_title     = 10,
-    fontsize_label     = 8,
-    fontsize_tick      = 6,
-    color_facecolor    = "#1F1F1F",
-    color_label        = "#CCCCCC",
+    width              = 18,
+    height             = 15,
+    fontsize_title     = 12,
+    fontsize_label     = 10,
+    fontsize_tick      = 8,
+    color_facecolor    = "#FFFFFF",
+    color_label        = "#000000",
+    color_pane         = "#FFFFFF", 
     vol_alpha          = 0.15,
-    colors             = ["#4488FF", "#FF8844", "#44FF88", "#FF44FF", "#FFFF44", "#44FFFF"])
+    colors             = ["#00A8E8", "#FF6B6B", "#06D6A0", "#FFD166", "#8A4FFF", "#F38181"],
+    elev               = 15,  
+    azim               = 135) 
 
     # Setup PyPlot Figure
     fig = figure(figsize=(width/2.53999863, height/2.53999863), facecolor=color_facecolor)
@@ -34,7 +39,7 @@ function plt_geometry(geos::Vector{<:Geometry};
     
     # Theme colors for axes
     ax.xaxis.line.set_color(color_label); ax.yaxis.line.set_color(color_label); ax.zaxis.line.set_color(color_label)
-    ax.xaxis.pane.set_color(color_label); ax.yaxis.pane.set_color(color_label); ax.zaxis.pane.set_color(color_label)
+    ax.xaxis.pane.set_color(color_pane); ax.yaxis.pane.set_color(color_pane); ax.zaxis.pane.set_color(color_pane)
     ax.xaxis.pane.set_edgecolor(color_label); ax.yaxis.pane.set_edgecolor(color_label); ax.zaxis.pane.set_edgecolor(color_label)
     ax.tick_params(axis="x", colors=color_label, labelsize=fontsize_tick)
     ax.tick_params(axis="y", colors=color_label, labelsize=fontsize_tick)
@@ -61,7 +66,7 @@ function plt_geometry(geos::Vector{<:Geometry};
         end
 
         # ==========================================================
-        # 2. Transform the miniature grid to the target physical space (DCS / PCS)
+        # 2. Transform the miniature grid to the target physical space
         # ==========================================================
         if space == :DCS
             R_mat = geo.R_RPS_DCS
@@ -83,47 +88,49 @@ function plt_geometry(geos::Vector{<:Geometry};
 
         # ==========================================================
         # 3. Extract the true physical faces and vectors
-        # (Supports perfect half-pixel extension via spacing and R_mat)
         # ==========================================================
         fov = get_fov_faces(grid_target, spacing=spacing, R=R_mat)
         global_points = hcat(global_points, fov.points)
 
         # ==========================================================
-        # 4. Render the cuboids (Poly3DCollection)
+        # 4. Render the cuboids
         # ==========================================================
         face_color = colors[(i - 1) % length(colors) + 1]
         poly = art3d.Poly3DCollection(fov.faces, alpha=vol_alpha, 
                                       facecolor=face_color, 
                                       edgecolor=face_color, 
-                                      linewidths=1.0)
+                                      linewidths=1.2,
+                                      zorder=2) # Keep boxes slightly lower in rendering priority
         ax.add_collection3d(poly)
 
         # ==========================================================
-        # 5. Render physical orientation axes (conditionally based on MatrixSize)
+        # 5. Render physical orientation axes 
         # ==========================================================
         if plot_RPS_vectors
             orig = fov.vectors.origin
             vr, vp, vs = fov.vectors.r, fov.vectors.p, fov.vectors.s
             
             # Mark the origin
-            ax.scatter([orig[1]], [orig[2]], [orig[3]], color=face_color, s=20)
+            ax.scatter([orig[1]], [orig[2]], [orig[3]], color="#FFD700", s=50, alpha=1.0, zorder=15)
+            
+            text_offset = 1.0
             
             # Draw the Readout vector
             if geo.MatrixSize[1] > 1
-                ax.quiver(orig[1], orig[2], orig[3], vr[1], vr[2], vr[3], color="#FF5555", arrow_length_ratio=0.1)
-                ax.text(orig[1]+vr[1], orig[2]+vr[2], orig[3]+vr[3], " Readout", color="#FF5555", fontsize=fontsize_label)
+                ax.quiver(orig[1], orig[2], orig[3], vr[1], vr[2], vr[3], color="#FF5252", arrow_length_ratio=0.1, linewidth=1.5, zorder=5)
+                ax.text(orig[1] + vr[1]*text_offset, orig[2] + vr[2]*text_offset, orig[3] + vr[3]*text_offset, " Readout", color="#FF5252", fontsize=fontsize_label, zorder=10)
             end
             
             # Draw the Phase vector
             if geo.MatrixSize[2] > 1
-                ax.quiver(orig[1], orig[2], orig[3], vp[1], vp[2], vp[3], color="#55FF55", arrow_length_ratio=0.1)
-                ax.text(orig[1]+vp[1], orig[2]+vp[2], orig[3]+vp[3], " Phase", color="#55FF55", fontsize=fontsize_label)
+                ax.quiver(orig[1], orig[2], orig[3], vp[1], vp[2], vp[3], color="#00E676", arrow_length_ratio=0.1, linewidth=1.5, zorder=5)
+                ax.text(orig[1] + vp[1]*text_offset, orig[2] + vp[2]*text_offset, orig[3] + vp[3]*text_offset, " Phase", color="#00E676", fontsize=fontsize_label, zorder=10)
             end
             
             # Draw the Slice vector
             if geo.MatrixSize[3] > 1
-                ax.quiver(orig[1], orig[2], orig[3], vs[1], vs[2], vs[3], color="#5555FF", arrow_length_ratio=0.1)
-                ax.text(orig[1]+vs[1], orig[2]+vs[2], orig[3]+vs[3], " Slice", color="#5555FF", fontsize=fontsize_label)
+                ax.quiver(orig[1], orig[2], orig[3], vs[1], vs[2], vs[3], color="#448AFF", arrow_length_ratio=0.1, linewidth=1.5, zorder=5)
+                ax.text(orig[1] + vs[1]*text_offset, orig[2] + vs[2]*text_offset, orig[3] + vs[3]*text_offset, " Slice", color="#448AFF", fontsize=fontsize_label, zorder=10)
             end
         end
     end
@@ -132,20 +139,22 @@ function plt_geometry(geos::Vector{<:Geometry};
     # 6. Axes labels and Adaptive Viewport
     # ==========================================================
     if space == :DCS
-        ax.set_xlabel("X (Right) [mm]", color=color_label, fontsize=fontsize_label)
-        ax.set_ylabel("Y (Up) [mm]", color=color_label, fontsize=fontsize_label)
-        ax.set_zlabel("Z (Out) [mm]", color=color_label, fontsize=fontsize_label)
+        ax.set_xlabel("X (Right) [mm]"   , color=color_label, fontsize=fontsize_label)
+        ax.set_ylabel("Y (Up) [mm]"      , color=color_label, fontsize=fontsize_label)
+        ax.set_zlabel("Z (Out) [mm]"     , color=color_label, fontsize=fontsize_label)
         ax.set_title(title == "" ? "Device Coordinate System (DCS)" : title, color=color_label, fontsize=fontsize_title)
     elseif space == :PCS
-        ax.set_xlabel("dSag (Left) [mm]", color=color_label, fontsize=fontsize_label)
-        ax.set_ylabel("dCor (Post) [mm]", color=color_label, fontsize=fontsize_label)
-        ax.set_zlabel("dTra (Head) [mm]", color=color_label, fontsize=fontsize_label)
+        ax.set_xlabel("dSag (Left) [mm]" , color=color_label, fontsize=fontsize_label)
+        ax.set_ylabel("dCor (Post) [mm]" , color=color_label, fontsize=fontsize_label)
+        ax.set_zlabel("dTra (Head) [mm]" , color=color_label, fontsize=fontsize_label)
         ax.set_title(title == "" ? "Patient Coordinate System (PCS)" : title, color=color_label, fontsize=fontsize_title)
     elseif space == :RPS
-            ax.set_xlabel("Readout (R) [mm]", color=color_label, fontsize=fontsize_label)
-            ax.set_ylabel("Phase (P) [mm]"  , color=color_label, fontsize=fontsize_label)
-            ax.set_zlabel("Slice (S) [mm]"  , color=color_label, fontsize=fontsize_label)
-            ax.set_title(title == "" ? "Readout-Phase-Slice (RPS)" : title, color=color_label, fontsize=fontsize_title)
+        ax.set_xlabel("Readout (R) [mm]" , color=color_label, fontsize=fontsize_label)
+        ax.set_ylabel("Phase (P) [mm]"   , color=color_label, fontsize=fontsize_label)
+        ax.set_zlabel("Slice (S) [mm]"   , color=color_label, fontsize=fontsize_label)
+        ax.set_title(title == "" ? "Readout-Phase-Slice (RPS)" : title, color=color_label, fontsize=fontsize_title)
+    else
+        error("Unsupported coordinate space: choose :RPS, :DCS or :PCS")
     end
 
     # Calculate the maximum bounding box based on all collected vertices
@@ -154,7 +163,9 @@ function plt_geometry(geos::Vector{<:Geometry};
     zmin, zmax = minimum(global_points[3, :]), maximum(global_points[3, :])
 
     xrange = xmax - xmin; yrange = ymax - ymin; zrange = zmax - zmin
-    padded_range = maximum([xrange, yrange, zrange, eps()]) * 1.3 
+    
+    # FIX Issue 2: Increased padding slightly to 1.1 to prevent edge clipping
+    padded_range = maximum([xrange, yrange, zrange, eps()]) * 1.1
 
     xmid = (xmin + xmax) / 2; ymid = (ymin + ymax) / 2; zmid = (zmin + zmax) / 2
 
@@ -162,7 +173,11 @@ function plt_geometry(geos::Vector{<:Geometry};
     ax.set_ylim(ymid - padded_range/2, ymid + padded_range/2)
     ax.set_zlim(zmid - padded_range/2, zmid + padded_range/2)
 
-    fig.tight_layout(pad=0.1)
+    ax.set_box_aspect((1, 1, 1))
+
+    ax.view_init(elev=elev, azim=azim)
+
+    fig.subplots_adjust(left=0.05, right=0.95, bottom=0.05, top=0.95)
     return fig
 end
 
