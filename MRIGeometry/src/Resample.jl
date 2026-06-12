@@ -1,25 +1,43 @@
 """
-    resample(src_data::AbstractArray{T, 3}, geo_src::Geometry, geo_tgt::Geometry; oversample=[1, 1, 1], space=:PCS) where T
+    resample(src_data::AbstractArray{T, 3}, geo_src::Geometry, geo_tgt::Geometry; kwargs...) where T
 
 Accurately resamples 3D source data to match the target sequence geometry using Sub-voxel Volumetric Integration.
 
 # Arguments
 - `oversample::AbstractVector{<:Integer}`: Sub-voxel integration points along `[Readout, Phase, Slice]`. Default `[1, 1, 1]`.
-- `space::Symbol`: Target registration space. `:PCS` (Patient Coordinate System, default) or `:DCS` (Device Coordinate System).
+- `space::Symbol`: Target registration space. `:PCS` (default) or `:DCS`.
+- `is_mask::Bool`: Set to `true` if resampling categorical labels (e.g., phantoms, segmentations). Uses Nearest Neighbor interpolation, disables oversampling, and returns an `Int` array. Default `false`.
 """
 function resample(
     src_data   :: AbstractArray{T, 3}, 
     geo_src    :: Geometry, 
     geo_tgt    :: Geometry;
     oversample :: AbstractVector{<:Integer} = [1, 1, 1],
-    space      :: Symbol = :PCS
+    space      :: Symbol = :PCS,
+    is_mask    :: Bool = false
 ) where T
     length(oversample) == 3 || error("oversample must be a 3-element vector [R, P, S]")
 
-    # 1. Build continuous interpolator (extrapolate out-of-bounds with 0)
-    itp = extrapolate(interpolate(src_data, BSpline(Linear())), zero(T))
+    # Mask Protection: Disable volume integration to prevent label corruption
+    if is_mask && oversample != [1, 1, 1]
+        @warn "Volumetric integration (oversample) is disabled for masks to prevent averaging categorical labels."
+        oversample = [1, 1, 1]
+    end
 
-    # 2. Generate target grid & Transform to source RPS space based on chosen physical space
+    # 1. Build continuous interpolator
+    # Nearest Neighbor for masks, Linear for continuous signals
+    interp_type = is_mask ? BSpline(Constant()) : BSpline(Linear())
+    
+    # Interpolations.jl works best with floats. Auto-cast integers to Float32 safely.
+    if T <: Integer
+        itp = extrapolate(interpolate(Float32.(src_data), interp_type), 0.0f0)
+        WorkType = Float32
+    else
+        itp = extrapolate(interpolate(src_data, interp_type), zero(T))
+        WorkType = T
+    end
+
+    # 2. Generate target grid & Transform to source RPS space
     tgt_rps = gen_RPS_grid(geo_tgt)
     
     if space == :PCS
@@ -59,19 +77,18 @@ function resample(
         idx += 1
     end
 
-    out_flat = zeros(T, K)
+    out_flat = zeros(WorkType, K)
 
-    # 5. High-speed evaluation with volumetric integration
+    # 5. High-speed evaluation
     for i in 1:K
         r_base, p_base, s_base = pts_src[i, 1], pts_src[i, 2], pts_src[i, 3]
-        v_sum = zero(T)
+        v_sum = zero(WorkType)
         
         for shift in shifts
             r_m = r_base + shift[1]
             p_m = p_base + shift[2]
             s_m = s_base + shift[3]
 
-            # Float indexing logic: idx = x / dx + (N + 1) / 2
             idx_r = r_m / dx_src[1] + (Nx + 1) / 2
             idx_p = p_m / dx_src[2] + (Ny + 1) / 2
             idx_s = Nz > 1 ? (s_m / dx_src[3] + (Nz + 1) / 2) : 1.0
@@ -82,30 +99,84 @@ function resample(
         out_flat[i] = v_sum / n_smps
     end
 
-    return reshape(out_flat, geo_tgt.MatrixSize...)
+    out_reshaped = reshape(out_flat, geo_tgt.MatrixSize...)
+
+    # 6. Safe Output Casting
+    if is_mask
+        return round.(Int, real.(out_reshaped)) # Ensure purely integer outputs for masks
+    else
+        return T <: Integer ? round.(T, out_reshaped) : out_reshaped
+    end
 end
 
 """
     resample(src_data::AbstractArray{T, 4}, geo_src::Geometry, geo_tgt::Geometry; kwargs...) where T
 
-Wrapper for resampling multi-channel (4D) data (e.g., Coil-Sensitivity Maps).
+Wrapper for resampling multi-channel (4D) data.
 """
 function resample(
-    src_data   :: AbstractArray{T, 4}, 
-    geo_src    :: Geometry, 
-    geo_tgt    :: Geometry;
-    oversample :: AbstractVector{<:Integer} = [1, 1, 1],
-    space      :: Symbol = :PCS
+    src_data :: AbstractArray{T, 4}, 
+    geo_src  :: Geometry, 
+    geo_tgt  :: Geometry;
+    kwargs...
 ) where T
+    # Dynamically determine pre-allocation type based on kwargs
+    is_mask = haskey(kwargs, :is_mask) ? kwargs[:is_mask] : false
+    OutType = is_mask ? Int : T
+
     tgt_sz = geo_tgt.MatrixSize
     n_cha  = size(src_data, 4)
-    out    = zeros(T, tgt_sz[1], tgt_sz[2], tgt_sz[3], n_cha)
+    out    = zeros(OutType, tgt_sz[1], tgt_sz[2], tgt_sz[3], n_cha)
     
     for c in 1:n_cha
         out[:, :, :, c] = resample(
             @views(src_data[:, :, :, c]), geo_src, geo_tgt; 
-            oversample=oversample, space=space
+            kwargs...
         )
+    end
+    
+    return out
+end
+
+"""
+    resample(src_data::AbstractArray{T, 3}, geo_src::Geometry, geo_tgts::Vector{<:Geometry}; kwargs...) where T
+
+Resamples source data for multiple target geometries independently (Multi-slice / Multi-slab).
+"""
+function resample(
+    src_data :: AbstractArray{T, 3}, 
+    geo_src  :: Geometry, 
+    geo_tgts :: Vector{<:Geometry};
+    kwargs...
+) where T
+    is_mask = haskey(kwargs, :is_mask) ? kwargs[:is_mask] : false
+    OutType = is_mask ? Int : T
+    out = Vector{Array{OutType, 3}}(undef, length(geo_tgts))
+    
+    Threads.@threads for i in eachindex(geo_tgts)
+        out[i] = resample(src_data, geo_src, geo_tgts[i]; kwargs...)
+    end
+    
+    return out
+end
+
+"""
+    resample(src_data::AbstractArray{T, 4}, geo_src::Geometry, geo_tgts::Vector{<:Geometry}; kwargs...) where T
+
+Multi-geometry resampling wrapper for 4D data.
+"""
+function resample(
+    src_data :: AbstractArray{T, 4}, 
+    geo_src  :: Geometry, 
+    geo_tgts :: Vector{<:Geometry};
+    kwargs...
+) where T
+    is_mask = haskey(kwargs, :is_mask) ? kwargs[:is_mask] : false
+    OutType = is_mask ? Int : T
+    out = Vector{Array{OutType, 4}}(undef, length(geo_tgts))
+    
+    Threads.@threads for i in eachindex(geo_tgts)
+        out[i] = resample(src_data, geo_src, geo_tgts[i]; kwargs...)
     end
     
     return out
