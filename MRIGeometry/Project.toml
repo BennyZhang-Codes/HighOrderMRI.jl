@@ -4,6 +4,7 @@ authors = ["Jinyuan Zhang <823573476@qq.com>"]
 version = "0.1.0"
 
 [deps]
+Interpolations = "a98d9a8b-a2ab-59e6-89dd-64a1c18fca59"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 MRIBase = "f7771a9a-6e57-4e71-863b-6e4b6a2f17df"
 Pkg = "44cfe95a-1eb2-52ea-b672-e2afdf69b78f"

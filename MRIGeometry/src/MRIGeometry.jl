@@ -4,6 +4,7 @@ using LinearAlgebra
 using Statistics
 using PyPlot
 using PyCall
+using Interpolations
 
 using MRIBase
 
@@ -17,8 +18,8 @@ export gen_RPS_grid, RPS2PCS, PCS2RPS, RPS2DCS, DCS2RPS
 
 include("plot/plot.jl")
 
-
-
+include("Resample.jl")
+export resample
 
 #Package version
 using Pkg
