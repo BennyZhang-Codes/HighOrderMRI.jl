@@ -113,11 +113,13 @@ end
     resample(src_data::AbstractArray{T, 4}, geo_src::Geometry, geo_tgt::Geometry; kwargs...) where T
 
 Wrapper for resampling multi-channel (4D) data.
+If `normalize_csm=true`, applies Root-Sum-of-Squares (RSS) normalization across the 4th dimension (coils) to preserve energy for SENSE reconstruction.
 """
 function resample(
     src_data :: AbstractArray{T, 4}, 
     geo_src  :: Geometry, 
     geo_tgt  :: Geometry;
+    normalize_csm :: Bool = false,
     kwargs...
 ) where T
     # Dynamically determine pre-allocation type based on kwargs
@@ -134,7 +136,25 @@ function resample(
             kwargs...
         )
     end
-    
+
+    # 2. CSM RSS Normalization & NaN safety check
+    if normalize_csm
+        if is_mask
+            @warn "normalize_csm is enabled, but is_mask=true. Normalization is intended for complex coil maps."
+        end
+        # Calculate L2 norm across coils (dimension 4)
+        norm_map = sqrt.(sum(abs.(out).^2, dims=4))
+        
+        # Apply normalization using broadcast fusion (@.)
+        @. out = out / (norm_map + 1e-8)
+        
+        # Safe, non-allocating NaN replacement
+        for i in eachindex(out)
+            if isnan(out[i])
+                out[i] = zero(OutType)
+            end
+        end
+    end
     return out
 end
 
@@ -164,11 +184,13 @@ end
     resample(src_data::AbstractArray{T, 4}, geo_src::Geometry, geo_tgts::Vector{<:Geometry}; kwargs...) where T
 
 Multi-geometry resampling wrapper for 4D data.
+Automatically propagates `normalize_csm` logic for per-slice / per-slab RSS preservation.
 """
 function resample(
     src_data :: AbstractArray{T, 4}, 
     geo_src  :: Geometry, 
     geo_tgts :: Vector{<:Geometry};
+    normalize_csm :: Bool = false,
     kwargs...
 ) where T
     is_mask = haskey(kwargs, :is_mask) ? kwargs[:is_mask] : false
@@ -176,7 +198,7 @@ function resample(
     out = Vector{Array{OutType, 4}}(undef, length(geo_tgts))
     
     Threads.@threads for i in eachindex(geo_tgts)
-        out[i] = resample(src_data, geo_src, geo_tgts[i]; kwargs...)
+        out[i] = resample(src_data, geo_src, geo_tgts[i]; normalize_csm=normalize_csm, kwargs...)
     end
     
     return out
