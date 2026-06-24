@@ -5,6 +5,9 @@ A Julia package for high-order MRI reconstruction.
 """
 module HighOrderMRI
 
+using Reexport
+@reexport using MRIGeometry
+
 using MRIReco
 using RegularizedLeastSquares
 using LinearOperators
@@ -37,6 +40,8 @@ include("EncodingOperator/EncodingOperator.jl")
 include("Recon/Recon.jl")
 
 include("Synchronization/Synchronization.jl")
+
+include("GIRF/GIRF.jl") 
 
 include("plot/plot.jl")
 

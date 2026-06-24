@@ -2,7 +2,7 @@
 
 julia_version = "1.10.10"
 manifest_format = "2.0"
-project_hash = "bc562eafbba43f32b0371d9676351b822329887d"
+project_hash = "13e7eb30431acd4c568c8fefd5c1c23144d4c273"
 
 [[deps.AbstractFFTs]]
 deps = ["LinearAlgebra"]
@@ -254,6 +254,12 @@ weakdeps = ["SparseArrays"]
 git-tree-sha1 = "1c52c8e2673edc030191177ff1aee42d25149acb"
 uuid = "ae650224-84b6-46f8-82ea-d812ca08434e"
 version = "3.2.0"
+
+[[deps.CodecZlib]]
+deps = ["TranscodingStreams", "Zlib_jll"]
+git-tree-sha1 = "962834c22b66e32aa10f7611c08c8ca4e20749a9"
+uuid = "944b1d66-785c-5afd-91f1-9de20f533193"
+version = "0.7.8"
 
 [[deps.ColorTypes]]
 deps = ["FixedPointNumbers", "Random"]
@@ -756,6 +762,12 @@ git-tree-sha1 = "085cc7b8873c752001e178b693e0aa25f8c0246a"
 uuid = "f7771a9a-6e57-4e71-863b-6e4b6a2f17df"
 version = "0.4.6"
 
+[[deps.MRIGeometry]]
+deps = ["Interpolations", "LinearAlgebra", "MRIBase", "NIfTI", "Pkg", "PyCall", "PyPlot", "Statistics"]
+path = "MRIGeometry"
+uuid = "8276fe9c-2863-4be0-a306-77caa5a26818"
+version = "0.1.0"
+
 [[deps.MRIOperators]]
 deps = ["Adapt", "LinearAlgebra", "LinearOperatorCollection", "LinearOperators", "MRIBase", "NFFT", "OhMyThreads", "Printf", "Reexport", "StatsBase", "TSVD", "Wavelets"]
 git-tree-sha1 = "0abba0db38406c7a1e8b444b163ff50b90b696fb"
@@ -840,6 +852,12 @@ deps = ["AbstractFFTs", "AbstractNFFTs", "FFTW", "LinearAlgebra"]
 git-tree-sha1 = "e20ac21560b314a7c38c4cd2fdcece34c66f36b6"
 uuid = "7424e34d-94f7-41d6-98a0-85abaf1b6c91"
 version = "0.2.7"
+
+[[deps.NIfTI]]
+deps = ["Base64", "CodecZlib", "MappedArrays", "Mmap", "TranscodingStreams"]
+git-tree-sha1 = "942e51e23e469e551a7e70f0d92b9955d9e9b620"
+uuid = "a3a9e032-41b5-5fc4-967a-a6b7a19844d3"
+version = "0.6.2"
 
 [[deps.NVTX]]
 deps = ["JuliaNVTXCallbacks_jll", "Libdl", "NVTX_jll"]
@@ -1296,6 +1314,11 @@ version = "0.1.6"
 
     [deps.Tracy.weakdeps]
     TracyProfiler_jll = "0c351ed6-8a68-550e-8b79-de6f926da83c"
+
+[[deps.TranscodingStreams]]
+git-tree-sha1 = "0c45878dcfdcfa8480052b6ab162cdd138781742"
+uuid = "3bb67fe8-82b1-5028-8e26-92a6c54297fa"
+version = "0.11.3"
 
 [[deps.UUIDs]]
 deps = ["Random", "SHA"]
