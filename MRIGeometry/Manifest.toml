@@ -2,7 +2,7 @@
 
 julia_version = "1.10.10"
 manifest_format = "2.0"
-project_hash = "5fa9bf14d4b674e68cdbd8ba64446810f2db0d44"
+project_hash = "d972ea9898165f105088ba0dac599d3387eb1d08"
 
 [[deps.AbstractFFTs]]
 deps = ["LinearAlgebra"]
@@ -61,6 +61,12 @@ weakdeps = ["SparseArrays"]
 
     [deps.ChainRulesCore.extensions]
     ChainRulesCoreSparseArraysExt = "SparseArrays"
+
+[[deps.CodecZlib]]
+deps = ["TranscodingStreams", "Zlib_jll"]
+git-tree-sha1 = "962834c22b66e32aa10f7611c08c8ca4e20749a9"
+uuid = "944b1d66-785c-5afd-91f1-9de20f533193"
+version = "0.7.8"
 
 [[deps.ColorTypes]]
 deps = ["FixedPointNumbers", "Random"]
@@ -236,6 +242,11 @@ git-tree-sha1 = "1e0228a030642014fe5cfe68c2c0a818f9e3f522"
 uuid = "1914dd2f-81c6-5fcd-8719-6d5c9610ff09"
 version = "0.5.16"
 
+[[deps.MappedArrays]]
+git-tree-sha1 = "0ee4497a4e80dbd29c058fcee6493f5219556f40"
+uuid = "dbb5928d-eab1-5f90-85c2-b9b0edb7c900"
+version = "0.4.3"
+
 [[deps.Markdown]]
 deps = ["Base64"]
 uuid = "d6f4376e-aef5-505a-96c1-9c027394607a"
@@ -257,6 +268,12 @@ deps = ["AbstractFFTs", "AbstractNFFTs", "FFTW", "LinearAlgebra"]
 git-tree-sha1 = "e20ac21560b314a7c38c4cd2fdcece34c66f36b6"
 uuid = "7424e34d-94f7-41d6-98a0-85abaf1b6c91"
 version = "0.2.7"
+
+[[deps.NIfTI]]
+deps = ["Base64", "CodecZlib", "MappedArrays", "Mmap", "TranscodingStreams"]
+git-tree-sha1 = "942e51e23e469e551a7e70f0d92b9955d9e9b620"
+uuid = "a3a9e032-41b5-5fc4-967a-a6b7a19844d3"
+version = "0.6.2"
 
 [[deps.NetworkOptions]]
 uuid = "ca575930-c2e3-43a9-ace4-1e988b2c1908"
@@ -408,6 +425,11 @@ version = "1.10.0"
 [[deps.Test]]
 deps = ["InteractiveUtils", "Logging", "Random", "Serialization"]
 uuid = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[[deps.TranscodingStreams]]
+git-tree-sha1 = "0c45878dcfdcfa8480052b6ab162cdd138781742"
+uuid = "3bb67fe8-82b1-5028-8e26-92a6c54297fa"
+version = "0.11.3"
 
 [[deps.UUIDs]]
 deps = ["Random", "SHA"]

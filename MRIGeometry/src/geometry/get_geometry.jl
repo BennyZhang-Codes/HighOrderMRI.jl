@@ -49,7 +49,8 @@ function get_geometry(
             D.(MatrixSize), 
             PatientPosition,
             T.(T_PCS),
-            T.(R_RPS_PCS)
+            T.(R_RPS_PCS),
+            D(bundle.idx_slice + 1),  # ISMRMRD's slice indices start at 0
         )
     end
 

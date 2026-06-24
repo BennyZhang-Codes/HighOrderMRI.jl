@@ -8,6 +8,9 @@ using Interpolations
 
 using MRIBase
 
+using NIfTI
+
+
 include("PCS2DCS.jl")
 
 include("geometry/geo.jl")
@@ -20,6 +23,9 @@ include("plot/plot.jl")
 
 include("Resample.jl")
 export resample
+
+include("ExportNIfTI.jl")
+export export_nifti
 
 #Package version
 using Pkg
