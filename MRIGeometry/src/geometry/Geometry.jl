@@ -17,6 +17,7 @@
 - `R_RPS_PCS`: (`::Matrix{T}`) Rotation matrix from logical RPS to Patient PCS.
 - `R_PCS_DCS`: (`::Matrix{T}`) Rotation matrix from Patient PCS to Device DCS.
 - `R_RPS_DCS`: (`::Matrix{T}`) Rotation matrix from logical RPS to Device DCS.
+- `R_Nominal_RPS`: (`::Matrix{T}`) Vendor-specific polarity matrix mapping Nominal design to true RPS.
 - `Idx_Slice`: (`::Int`) 1-based index of the current slice/slab in the scan.
 """
 mutable struct Geometry{T <: AbstractFloat, D <: Integer}
@@ -30,6 +31,7 @@ mutable struct Geometry{T <: AbstractFloat, D <: Integer}
     R_RPS_PCS       :: Matrix{T}
     R_PCS_DCS       :: Matrix{T}
     R_RPS_DCS       :: Matrix{T}
+    R_Nominal_RPS   :: Matrix{T}
     Idx_Slice       :: D
 end
 
@@ -52,10 +54,13 @@ function Geometry(
     ) where {T <: AbstractFloat, D <: Integer}
     SystemVendor = uppercase(SystemVendor)
 
-    R_PCS_DCS   = MRIGeometry.PCS2DCS.TRANSFORMATIONS[SystemVendor][PatientPosition]
+    R_PCS_DCS   = MRIGeometry.RotMat.PCS2DCS[SystemVendor][PatientPosition]
     R_RPS_DCS   = R_PCS_DCS * R_RPS_PCS
     T_DCS       = R_PCS_DCS * T_PCS
-    
+
+    # Extract baseline polarity mapping automatically based on vendor
+    R_Nominal_RPS = MRIGeometry.RotMat.NOMINAL2RPS[SystemVendor]
+
     return Geometry{T, D}(
         SystemVendor,
         Dimension, 
@@ -67,6 +72,7 @@ function Geometry(
         R_RPS_PCS,
         R_PCS_DCS,
         R_RPS_DCS,
+        R_Nominal_RPS,
         Idx_Slice,
     )
 end
@@ -84,5 +90,6 @@ Base.show(io::IO, geo::Geometry{T, D}) where {T, D} = begin
     println(io, "R_RPS_PCS       : ", geo.R_RPS_PCS                 )
     println(io, "R_PCS_DCS       : ", geo.R_PCS_DCS                 )
     println(io, "R_RPS_DCS       : ", geo.R_RPS_DCS                 )
+    println(io, "R_Nominal_RPS   : ", geo.R_Nominal_RPS             )
     println(io, "Idx_Slice       : ", geo.Idx_Slice                 )
 end

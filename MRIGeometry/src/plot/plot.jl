@@ -5,3 +5,6 @@ include("get_fov_faces.jl")
 
 include("plt_geometry.jl")
 export plt_geometry
+
+include("plt_grad.jl")
+export plt_grad

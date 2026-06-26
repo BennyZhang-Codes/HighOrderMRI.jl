@@ -11,7 +11,7 @@ using MRIBase
 using NIfTI
 
 
-include("PCS2DCS.jl")
+include("RotMat.jl")
 
 include("geometry/geo.jl")
 
@@ -20,7 +20,7 @@ include("Grid.jl")
 export gen_RPS_grid, RPS2PCS, PCS2RPS, RPS2DCS, DCS2RPS
 
 include("GradConversion.jl")
-export grad_DCS2RPS, grad_RPS2DCS
+export grad_Nominal2DCS, grad_DCS2Nominal
 
 include("plot/plot.jl")
 
