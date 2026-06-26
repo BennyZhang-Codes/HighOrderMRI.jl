@@ -21,3 +21,7 @@ export plt_bfield, plt_bfield_com
 
 include("mosaic.jl")
 export mosaic
+
+
+include("plt_grad.jl")
+export plt_grad

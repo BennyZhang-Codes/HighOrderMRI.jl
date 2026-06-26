@@ -5,14 +5,18 @@ A Julia package for high-order MRI reconstruction.
 """
 module HighOrderMRI
 
+using Base.Threads
+
 using Reexport
 @reexport using MRIGeometry
+import MRIGeometry: plt_grad
 
 using MRIReco
 using RegularizedLeastSquares
 using LinearOperators
 using LinearAlgebra
 using PyPlot
+using PyCall
 
 # using Parameters
 using CUDA

@@ -1,56 +1,79 @@
 """
-    apply_girf(G_DCS_nom::AbstractArray{T, N}, Hw::AbstractArray; xyz_dim::Int=1, point_dim::Int=2) where {T, N}
+    apply_girf(G_DCS_nom::AbstractArray{T, N}, Hw::AbstractArray; dim_spatial::Int=1, dim_time::Int=2, rbw::Float64=1.0) where {T, N}
 
 Applies the Gradient Impulse Response Function (GIRF) model in the frequency domain 
-to predict actual waveforms. Supports arbitrary multi-dimensional arrays (e.g., handling 
-multiple echoes, dynamic scans, or slices automatically via multi-threading acceleration).
+to predict actual waveforms. 
 
 # Arguments
 - `G_DCS_nom`: N-dimensional nominal physical gradient array.
-- `Hw`: Frequency-domain GIRF model array (e.g., [Nfreq, Nout, 3]).
-- `xyz_dim`: The dimension corresponding to the spatial gradient axes (X, Y, Z). Default is 1.
-- `point_dim`: The dimension corresponding to the time points (nPoint). Default is 2.
+- `Hw`: Frequency-domain GIRF model array (e.g., [nFreq, 3, nOut]). Assumes DC component is centered (fftshift-ed).
+- `dim_spatial`: Dimension corresponding to the spatial gradient axes (X, Y, Z). Default is 1.
+- `dim_time`: Dimension corresponding to the time points (nPoint). Default is 2.
+- `rbw`: Relative bandwidth (0 to 1.0). Nulls high-frequency components outside this ratio to prevent noise amplification (Default: 1.0, no filtering).
 
 # Returns
-- `G_act_all`: Predicted array with the same number of dimensions, replacing the size of 
-               `xyz_dim` with `Nout` (typically 16 for 0th-3rd order spherical harmonics or 3).
+- `G_act_all`: Predicted array replacing the size of `dim_spatial` with `nOut` (e.g., 16 SH channels).
 """
-function apply_girf(G_DCS_nom::AbstractArray{T, N}, Hw::AbstractArray; xyz_dim::Int=1, point_dim::Int=2) where {T, N}
-    size(G_DCS_nom, xyz_dim) == 3 || throw(ArgumentError("Input gradient must have 3 channels along xyz_dim."))
+function apply_girf(
+    G_DCS_nom   :: AbstractArray{T, N}, 
+    Hw          :: AbstractArray      ; 
+    dim_spatial :: Int     = 1        , 
+    dim_time    :: Int     = 2        , 
+    rbw         :: Float64 = 1.0
+) where {T, N}
+    size(G_DCS_nom, dim_spatial) == 3 || throw(ArgumentError("Input gradient must have 3 channels along dim_spatial."))
     
-    Nfreq, Nout, Nin_Hw = size(Hw)
-    @assert Nin_Hw == 3 "GIRF model must have 3 input channels (X, Y, Z)"
+    # Modify parsing order to adapt Hw dimensions to [nFreq, 3, nOut]
+    nFreq_orig, nIn_Hw, nOut = size(Hw)
+    @assert nIn_Hw == 3 "GIRF model must have 3 input channels (X, Y, Z)"
 
-    nPoint = size(G_DCS_nom, point_dim)
-    if nPoint > Nfreq
-        @warn "The number of points ($nPoint) exceeds the frequency points in the GIRF model ($Nfreq). Truncation will occur!"
-    end
+    nPoint = size(G_DCS_nom, dim_time)
     
-    # 1. Permute dims so that xyz_dim is 1st and point_dim is 2nd
-    other_dims = Tuple(setdiff(1:N, (xyz_dim, point_dim)))
-    perm = (xyz_dim, point_dim, other_dims...)
+    # 1. DSP Optimization: Calculate optimal FFT length (avoid wrap-around & speed up)
+    N_fft = nextprod([2, 3, 5], max(nPoint, nFreq_orig))
+    
+    # 2. Hw Resolution Expansion (Time-domain padding)
+    if N_fft > nFreq_orig
+        @info "GIRF Resolution Expansion: Padding Hw from $nFreq_orig to $N_fft points to safely cover gradient length."
+        
+        # ifftshift must be applied before converting back to time domain
+        hw_t = ifft(ifftshift(Hw, 1), 1)
+        # Modify initialization dimension order of padded array to [N_fft, 3, nOut]
+        hw_t_padded = zeros(eltype(Hw), N_fft, nIn_Hw, nOut)
+        
+        # Split and retain causal part (first half) and non-causal part (second half), zero-padding in the middle
+        half_N = nFreq_orig ÷ 2
+        hw_t_padded[1:half_N, :, :] .= hw_t[1:half_N, :, :]
+        hw_t_padded[end - (nFreq_orig - half_N) + 2 : end, :, :] .= hw_t[half_N + 2 : end, :, :]
+        
+        # Convert back to frequency domain and re-apply fftshift to bring DC to the center
+        Hw_work = fftshift(fft(hw_t_padded, 1), 1)
+    else
+        Hw_work = Hw
+    end
+
+    # 3. Align & Flatten Dimensions
+    other_dims = Tuple(setdiff(1:N, (dim_spatial, dim_time)))
+    perm = (dim_spatial, dim_time, other_dims...)
     G_perm = permutedims(G_DCS_nom, perm)
     
-    # 2. Reshape to 3D: (3, nPoint, N_other) to generalize loop iterations
     N_other = N > 2 ? prod(size(G_perm)[3:end]) : 1
     G_3d = reshape(G_perm, 3, nPoint, N_other)
     
-    # 3. Apply GIRF using multi-threading
-    out_3d = zeros(eltype(G_3d), Nout, nPoint, N_other)
+    # 4. Multi-threading Core Prediction
+    out_3d = zeros(eltype(G_3d), nOut, nPoint, N_other)
     
     Threads.@threads for i in 1:N_other
-        out_3d[:, :, i] = _apply_girf_core(view(G_3d, :, :, i), Hw, nPoint, Nfreq, Nout)
+        out_3d[:, :, i] = _apply_girf_core(view(G_3d, :, :, i), Hw_work, nPoint, N_fft, nOut, rbw)
     end
     
-    # 4. Reshape and inverse permute
-    # Target shape before inv_perm: (Nout, nPoint, size(G_DCS_nom)[other_dims]...)
-    out_sz_perm = (Nout, nPoint, (size(G_DCS_nom, d) for d in other_dims)...)
+    # 5. Restore Original Dimensions
+    out_sz_perm = (nOut, nPoint, (size(G_DCS_nom, d) for d in other_dims)...)
     out_perm = reshape(out_3d, out_sz_perm)
     
-    # Construct inverse permutation array
     inv_perm_array = zeros(Int, N)
-    inv_perm_array[xyz_dim] = 1
-    inv_perm_array[point_dim] = 2
+    inv_perm_array[dim_spatial] = 1
+    inv_perm_array[dim_time] = 2
     for (i, d) in enumerate(other_dims)
         inv_perm_array[d] = i + 2
     end
@@ -59,56 +82,66 @@ function apply_girf(G_DCS_nom::AbstractArray{T, N}, Hw::AbstractArray; xyz_dim::
 end
 
 """
-    _apply_girf_core(G_2d::AbstractMatrix, Hw::AbstractArray, nPoint::Int, Nfreq::Int, Nout::Int)
+    _apply_girf_core(...)
 
-(Internal) Core 2D thread-safe kernel for applying GIRF computation over time/frequency.
+(Internal) Core 2D thread-safe kernel for applying GIRF computation over frequency.
 """
-function _apply_girf_core(G_2d::AbstractMatrix, Hw::AbstractArray, nPoint::Int, Nfreq::Int, Nout::Int)
-    if nPoint > Nfreq
-        grad_padded = G_2d[:, 1:Nfreq]
-    else
-        grad_padded = zeros(eltype(G_2d), 3, Nfreq)
-        grad_padded[:, 1:nPoint] .= G_2d
+function _apply_girf_core(G_2d::AbstractMatrix, Hw_work::AbstractArray, nPoint::Int, N_fft::Int, nOut::Int, rbw::Float64)
+    # Safely pad gradient to N_fft 
+    grad_padded = zeros(eltype(G_2d), 3, N_fft)
+    grad_padded[:, 1:nPoint] .= G_2d
+
+    # Transform to frequency domain and SHIFT DC to center
+    Grad_freq = fftshift(fft(grad_padded, 2), 2)
+    
+    # Apply Relative Bandwidth (rbw) Low-Pass Filter
+    if rbw < 1.0
+        nzpts = round(Int, N_fft * (1.0 - rbw) / 2.0)
+        if nzpts > 0
+            Grad_freq[:, 1:nzpts] .= 0
+            Grad_freq[:, (N_fft - nzpts + 1):N_fft] .= 0
+        end
     end
 
-    Grad_freq = fft(grad_padded, 2)
-    Out_freq = zeros(Complex{eltype(G_2d)}, Nout, Nfreq)
+    Out_freq = zeros(Complex{eltype(G_2d)}, nOut, N_fft)
 
-    # Performance optimization: Fast contiguous memory access for inner SIMD loop
+    # SIMD optimized frequency-domain multiplication
     for i in 1:3
-        for o in 1:Nout
-            @inbounds @simd for f in 1:Nfreq
-                Out_freq[o, f] += Hw[f, o, i] * Grad_freq[i, f]
+        for o in 1:nOut
+            @inbounds @simd for f in 1:N_fft
+                # Adjust index to [f, i, o] to match [nFreq, 3, nOut]
+                Out_freq[o, f] += Hw_work[f, i, o] * Grad_freq[i, f]
             end
         end
     end
 
-    out_time_all = real.(ifft(Out_freq, 2))
+    # Transform back: Shift DC back to index 1, then IFFT
+    out_time_all = real.(ifft(ifftshift(Out_freq, 2), 2))
+    
+    # Return valid sequence length
     return out_time_all[:, 1:nPoint]
 end
 
 """
-    unpack_girf_channels(G_act_all::AbstractArray{T, N}; xyz_dim::Int=1) where {T, N}
+    unpack_girf_channels(G_act_all::AbstractArray{T, N}; dim_spatial::Int=1) where {T, N}
 
-(Helper function) Separates the 0th order, 1st order, and higher-order components 
+Separates the 0th order (B0), 1st order (X, Y, Z), and higher-order Spherical Harmonic (SH) components 
 from the multi-dimensional output of the GIRF model.
-
-# Arguments
-- `G_act_all`: Multi-dimensional output array from `apply_girf`.
-- `xyz_dim`: The dimension corresponding to the GIRF output channels. Default is 1.
 """
-function unpack_girf_channels(G_act_all::AbstractArray{T, N}; xyz_dim::Int=1) where {T, N}
-    Nout = size(G_act_all, xyz_dim)
+function unpack_girf_channels(G_act_all::AbstractArray{T, N}; dim_spatial::Int=1) where {T, N}
+    nOut = size(G_act_all, dim_spatial)
     
-    if Nout >= 4
-        # Using selectdim() dynamically supports arrays of any shape/dimensions
-        k0_act    = copy(selectdim(G_act_all, xyz_dim, 1:1))   
-        G_DCS_act = copy(selectdim(G_act_all, xyz_dim, 2:4))   
-        G_HO_act  = Nout > 4 ? copy(selectdim(G_act_all, xyz_dim, 5:Nout)) : nothing 
+    if nOut >= 4
+        # Channel 1: k0 (B0 field / Global phase)
+        k0_act    = copy(selectdim(G_act_all, dim_spatial, 1:1))   
+        # Channels 2-4: Linear gradients (Gx, Gy, Gz)
+        G_DCS_act = copy(selectdim(G_act_all, dim_spatial, 2:4))   
+        # Channels 5-end: Higher order Spherical Harmonics
+        G_HO_act  = nOut > 4 ? copy(selectdim(G_act_all, dim_spatial, 5:nOut)) : nothing 
         return G_DCS_act, k0_act, G_HO_act
     else
-        # Default to all being 1st-order gradients.
-        shape_k0 = ntuple(d -> d == xyz_dim ? 1 : size(G_act_all, d), N)
+        @warn "GIRF output has less than 4 channels. Treating all channels as 1st-order gradients."
+        shape_k0 = ntuple(d -> d == dim_spatial ? 1 : size(G_act_all, d), N)
         k0_act = zeros(eltype(G_act_all), shape_k0)
         return G_act_all, k0_act, nothing
     end
