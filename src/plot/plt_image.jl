@@ -118,4 +118,36 @@ function plt_image(
     return fig
 end
 
+function plt_image(
+    imgs::Vector{<:AbstractArray}; 
+    nRow               = nothing  ,
+    nCol               = nothing  ,
+    width              = 2        , # width of a single subplot
+    kwargs...
+    )
+    
+    # Determine the total number of frames in the image sequence
+    nFrame = size(imgs, 1)
+    
+    # Automatically calculate the number of rows and columns if not specified
+    if nRow === nothing || nCol === nothing
+        nRow, nCol = get_factors(nFrame)
+    end
+    
+    # Call mosaic to stitch the 3D data to a 2D matrix
+    stitched_img = mosaic(imgs; nRow=nRow, nCol=nCol)
+    
+    # Calculate total dimensions (only width is needed now)
+    total_width = width * nCol
+
+    # The underlying 2D plt_image will auto-scale the height based on the stitched_img's aspect ratio
+    fig = plt_image(
+        stitched_img;
+        width              = total_width,    
+        kwargs...
+    )
+    
+    return fig
+end
+
 

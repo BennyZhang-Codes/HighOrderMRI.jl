@@ -135,3 +135,37 @@ function plt_B0map(
     
     return fig
 end
+
+
+function plt_B0map(
+    b0map::Vector{<:AbstractArray};
+    nRow               = nothing  ,
+    nCol               = nothing  ,
+    width              = 2        , # width of a single subplot
+    kwargs...
+    )
+    
+    # Determine the total number of frames in the image sequence
+    nFrame = size(b0map, 1)
+    
+    # Automatically calculate the number of rows and columns if not specified
+    if nRow === nothing || nCol === nothing
+        nRow, nCol = get_factors(nFrame)
+    end
+    
+    # Call mosaic to stitch the 3D sequence into a 2D matrix
+    stitched_map = mosaic(b0map; nRow=nRow, nCol=nCol)
+    
+    # Calculate total dimensions (only width is needed now)
+    total_width = width * nCol
+
+    # The underlying 2D plt_B0map will auto-scale the height based on the stitched_map's aspect ratio
+    # and precisely mount the colorbar adjacent to it.
+    fig = plt_B0map(
+        stitched_map;
+        width              = total_width,    
+        kwargs...
+    )
+    
+    return fig
+end

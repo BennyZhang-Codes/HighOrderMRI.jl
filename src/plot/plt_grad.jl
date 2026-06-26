@@ -105,8 +105,8 @@ function _plot_girf_engine(
     end
     
     # Plotting the two stages vertically
-    plot_axes!(axs[1], G_input_plot, "Before GIRF: Nominal Gradient (DCS)", false)
-    plot_axes!(axs[2], G_act_plot, "After GIRF: Predicted Actual Gradient (DCS)", true)
+    plot_axes!(axs[1], G_input_plot, "Nominal Gradient (DCS)", false)
+    plot_axes!(axs[2], G_act_plot, "GIRF-Predicted Gradient (DCS)", true)
     
     axs[1].legend(fontsize=fontsize_label-2, frameon=false, loc="upper right", handlelength=1.0)
     
