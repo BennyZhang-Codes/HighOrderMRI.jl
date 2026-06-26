@@ -19,6 +19,9 @@ include("geometry/geo.jl")
 include("Grid.jl")
 export gen_RPS_grid, RPS2PCS, PCS2RPS, RPS2DCS, DCS2RPS
 
+include("GradConversion.jl")
+export grad_DCS2RPS, grad_RPS2DCS
+
 include("plot/plot.jl")
 
 include("Resample.jl")
