@@ -29,7 +29,7 @@ function get_geometry(
 
     # 4. Pre-allocate the Geometry array with strict typing 
     # Ensures maximum performance (zero allocations) and type stability in the loop
-    geometries = Vector{Geometry{T}}(undef, n_unique)
+    geometries = Vector{Geometry{T, D}}(undef, n_unique)
 
     # 5. Loop through and instantiate the Geometry for each unique slice/slab
     for (i, bundle) in enumerate(unique_geo_bundles)
