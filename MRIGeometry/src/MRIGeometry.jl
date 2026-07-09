@@ -30,6 +30,9 @@ export resample
 include("ExportNIfTI.jl")
 export export_nifti
 
+include("MultiSlab.jl")
+export merge_multislabs, merge_motsa
+
 #Package version
 using Pkg
 __VERSION__ = VersionNumber(Pkg.TOML.parsefile(joinpath(@__DIR__, "..", "Project.toml"))["version"])
