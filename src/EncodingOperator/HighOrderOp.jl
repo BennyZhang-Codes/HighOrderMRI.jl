@@ -19,13 +19,10 @@ mutable struct HighOrderOp{T,F1,F2} <: HOOp{T}
     nprod      :: Int
     ntprod     :: Int
     nctprod    :: Int
-    args5      :: Bool
-    use_prod5! :: Bool
-    allocated5 :: Bool
-    Mv5        :: Vector{T}
-    Mtu5       :: Vector{T}
+    Mv         :: Vector{T}
+    Mtu        :: Vector{T}
 end
-LinearOperators.storage_type(op::HighOrderOp) = typeof(op.Mv5)
+LinearOperators.storage_type(op::HighOrderOp) = typeof(op.Mv)
 
 
 """
@@ -130,7 +127,6 @@ function HighOrderOp(
                         false, false,
                         func_prod, nothing, func_ctprod,
                         0, 0, 0, 
-                        false, false, false, 
                         Complex{T}[], Complex{T}[])
 end
 

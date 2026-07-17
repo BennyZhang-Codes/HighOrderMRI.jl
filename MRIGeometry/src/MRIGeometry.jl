@@ -3,21 +3,35 @@ module MRIGeometry
 using LinearAlgebra
 using Statistics
 using PyPlot
+using PyCall
+using Interpolations
 
-include("PCS.jl")
+using MRIBase
+
+using NIfTI
+
+
+include("RotMat.jl")
+
+include("geometry/geo.jl")
+
 
 include("Grid.jl")
-export generate_rps_grid
+export gen_RPS_grid, RPS2PCS, PCS2RPS, RPS2DCS, DCS2RPS
 
+include("GradConversion.jl")
+export grad_Nominal2DCS, grad_DCS2Nominal
 
-include("Geometry.jl")
-export Geometry
+include("plot/plot.jl")
 
-include("plot/plt_grid.jl")
-export plt_grid
+include("Resample.jl")
+export resample
 
+include("ExportNIfTI.jl")
+export export_nifti
 
-
+include("MultiSlab.jl")
+export merge_multislabs, merge_motsa
 
 #Package version
 using Pkg
