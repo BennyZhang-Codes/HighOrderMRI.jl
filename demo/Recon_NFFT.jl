@@ -4,10 +4,10 @@ using MAT
 using CUDA
 CUDA.device!(0)
 
-T             = Float64;
+T             = Float32;
 path          = joinpath(@__DIR__, "")
-# data_mat      = "7T_2D_Spiral_1p0_200_r4.mat" 
-data_mat      = "7T_2D_EPI_1p0_200_r4.mat"  
+data_mat      = "7T_2D_Spiral_1p0_200_r4.mat" 
+# data_mat      = "7T_2D_EPI_1p0_200_r4.mat"  
 data_file     = joinpath(path, data_mat)
 
 @info "data file: $(data_file)"
@@ -65,50 +65,65 @@ recParams[:iterations]     = iter
 recParams[:solver]         = solver
 
 
-
-###########################################################################
-# recon with field dynamics measured by Dynamic Field Camera
-###########################################################################
+## recon with field dynamics measured by Dynamic Field Camera
 kdata = data["kdata"];
 kdata = kdata ./ exp.(2π*1im.*k0_ecc)';
 kdata = kdata .* exp.(-2π*1im.*ksphaMeasured[:, 1]);
 
-labelMeasured = [    "Measured"];
-recons        = [        "0111"];
-kdatas        = [         kdata];
-weights       = [weightMeasured]; 
-b0s           = [            b0];
-imgMeasured   = Array{Complex{T},3}(undef, nX, nY, length(labelMeasured));
-idxs           = collect(1:length(labelMeasured));
-for (idx, label, recon, kdata, weight, b0) in zip(idxs, labelMeasured, recons, kdatas, weights, b0s)
-    @info "[$(idx)] $(label) $(recon)"
-    HOOp = HighOrderOp(gridding, T.(ksphaMeasured'), T.(datatime); recon_terms=recon, 
-        nBlock=nBlock, csm=Complex{T}.(csm), fieldmap=T.(b0), use_gpu=use_gpu, verbose=verbose);
-    @time x = recon_HOOp(HOOp, Complex{T}.(kdata), Complex{T}.(weight), recParams);
-    imgMeasured[:, :, idx] = x;
-    fig = plt_image(abs.(x); title=label, vmaxp=99.9)
-    fig.savefig("$(path)/result/$(data_mat[1:end-4])_$(label).png", dpi=300, transparent=false, bbox_inches="tight", pad_inches=0.0)
-end
+## NFFT
+using MRIReco
+using PyPlot 
+pygui(true)
+
+csm = reshape(csm, nX, nY, nZ,  size(csm)[end]);
+kspha = ksphaMeasured;
+
+C = maximum(2*abs.(kspha[:,2:4][:]));  #Normalize k-space to -.5 to .5 for NUFFT
+C = 1000;
+
+nSample_adc = 29000;
 
 
-###########################################################################
-# recon with nominal trajectory
-###########################################################################
-kdata = data["kdata"];
+k_norm = T.(kspha[:,2:3]' ./ C)
 
-labelNominal  = [    "Nominal"];
-recons        = [        "010"];
-kdatas        = [        kdata];
-weights       = [weightNominal]; 
-b0s           = [           b0];
-imgNominal    = Array{Complex{T},3}(undef, nX, nY, length(labelNominal));
-idxs           = collect(1:length(labelNominal));
-for (idx, label, recon, kdata, weight, b0) in zip(idxs, labelNominal, recons, kdatas, weights, b0s)
-    @info "[$(idx)] $(label) $(recon)"
-    HOOp = HighOrderOp(gridding, T.(ksphaNominal'), T.(datatime); recon_terms=recon, 
-        nBlock=nBlock, csm=Complex{T}.(csm), fieldmap=T.(b0), use_gpu=use_gpu, verbose=verbose);
-    @time x = recon_HOOp(HOOp, Complex{T}.(kdata), Complex{T}.(weight), recParams);
-    imgNominal[:, :, idx] = x;
-    fig = plt_image(abs.(x); title=label, vmaxp=99.9)
-    fig.savefig("$(path)/result/$(data_mat[1:end-4])_$(label).png", dpi=300, transparent=false, bbox_inches="tight", pad_inches=0.0)
-end
+shift_x = 1.0
+shift_y = 1.0
+
+tr = Trajectory("2dEPI", k_norm,  T.(datatime), T.(0e-3), T.(nSample_adc*dt_adc), 1, nSample_adc, 1, false, false);
+
+# tr = Trajectory(T.(kspha[:,2:3]' ./ C), 1, nSample_adc; times=T.(datatime), TE=T.(0e-3), AQ=T.(nSample_adc*dt_adc), numSlices=1, cartesian=false, circular=false);
+dat         = Array{Array{Complex{T},2},3}(undef,1,1,1);
+dat[1,1,1]  = kdata[:,:];
+acqData     = AcquisitionData(tr, dat, encodingSize=(nX, nY));
+##
+solver = CGNR; reg = L2Regularization(1.e-9); iter = 20;
+params = Dict{Symbol, Any}()
+params[:arrayType]   = CuArray
+params[:reco]        = "multiCoil"
+params[:reconSize]   = (nX, nY)
+params[:reg]         = reg  
+params[:iterations]  = iter
+params[:solver]      = solver
+params[:densityWeighting] = true;
+params[:senseMaps]   = Complex{T}.(permutedims(reverse(circshift(csm, (0, -shift_y, 0, 0)), dims=(2)), [2,1,3,4])); #permutedims(reverse(csm, dims=(1,2,3)), [1,2,3,4]));
+params[:correctionMap] = Complex{T}.(-1im*2π*permutedims(reverse(circshift(b0, (0, -shift_y)), dims=(2)), [2,1]));
+params[:alpha] = 1.75
+params[:m] = 4.0
+params[:K] = 28
+# params[:method] = "nfft"
+# AbstractNFFTs.set_active_backend!(NFFT.backend())
+# AbstractNFFTs.set_active_backend!(NonuniformFFTs.backend())
+# AbstractNFFTs.active_backend()
+
+@time Ireco = reconstruction(acqData, params);
+x = Array(Ireco[:,:,1,1,1,1]);
+x = mapslices(rotr90, x; dims=(1,2));
+fig = plt_image(abs.(x);  vmaxp=99.9, width=20, height=20)
+# fig.savefig("$(path)/$(data_mat[1:end-4])_Nufft_measured_wb0.png", dpi=300, transparent=false, bbox_inches="tight", pad_inches=0.0)
+
+##
+HOOp = HighOrderOp_Kernel(gridding, T.(ksphaMeasured'), T.(datatime); recon_terms="0111", 
+    nBlock=nBlock, csm=Complex{T}.(csm), fieldmap=T.(b0), use_gpu=use_gpu, verbose=verbose);
+@time x = recon_HOOp(HOOp, Complex{T}.(kdata), Complex{T}.(weightMeasured), recParams);
+fig = plt_image(abs.(x); vmaxp=99.9, width=20, height=20)
+fig.savefig("$(path)/$(data_mat[1:end-4])_HighOrderOp_measured_wb0_0111.png", dpi=300, transparent=false, bbox_inches="tight", pad_inches=0.0)
