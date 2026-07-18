@@ -1,7 +1,7 @@
 using CUDA
 using LinearAlgebra
 using NFFT
-
+using Random
 
 # ==============================================================================
 # 1. CPU Backend

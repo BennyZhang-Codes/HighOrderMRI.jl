@@ -9,20 +9,27 @@ HighOrderLowRankOp implements a high-order field encoding operator based on SVD 
 Automatically separates 0th-order (outer demodulation) and 1st-order (NFFT) terms, and performs extremely fast SVD dimensionality reduction only on the remaining smooth high-order errors.
 Supports automatic switching between CPU and GPU compute backends.
 """
-mutable struct HighOrderLowRankOp{T, F1, F2, P<:AbstractNFFTPlan, AM<:AbstractMatrix{Complex{T}}, S<:AbstractVector{Complex{T}}} <: HOOp{Complex{T}}
-    nSam::Int
-    nVox::Int
-    nCha::Int
-    L::Int                           # SVD truncation rank
+mutable struct HighOrderLowRankOp{
+    T, F1, F2, 
+    P<:AbstractNFFTPlan, 
+    AM<:AbstractArray{Complex{T}, 3}, 
+    AN<:AbstractArray{Complex{T}, 2},
+    S<:AbstractVector{Complex{T}}
+    } <: HOOp{Complex{T}}
+    nSam       :: Int
+    nVox       :: Int
+    nCha       :: Int
+    nDyn       :: Int
+    L          :: Int                    # SVD truncation rank
     
-    u::AM                            # [nSam, L]
-    v_star::AM                       # [nVox, L]
-    v::AM                            # [nVox, L]
-    csm::AM                          # [nVox, nCha]
+    u          :: AM                     # [nSam, L, nDyn]
+    v_star     :: AM                     # [nVox, L, nDyn]
+    v          :: AM                     # [nVox, L, nDyn]
+    csm        :: AN                     # [nVox, nCha]
     
-    nfftplan::P                      # NFFT plan adapted for CPU/GPU
-    mask_idx::AbstractVector{Int32}  # Extracted 3D mask indices
-    grid_size::Tuple                 # gridding size
+    nfftplan   :: Vector{P}              # NFFT plan adapted for CPU/GPU
+    mask_idx   :: AbstractVector{Int32}  # Extracted 3D mask indices
+    grid_size  :: Tuple                  # gridding size
 
     nrow       :: Int
     ncol       :: Int
@@ -43,12 +50,28 @@ LinearOperators.storage_type(op::HighOrderLowRankOp) = typeof(op.Mv)
 function HighOrderLowRankOp(
     grid        :: Grid{T}                                                             ,
     kspha       :: AbstractArray{T, 2}                                                 , 
-    times       :: AbstractVector{T}                                                   ;
+    times       :: AbstractArray{T, 1}                                                 ;
+    kwargs...          
+    ) where T <: AbstractFloat
+    kspha = reshape(kspha, size(kspha, 1), size(kspha, 2), 1)
+    times = reshape(times, :, 1)
+    return HighOrderLowRankOp(grid, kspha, times; kwargs...)
+end
+
+"""
+kspha: [nTerm, nSam, nDyn]
+times: [nSam, nDyn]
+
+"""
+function HighOrderLowRankOp(
+    grid        :: Grid{T}                                                             ,
+    kspha       :: AbstractArray{T, 3}                                                 , 
+    times       :: AbstractArray{T, 2}                                                 ;
     fieldmap    :: AbstractArray{T}          = zeros(T, grid.matrixSize...)            , 
     csm         :: AbstractArray{Complex{T}} = ones(Complex{T}, grid.matrixSize..., 1) , 
     mask        :: AbstractArray{Bool}       = trues(grid.matrixSize...)               ,
     recon_terms :: String                    = nothing                                 ,
-    k_nominal   :: AbstractArray{T, 2}       = kspha[2:4, :]                           ,
+    k_nominal   :: AbstractArray{T, 3}       = kspha[2:4, :, :]                        ,
     kspha_dt                                 = nothing                                 ,
     nBlock      :: Int64                     = 50                                      , 
     
@@ -59,12 +82,12 @@ function HighOrderLowRankOp(
     verbose     :: Bool                      = false                                   ,   
     
     kwargs...          
-) where T
+    ) where T <: AbstractFloat
 
     nX, nY, nZ = grid.nX, grid.nY, grid.nZ
-    nTerm, nSam = size(kspha)
+    nTerm, nSam, nDyn = size(kspha)
     nCha = size(csm)[end]
-    nRow = nSam * nCha
+    nRow = nSam * nCha * nDyn
     nCol = prod(grid.matrixSize)
     nVox = sum(mask)
 
@@ -79,6 +102,7 @@ function HighOrderLowRankOp(
     @assert size(fieldmap)     == (nX, nY, nZ)  "FieldMap must have same size as $((nX, nY, nZ)) in grid"
     @assert size(csm)[1:3]     == (nX, nY, nZ)  "Coil-SensitivityMap must have same size as $((nX, nY, nZ)) in grid"
     @assert size(mask)         == (nX, nY, nZ)  "Mask must have same size as $((nX, nY, nZ)) in grid"
+    @assert size(times)        == (nSam, nDyn)  "times must have size $((nSam, nDyn))"
     
     # prepare data 
     mask     = vec(mask)                               # [prod(MatrixSize)]
@@ -98,29 +122,61 @@ function HighOrderLowRankOp(
 
 
     if nTerm >= 5
-        kspha_err = arrayType(kspha[5:end, :])
+        kspha_err = arrayType(kspha[5:end, :, :])
         bf_err    = arrayType(bf[:, 5:end])
     else
-        kspha_err = arrayType(zeros(T, 1, nSam))
+        kspha_err = arrayType(zeros(T, 1, nSam, nDyn))
         bf_err    = arrayType(zeros(T, nVox, 1))
     end
 
-    u_trunc, s_trunc, v_trunc = perform_rsvd(times, fieldmap, bf_err, kspha_err, nVox, nSam, L_rank; seed=rsvd_seed)
-    v_scaled = v_trunc * Diagonal(s_trunc)
+    # u_trunc, s_trunc, v_trunc = perform_rsvd(times, fieldmap, bf_err, kspha_err, nVox, nSam, L_rank; seed=rsvd_seed)
+    # v_scaled = v_trunc * Diagonal(s_trunc)
+    u      = arrayType(zeros(Complex{T}, nSam, L_rank, nDyn))
+    v      = arrayType(zeros(Complex{T}, nVox, L_rank, nDyn))
+    v_star = arrayType(zeros(Complex{T}, nVox, L_rank, nDyn))
+    for dyn = 1:nDyn
+        times_dyn     = times[:, dyn]
+        kspha_err_dyn = kspha_err[:, :, dyn]
+        u_trunc, s_trunc, v_trunc = perform_rsvd(times_dyn, fieldmap, bf_err, kspha_err_dyn, nVox, nSam, L_rank; seed=rsvd_seed + dyn - 1)
+        v_scaled = v_trunc * Diagonal(s_trunc)
 
-    if nZ == 1
-        k1_traj = kspha[2:3, :] ./ (1/min(grid.Δx, grid.Δy)); MatrixSize = (nX, nY);
-    else
-        k1_traj = kspha[2:4, :] ./ (1/min(grid.Δx, grid.Δy, grid.Δz)); MatrixSize = (nX, nY, nZ);
+        @views u[:, :, dyn]      .= arrayType(u_trunc)
+        @views v[:, :, dyn]      .= arrayType(v_scaled)
+        @views v_star[:, :, dyn] .= arrayType(conj.(v_scaled))
     end
 
-    nfftplan = plan_nfft(arrayType, k1_traj, MatrixSize; m=3, σ=1.25, precompute=NFFT.TENSOR)
+
+    # if nZ == 1
+    #     k1_traj = kspha[2:3, :] ./ (1/min(grid.Δx, grid.Δy)); MatrixSize = (nX, nY);
+    # else
+    #     k1_traj = kspha[2:4, :] ./ (1/min(grid.Δx, grid.Δy, grid.Δz)); MatrixSize = (nX, nY, nZ);
+    # end
+
+    if nZ == 1
+        MatrixSize = (nX, nY)
+        scale = 1 / min(grid.Δx, grid.Δy)
+        k_range = 2:3
+    else
+        MatrixSize = (nX, nY, nZ)
+        scale = 1 / min(grid.Δx, grid.Δy, grid.Δz)
+        k_range = 2:4
+    end
+
+    k1_traj_1 = kspha[k_range, :, 1] ./ scale
+    nfftplan_1 = plan_nfft(arrayType, k1_traj_1, MatrixSize; m=3, σ=1.25, precompute=NFFT.TENSOR)
+    nfftplan = Vector{typeof(nfftplan_1)}(undef, nDyn)
+    nfftplan[1] = nfftplan_1
+    for dyn = 2:nDyn
+        k1_traj = kspha[k_range, :, dyn] ./ scale
+        nfftplan[dyn] = plan_nfft(arrayType, k1_traj, MatrixSize; m=3, σ=1.25, precompute=NFFT.TENSOR)
+    end
+    # nfftplan = plan_nfft(arrayType, k1_traj, MatrixSize; m=3, σ=1.25, precompute=NFFT.TENSOR)
 
 
     Mv = Mtu = arrayType(Vector{Complex{T}}(undef, 0))  
-    return HighOrderLowRankOp{T, Nothing, typeof(ctprod!), typeof(nfftplan), typeof(csm), typeof(Mv)}(
-        nSam, nVox, nCha, L_rank,
-        arrayType(u_trunc), arrayType(conj.(v_scaled)), arrayType(v_scaled), csm,
+    return HighOrderLowRankOp{T, Nothing, typeof(ctprod!), typeof(nfftplan_1), typeof(u), typeof(csm), typeof(Mv)}(
+        nSam, nVox, nCha, nDyn, L_rank,
+        u, v_star, v, csm,
         nfftplan, mask_idx, grid.matrixSize,
         nRow, nCol, false, false, prod!, nothing, ctprod!,
         0, 0, 0, 
@@ -156,7 +212,7 @@ end
 # -------------------------------------------------------------------------
 function prod!(y::AbstractVector{Complex{T}}, op::HighOrderLowRankOp{T}, x::AbstractVector{Complex{T}}) where T
     x_masked = length(x) == prod(op.grid_size) ? view(x, op.mask_idx) : x
-    y = reshape(y, op.nSam, op.nCha)
+    y = reshape(y, op.nSam, op.nCha, op.nDyn)
     fill!(y, 0) 
     
     grid_flat = fill!(similar(op.v, Complex{T}, prod(op.grid_size)), 0)
@@ -169,20 +225,22 @@ function prod!(y::AbstractVector{Complex{T}}, op::HighOrderLowRankOp{T}, x::Abst
     threads = 256
     blocks_vox = cld(op.nVox, threads)
 
-    for l = 1:op.L
-        @views @. x_weighted = x_masked * op.v_star[:, l]
-        
-        for c = 1:op.nCha
-            if grid_flat isa CuArray
-                @cuda threads=threads blocks=blocks_vox kernel_scatter_csm!(
-                    grid_flat, x_weighted, op.csm, c, op.mask_idx, op.nVox
-                )
-            else
-                @views @. grid_flat[op.mask_idx] = x_weighted * op.csm[:, c]
-            end
+    for dyn = 1:op.nDyn
+        for l = 1:op.L
+            @views @. x_weighted = x_masked * op.v_star[:, l, dyn]
             
-            mul!(k_signal, op.nfftplan, nfft_img)
-            @views @. y[:, c] += k_signal * op.u[:, l]
+            for c = 1:op.nCha
+                if grid_flat isa CuArray
+                    @cuda threads=threads blocks=blocks_vox kernel_scatter_csm!(
+                        grid_flat, x_weighted, op.csm, c, op.mask_idx, op.nVox
+                    )
+                else
+                    @views @. grid_flat[op.mask_idx] = x_weighted * op.csm[:, c]
+                end
+                
+                mul!(k_signal, op.nfftplan[dyn], nfft_img)
+                @views @. y[:, c, dyn] += k_signal * op.u[:, l, dyn]
+            end
         end
     end
     
@@ -190,7 +248,7 @@ function prod!(y::AbstractVector{Complex{T}}, op::HighOrderLowRankOp{T}, x::Abst
 end
 
 function ctprod!(x::AbstractVector{Complex{T}}, op::HighOrderLowRankOp{T}, y::AbstractVector{Complex{T}}) where T
-    y = reshape(y, op.nSam, op.nCha)
+    y = reshape(y, op.nSam, op.nCha, op.nDyn)
     x_masked = fill!(similar(op.v, Complex{T}, op.nVox), 0)
     
     grid_flat = similar(op.v, Complex{T}, prod(op.grid_size))
@@ -203,22 +261,24 @@ function ctprod!(x::AbstractVector{Complex{T}}, op::HighOrderLowRankOp{T}, y::Ab
     threads = 256
     blocks_vox = cld(op.nVox, threads)
 
-    for l = 1:op.L
-        fill!(x_l, 0)
-        
-        for c = 1:op.nCha
-            @views @. k_weighted = y[:, c] * conj(op.u[:, l])
-            mul!(nfft_img, adjoint(op.nfftplan), k_weighted)
+    for dyn = 1:op.nDyn
+        for l = 1:op.L
+            fill!(x_l, 0)
             
-            if grid_flat isa CuArray
-                @cuda threads=threads blocks=blocks_vox kernel_gather_csm!(
-                    x_l, grid_flat, op.csm, c, op.mask_idx, op.nVox
-                )
-            else
-                @views @. x_l += grid_flat[op.mask_idx] * conj(op.csm[:, c])
+            for c = 1:op.nCha
+                @views @. k_weighted = y[:, c, dyn] * conj(op.u[:, l, dyn])
+                mul!(nfft_img, adjoint(op.nfftplan[dyn]), k_weighted)
+                
+                if grid_flat isa CuArray
+                    @cuda threads=threads blocks=blocks_vox kernel_gather_csm!(
+                        x_l, grid_flat, op.csm, c, op.mask_idx, op.nVox
+                    )
+                else
+                    @views @. x_l += grid_flat[op.mask_idx] * conj(op.csm[:, c])
+                end
             end
+            @views @. x_masked += x_l * op.v[:, l, dyn]
         end
-        @views @. x_masked += x_l * op.v[:, l]
     end
     
     if length(x) == prod(op.grid_size)
@@ -234,25 +294,26 @@ end
 # -------------------------------------------------------------------------
 # Adjoint Operator Definition
 # -------------------------------------------------------------------------
-struct AdjointHighOrderLowRankOp{T, P, AM, AV}
-    op::HighOrderLowRankOp{T, P, AM, AV}
-end
-
-Base.adjoint(op::HighOrderLowRankOp) = AdjointHighOrderLowRankOp(op)
-
 Base.eltype(::HighOrderLowRankOp{T}) where T = Complex{T}
-Base.eltype(::AdjointHighOrderLowRankOp{T}) where T = Complex{T}
+
+function Base.adjoint(op::HighOrderLowRankOp{T}) where T
+    return LinearOperator{Complex{T}}(
+                              op.ncol, 
+                              op.nrow, 
+                              op.symmetric, 
+                              op.hermitian,
+                              (res, y) -> ctprod!(res, op, y), 
+                              nothing, 
+                              (res, x) -> prod!(res, op, x),
+                              S=typeof(op.Mv))
+  end
 
 function Base.size(op::HighOrderLowRankOp)
-    return (op.nSam * op.nCha, prod(op.grid_size))
+    return (op.nSam * op.nCha * op.nDyn, prod(op.grid_size))
 end
 
 function Base.size(op::HighOrderLowRankOp, dim::Int)
-    return dim == 1 ? op.nSam * op.nCha : prod(op.grid_size)
-end
-
-function Base.size(adj::AdjointHighOrderLowRankOp, dim::Int)
-    return dim == 1 ? prod(adj.op.grid_size) : adj.op.nSam * adj.op.nCha
+    return dim == 1 ? op.nSam * op.nCha * op.nDyn : prod(op.grid_size)
 end
 
 import LinearAlgebra: mul!
@@ -260,18 +321,28 @@ function mul!(y::AbstractVector{Complex{T}}, op::HighOrderLowRankOp{T}, x::Abstr
     prod!(y, op, x)
 end
 
-function mul!(x::AbstractVector{Complex{T}}, adj::AdjointHighOrderLowRankOp{T}, y::AbstractVector{Complex{T}}) where T
-    ctprod!(x, adj.op, y)
+function mul!(
+    y::AbstractVector{Complex{T}},
+    op::HighOrderLowRankOp{T},
+    x::AbstractVector{Complex{T}},
+    α,
+    β,
+) where T
+    if iszero(β)
+        prod!(y, op, x)
+        α == one(α) || (@. y = α * y)
+    else
+        y_tmp = similar(y)
+        prod!(y_tmp, op, x)
+        @. y = α * y_tmp + β * y
+    end
+
+    return y
 end
 
 function Base.:*(op::HighOrderLowRankOp{T}, x::AbstractVector{Complex{T}}) where T
-    y = fill!(similar(op.v, Complex{T}, op.nSam * op.nCha), 0)
+    y = fill!(similar(op.v, Complex{T}, op.nSam * op.nCha * op.nDyn), 0)
     mul!(y, op, x)
     return y
 end
 
-function Base.:*(adj::AdjointHighOrderLowRankOp{T}, y::AbstractVector{Complex{T}}) where T
-    x = fill!(similar(adj.op.v, Complex{T}, prod(adj.op.grid_size)), 0)
-    mul!(x, adj, y)
-    return x
-end

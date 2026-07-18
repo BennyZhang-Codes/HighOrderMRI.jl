@@ -74,7 +74,7 @@ recParams[:reconSize]      = (nX, nY)
 recParams[:reg] = reg  # ["L2", "L1", "L21", "TV", "LLR", "Positive", "Proj", "Nuclear"]
 recParams[:iterations]     = iter
 recParams[:solver]         = solver
-## HighOrderNFFTOp
+## HighOrderLowRankOp
 shift_x = 0
 shift_y = -1
 
@@ -84,7 +84,7 @@ gridding  = Grid(nX=nX, nY=nY, nZ=nZ, Δx=Δx, Δy=Δy, Δz=Δz, x=gridding.x, y
 
 
 arrayType = CuArray;
-@CUDA.time HOOp = HighOrderNFFTOp(gridding, T.(ksphaMeasured'), T.(datatime); 
+@CUDA.time HOOp = HighOrderLowRankOp(gridding, T.(ksphaMeasured'), T.(datatime); 
                 recon_terms=recon, 
                 csm=Complex{T}.(permutedims(reverse(circshift(csm, (shift_x, shift_y, 0)), dims=(2)), [2,1,3])), 
                 fieldmap=T.(permutedims(reverse(circshift(b0, (shift_x, shift_y)), dims=(2)), [2,1])), 

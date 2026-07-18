@@ -1,5 +1,7 @@
 abstract type HOOp{T} <: AbstractLinearOperator{T} end
 
+include("prep_kspha.jl")
+
 # the formal version HighOrderOp, the extended signal model with field dynamics and off-resonance
 include("HighOrderOp.jl")         # Array-based implementation
 
