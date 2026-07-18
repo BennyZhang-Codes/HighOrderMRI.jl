@@ -4,6 +4,16 @@ using NFFT
 
 export HighOrderLowRankOp
 
+mutable struct HighOrderLowRankWorkspace{AV}
+    grid_flat_prod   :: AV
+    grid_flat_ctprod :: AV
+    k_signal         :: AV
+    k_weighted       :: AV
+    x_weighted       :: AV
+    x_masked         :: AV
+    x_l              :: AV
+end
+
 """
 HighOrderLowRankOp implements a high-order field encoding operator based on SVD low-rank approximation.
 Automatically separates 0th-order (outer demodulation) and 1st-order (NFFT) terms, and performs extremely fast SVD dimensionality reduction only on the remaining smooth high-order errors.
@@ -14,6 +24,7 @@ mutable struct HighOrderLowRankOp{
     P<:AbstractNFFTPlan, 
     AM<:AbstractArray{Complex{T}, 3}, 
     AN<:AbstractArray{Complex{T}, 2},
+    W<:HighOrderLowRankWorkspace,
     S<:AbstractVector{Complex{T}}
     } <: HOOp{Complex{T}}
     nSam       :: Int
@@ -30,6 +41,8 @@ mutable struct HighOrderLowRankOp{
     nfftplan   :: Vector{P}              # NFFT plan adapted for CPU/GPU
     mask_idx   :: AbstractVector{Int32}  # Extracted 3D mask indices
     grid_size  :: Tuple                  # gridding size
+
+    workspace  :: W
 
     nrow       :: Int
     ncol       :: Int
@@ -61,7 +74,6 @@ end
 """
 kspha: [nTerm, nSam, nDyn]
 times: [nSam, nDyn]
-
 """
 function HighOrderLowRankOp(
     grid        :: Grid{T}                                                             ,
@@ -129,8 +141,6 @@ function HighOrderLowRankOp(
         bf_err    = arrayType(zeros(T, nVox, 1))
     end
 
-    # u_trunc, s_trunc, v_trunc = perform_rsvd(times, fieldmap, bf_err, kspha_err, nVox, nSam, L_rank; seed=rsvd_seed)
-    # v_scaled = v_trunc * Diagonal(s_trunc)
     u      = arrayType(zeros(Complex{T}, nSam, L_rank, nDyn))
     v      = arrayType(zeros(Complex{T}, nVox, L_rank, nDyn))
     v_star = arrayType(zeros(Complex{T}, nVox, L_rank, nDyn))
@@ -145,12 +155,6 @@ function HighOrderLowRankOp(
         @views v_star[:, :, dyn] .= arrayType(conj.(v_scaled))
     end
 
-
-    # if nZ == 1
-    #     k1_traj = kspha[2:3, :] ./ (1/min(grid.Δx, grid.Δy)); MatrixSize = (nX, nY);
-    # else
-    #     k1_traj = kspha[2:4, :] ./ (1/min(grid.Δx, grid.Δy, grid.Δz)); MatrixSize = (nX, nY, nZ);
-    # end
 
     if nZ == 1
         MatrixSize = (nX, nY)
@@ -170,14 +174,23 @@ function HighOrderLowRankOp(
         k1_traj = kspha[k_range, :, dyn] ./ scale
         nfftplan[dyn] = plan_nfft(arrayType, k1_traj, MatrixSize; m=3, σ=1.25, precompute=NFFT.TENSOR)
     end
-    # nfftplan = plan_nfft(arrayType, k1_traj, MatrixSize; m=3, σ=1.25, precompute=NFFT.TENSOR)
 
+    nGrid = prod(grid.matrixSize)
+    workspace = HighOrderLowRankWorkspace(
+        fill!(similar(u, Complex{T}, nGrid), 0),
+        similar(u, Complex{T}, nGrid),
+        similar(u, Complex{T}, nSam),
+        similar(u, Complex{T}, nSam),
+        similar(u, Complex{T}, nVox),
+        similar(u, Complex{T}, nVox),
+        similar(u, Complex{T}, nVox),
+    )
 
     Mv = Mtu = arrayType(Vector{Complex{T}}(undef, 0))  
-    return HighOrderLowRankOp{T, Nothing, typeof(ctprod!), typeof(nfftplan_1), typeof(u), typeof(csm), typeof(Mv)}(
+    return HighOrderLowRankOp{T, Nothing, typeof(ctprod!), typeof(nfftplan_1), typeof(u), typeof(csm), typeof(workspace), typeof(Mv)}(
         nSam, nVox, nCha, nDyn, L_rank,
         u, v_star, v, csm,
-        nfftplan, mask_idx, grid.matrixSize,
+        nfftplan, mask_idx, grid.matrixSize, workspace,
         nRow, nCol, false, false, prod!, nothing, ctprod!,
         0, 0, 0, 
         Mv, Mtu,
@@ -211,17 +224,19 @@ end
 # Zero-allocation prod! and ctprod!
 # -------------------------------------------------------------------------
 function prod!(y::AbstractVector{Complex{T}}, op::HighOrderLowRankOp{T}, x::AbstractVector{Complex{T}}) where T
+
+    workspace  = op.workspace
+    grid_flat  = workspace.grid_flat_prod
+    k_signal   = workspace.k_signal
+    x_weighted = workspace.x_weighted
+
     x_masked = length(x) == prod(op.grid_size) ? view(x, op.mask_idx) : x
     y = reshape(y, op.nSam, op.nCha, op.nDyn)
     fill!(y, 0) 
     
-    grid_flat = fill!(similar(op.v, Complex{T}, prod(op.grid_size)), 0)
     nfft_dims = op.grid_size[end] == 1 ? op.grid_size[1:2] : op.grid_size
     nfft_img  = reshape(grid_flat, nfft_dims)
     
-    k_signal   = similar(op.v, Complex{T}, op.nSam)
-    x_weighted = similar(op.v, Complex{T}, op.nVox)
-
     threads = 256
     blocks_vox = cld(op.nVox, threads)
 
@@ -248,15 +263,19 @@ function prod!(y::AbstractVector{Complex{T}}, op::HighOrderLowRankOp{T}, x::Abst
 end
 
 function ctprod!(x::AbstractVector{Complex{T}}, op::HighOrderLowRankOp{T}, y::AbstractVector{Complex{T}}) where T
+
     y = reshape(y, op.nSam, op.nCha, op.nDyn)
-    x_masked = fill!(similar(op.v, Complex{T}, op.nVox), 0)
-    
-    grid_flat = similar(op.v, Complex{T}, prod(op.grid_size))
+
+    workspace  = op.workspace
+    grid_flat  = workspace.grid_flat_ctprod
+    k_weighted = workspace.k_weighted
+    x_masked   = workspace.x_masked
+    x_l        = workspace.x_l
+
+    fill!(x_masked, 0)
+
     nfft_dims = op.grid_size[end] == 1 ? op.grid_size[1:2] : op.grid_size
     nfft_img  = reshape(grid_flat, nfft_dims)
-    
-    k_weighted = similar(op.v, Complex{T}, op.nSam)
-    x_l        = similar(op.v, Complex{T}, op.nVox)
 
     threads = 256
     blocks_vox = cld(op.nVox, threads)
