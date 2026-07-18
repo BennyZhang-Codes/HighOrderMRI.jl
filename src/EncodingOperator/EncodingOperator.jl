@@ -8,4 +8,4 @@ include("HighOrderOp_Kernel.jl")  # Kernel-based implementation
 
 
 include("perform_rsvd.jl")          # randomized SVD for low-rank approximation
-include("HighOrderNFFTOp.jl")       # NFFT-based implementation
+include("HighOrderLowRankOp.jl")    # low rank approximation of temporal-spatial varing phase (NFFT-based implementation)

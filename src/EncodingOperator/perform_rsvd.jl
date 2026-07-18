@@ -6,11 +6,21 @@ using NFFT
 # ==============================================================================
 # 1. CPU Backend
 # ==============================================================================
-function perform_rsvd(times::Array{T}, fieldmap::Array{T}, bf::Array{T, 2}, kspha_err::Array{T, 2}, nVox::Int, nSam::Int, L_rank::Int) where T
+function perform_rsvd(
+    times     :: Array{T}, 
+    fieldmap  :: Array{T}, 
+    bf        :: Array{T, 2}, 
+    kspha_err :: Array{T, 2}, 
+    nVox      :: Int, 
+    nSam      :: Int, 
+    L_rank    :: Int;
+    seed      :: Int = 0
+    ) where T <: AbstractFloat
     @info "Performing rSVD on CPU (Multi-threaded)..."
     p_oversample = 5
     L_total = L_rank + p_oversample
-    Ω_cpu = randn(Complex{T}, nVox, L_total) 
+    rng = Random.Xoshiro(seed)
+    Ω_cpu = randn(rng, Complex{T}, nVox, L_total) 
 
     Y_cpu = zeros(Complex{T}, nSam, L_total)
     block_size = 5000 
@@ -111,12 +121,21 @@ function kernel_rsvd_adjoint_opt!(B_adj, times, fieldmap, bf, kspha_err, Q, nVox
     return nothing
 end
 
-function perform_rsvd(times::CuArray{T}, fieldmap::CuArray{T}, bf::CuArray{T, 2}, kspha_err::CuArray{T, 2}, nVox::Int, nSam::Int, L_rank::Int) where T
+function perform_rsvd(
+    times     :: CuArray{T}, 
+    fieldmap  :: CuArray{T}, 
+    bf        :: CuArray{T, 2}, 
+    kspha_err :: CuArray{T, 2}, 
+    nVox      :: Int, 
+    nSam      :: Int, 
+    L_rank    :: Int;
+    seed      :: Int = 0
+    ) where T <: AbstractFloat
     @info "Performing rSVD on GPU (Fused Kernels)..."
     p_oversample = 5
     L_total = L_rank + p_oversample
     nTerm_err = size(kspha_err, 1)
-
+    CUDA.seed!(seed)
     Ω_d = CUDA.randn(Complex{T}, nVox, L_total) 
     
     Y_d = CUDA.zeros(Complex{T}, nSam, L_total)

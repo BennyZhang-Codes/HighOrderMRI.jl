@@ -2,14 +2,14 @@ using CUDA
 using LinearAlgebra
 using NFFT
 
-export HighOrderNFFTOp
+export HighOrderLowRankOp
 
 """
-HighOrderNFFTOp implements a high-order field encoding operator based on SVD low-rank approximation.
+HighOrderLowRankOp implements a high-order field encoding operator based on SVD low-rank approximation.
 Automatically separates 0th-order (outer demodulation) and 1st-order (NFFT) terms, and performs extremely fast SVD dimensionality reduction only on the remaining smooth high-order errors.
 Supports automatic switching between CPU and GPU compute backends.
 """
-mutable struct HighOrderNFFTOp{T, F1, F2, P<:AbstractNFFTPlan, AM<:AbstractMatrix{Complex{T}}, S<:AbstractVector{Complex{T}}} <: HOOp{Complex{T}}
+mutable struct HighOrderLowRankOp{T, F1, F2, P<:AbstractNFFTPlan, AM<:AbstractMatrix{Complex{T}}, S<:AbstractVector{Complex{T}}} <: HOOp{Complex{T}}
     nSam::Int
     nVox::Int
     nCha::Int
@@ -37,10 +37,10 @@ mutable struct HighOrderNFFTOp{T, F1, F2, P<:AbstractNFFTPlan, AM<:AbstractMatri
     Mv         :: S                  # Dynamically adapted CPU/GPU Vector
     Mtu        :: S                  # Dynamically adapted CPU/GPU Vector
 end
-LinearOperators.storage_type(op::HighOrderNFFTOp) = typeof(op.Mv)
+LinearOperators.storage_type(op::HighOrderLowRankOp) = typeof(op.Mv)
 
 
-function HighOrderNFFTOp(
+function HighOrderLowRankOp(
     grid        :: Grid{T}                                                             ,
     kspha       :: AbstractArray{T, 2}                                                 , 
     times       :: AbstractVector{T}                                                   ;
@@ -55,6 +55,7 @@ function HighOrderNFFTOp(
     gpus        :: Vector{Int}               = [0]                                     ,
     L_rank      :: Int                       = 15                                      , 
     arrayType   :: Type{<:AbstractArray}     = Array                                   ,
+    rsvd_seed   :: Int                       = 1234                                    ,
     verbose     :: Bool                      = false                                   ,   
     
     kwargs...          
@@ -71,7 +72,7 @@ function HighOrderNFFTOp(
     csm      = ndims(csm) == 3      ? reshape(csm, nX, nY, 1, nCha) : csm
     mask     = ndims(mask) == 2     ? reshape(mask, nX, nY, 1) : mask
 
-    if verbose @info "HighOrderNFFTOp Setup: ArrayType=$arrayType, nRow=$(nSam*nCha), nCol=$(prod(grid.matrixSize)), nVox in mask=$nVox, gpus=$gpus" end
+    if verbose @info "HighOrderLowRankOp Setup: ArrayType=$arrayType, nRow=$(nSam*nCha), nCol=$(prod(grid.matrixSize)), nVox in mask=$nVox, gpus=$gpus" end
 
     @assert nTerm              in [9, 16]       "kspha must have 9 or 16 terms (row) for up to 2nd or 3rd order terms"
     @assert size(k_nominal, 1) == 3             "k_nominal must have 3 terms (row) for kx, ky, kz"
@@ -104,7 +105,7 @@ function HighOrderNFFTOp(
         bf_err    = arrayType(zeros(T, nVox, 1))
     end
 
-    u_trunc, s_trunc, v_trunc = perform_rsvd(times, fieldmap, bf_err, kspha_err, nVox, nSam, L_rank)
+    u_trunc, s_trunc, v_trunc = perform_rsvd(times, fieldmap, bf_err, kspha_err, nVox, nSam, L_rank; seed=rsvd_seed)
     v_scaled = v_trunc * Diagonal(s_trunc)
 
     if nZ == 1
@@ -113,11 +114,11 @@ function HighOrderNFFTOp(
         k1_traj = kspha[2:4, :] ./ (1/min(grid.Δx, grid.Δy, grid.Δz)); MatrixSize = (nX, nY, nZ);
     end
 
-    nfftplan = arrayType <: CuArray ? plan_nfft(CuArray, k1_traj, MatrixSize; m=3, σ=1.25, precompute=NFFT.TENSOR) : 
-    plan_nfft(k1_traj, MatrixSize; m=3, σ=1.25, precompute=NFFT.TENSOR)
+    nfftplan = plan_nfft(arrayType, k1_traj, MatrixSize; m=3, σ=1.25, precompute=NFFT.TENSOR)
+
 
     Mv = Mtu = arrayType(Vector{Complex{T}}(undef, 0))  
-    return HighOrderNFFTOp{T, Nothing, typeof(ctprod!), typeof(nfftplan), typeof(csm), typeof(Mv)}(
+    return HighOrderLowRankOp{T, Nothing, typeof(ctprod!), typeof(nfftplan), typeof(csm), typeof(Mv)}(
         nSam, nVox, nCha, L_rank,
         arrayType(u_trunc), arrayType(conj.(v_scaled)), arrayType(v_scaled), csm,
         nfftplan, mask_idx, grid.matrixSize,
@@ -153,7 +154,7 @@ end
 # -------------------------------------------------------------------------
 # Zero-allocation prod! and ctprod!
 # -------------------------------------------------------------------------
-function prod!(y::AbstractVector{Complex{T}}, op::HighOrderNFFTOp{T}, x::AbstractVector{Complex{T}}) where T
+function prod!(y::AbstractVector{Complex{T}}, op::HighOrderLowRankOp{T}, x::AbstractVector{Complex{T}}) where T
     x_masked = length(x) == prod(op.grid_size) ? view(x, op.mask_idx) : x
     y = reshape(y, op.nSam, op.nCha)
     fill!(y, 0) 
@@ -188,7 +189,7 @@ function prod!(y::AbstractVector{Complex{T}}, op::HighOrderNFFTOp{T}, x::Abstrac
     return y
 end
 
-function ctprod!(x::AbstractVector{Complex{T}}, op::HighOrderNFFTOp{T}, y::AbstractVector{Complex{T}}) where T
+function ctprod!(x::AbstractVector{Complex{T}}, op::HighOrderLowRankOp{T}, y::AbstractVector{Complex{T}}) where T
     y = reshape(y, op.nSam, op.nCha)
     x_masked = fill!(similar(op.v, Complex{T}, op.nVox), 0)
     
@@ -233,43 +234,43 @@ end
 # -------------------------------------------------------------------------
 # Adjoint Operator Definition
 # -------------------------------------------------------------------------
-struct AdjointHighOrderNFFTOp{T, P, AM, AV}
-    op::HighOrderNFFTOp{T, P, AM, AV}
+struct AdjointHighOrderLowRankOp{T, P, AM, AV}
+    op::HighOrderLowRankOp{T, P, AM, AV}
 end
 
-Base.adjoint(op::HighOrderNFFTOp) = AdjointHighOrderNFFTOp(op)
+Base.adjoint(op::HighOrderLowRankOp) = AdjointHighOrderLowRankOp(op)
 
-Base.eltype(::HighOrderNFFTOp{T}) where T = Complex{T}
-Base.eltype(::AdjointHighOrderNFFTOp{T}) where T = Complex{T}
+Base.eltype(::HighOrderLowRankOp{T}) where T = Complex{T}
+Base.eltype(::AdjointHighOrderLowRankOp{T}) where T = Complex{T}
 
-function Base.size(op::HighOrderNFFTOp)
+function Base.size(op::HighOrderLowRankOp)
     return (op.nSam * op.nCha, prod(op.grid_size))
 end
 
-function Base.size(op::HighOrderNFFTOp, dim::Int)
+function Base.size(op::HighOrderLowRankOp, dim::Int)
     return dim == 1 ? op.nSam * op.nCha : prod(op.grid_size)
 end
 
-function Base.size(adj::AdjointHighOrderNFFTOp, dim::Int)
+function Base.size(adj::AdjointHighOrderLowRankOp, dim::Int)
     return dim == 1 ? prod(adj.op.grid_size) : adj.op.nSam * adj.op.nCha
 end
 
 import LinearAlgebra: mul!
-function mul!(y::AbstractVector{Complex{T}}, op::HighOrderNFFTOp{T}, x::AbstractVector{Complex{T}}) where T
+function mul!(y::AbstractVector{Complex{T}}, op::HighOrderLowRankOp{T}, x::AbstractVector{Complex{T}}) where T
     prod!(y, op, x)
 end
 
-function mul!(x::AbstractVector{Complex{T}}, adj::AdjointHighOrderNFFTOp{T}, y::AbstractVector{Complex{T}}) where T
+function mul!(x::AbstractVector{Complex{T}}, adj::AdjointHighOrderLowRankOp{T}, y::AbstractVector{Complex{T}}) where T
     ctprod!(x, adj.op, y)
 end
 
-function Base.:*(op::HighOrderNFFTOp{T}, x::AbstractVector{Complex{T}}) where T
+function Base.:*(op::HighOrderLowRankOp{T}, x::AbstractVector{Complex{T}}) where T
     y = fill!(similar(op.v, Complex{T}, op.nSam * op.nCha), 0)
     mul!(y, op, x)
     return y
 end
 
-function Base.:*(adj::AdjointHighOrderNFFTOp{T}, y::AbstractVector{Complex{T}}) where T
+function Base.:*(adj::AdjointHighOrderLowRankOp{T}, y::AbstractVector{Complex{T}}) where T
     x = fill!(similar(adj.op.v, Complex{T}, prod(adj.op.grid_size)), 0)
     mul!(x, adj, y)
     return x
