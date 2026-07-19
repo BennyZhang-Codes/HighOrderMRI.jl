@@ -76,22 +76,24 @@ kspha: [nTerm, nSam, nDyn]
 times: [nSam, nDyn]
 """
 function HighOrderLowRankOp(
-    grid        :: Grid{T}                                                             ,
-    kspha       :: AbstractArray{T, 3}                                                 , 
-    times       :: AbstractArray{T, 2}                                                 ;
-    fieldmap    :: AbstractArray{T}          = zeros(T, grid.matrixSize...)            , 
-    csm         :: AbstractArray{Complex{T}} = ones(Complex{T}, grid.matrixSize..., 1) , 
-    mask        :: AbstractArray{Bool}       = trues(grid.matrixSize...)               ,
-    recon_terms :: String                    = nothing                                 ,
-    k_nominal   :: AbstractArray{T, 3}       = kspha[2:4, :, :]                        ,
-    kspha_dt                                 = nothing                                 ,
-    nBlock      :: Int64                     = 50                                      , 
+    grid            :: Grid{T}                                                             ,
+    kspha           :: AbstractArray{T, 3}                                                 , 
+    times           :: AbstractArray{T, 2}                                                 ;
+    fieldmap        :: AbstractArray{T}          = zeros(T, grid.matrixSize...)            , 
+    csm             :: AbstractArray{Complex{T}} = ones(Complex{T}, grid.matrixSize..., 1) , 
+    mask            :: AbstractArray{Bool}       = trues(grid.matrixSize...)               ,
+    recon_terms     :: String                    = nothing                                 ,
+    k_nominal       :: AbstractArray{T, 3}       = kspha[2:4, :, :]                        ,
+    kspha_dt                                     = nothing                                 ,
+    nBlock          :: Int64                     = 50                                      , 
     
-    gpus        :: Vector{Int}               = [0]                                     ,
-    L_rank      :: Int                       = 15                                      , 
-    arrayType   :: Type{<:AbstractArray}     = Array                                   ,
-    rsvd_seed   :: Int                       = 1234                                    ,
-    verbose     :: Bool                      = false                                   ,   
+    gpus            :: Vector{Int}               = [0]                                     ,
+    L_rank          :: Int                       = 15                                      , 
+    arrayType       :: Type{<:AbstractArray}     = Array                                   ,
+    rsvd_seed       :: Int                       = 1234                                    ,
+    rsvd_chunk      :: Int                       = 4096                                    , 
+    rsvd_oversample :: Int                       = 5                                       ,
+    verbose         :: Bool                      = false                                   ,   
     
     kwargs...          
     ) where T <: AbstractFloat
@@ -140,14 +142,20 @@ function HighOrderLowRankOp(
         kspha_err = arrayType(zeros(T, 1, nSam, nDyn))
         bf_err    = arrayType(zeros(T, nVox, 1))
     end
-
+    @info "nSam=$nSam, nVox=$nVox, nDyn=$nDyn, nTerm=$nTerm, nCha=$nCha, nBlock=$nBlock"
     u      = arrayType(zeros(Complex{T}, nSam, L_rank, nDyn))
     v      = arrayType(zeros(Complex{T}, nVox, L_rank, nDyn))
     v_star = arrayType(zeros(Complex{T}, nVox, L_rank, nDyn))
+
+    @assert rsvd_chunk > 0 "rsvd_chunk must be positive for chunked rSVD"
+    L_total = L_rank + rsvd_oversample
+    rsvd_chunk = min(rsvd_chunk, nVox)
+    rsvd_workspace = RSVDWorkspace(u, T, nSam, nVox, L_total, rsvd_chunk)
     for dyn = 1:nDyn
         times_dyn     = times[:, dyn]
         kspha_err_dyn = kspha_err[:, :, dyn]
-        u_trunc, s_trunc, v_trunc = perform_rsvd(times_dyn, fieldmap, bf_err, kspha_err_dyn, nVox, nSam, L_rank; seed=rsvd_seed + dyn - 1)
+        u_trunc, s_trunc, v_trunc = perform_rsvd(times_dyn, fieldmap, bf_err, kspha_err_dyn, nVox, nSam, L_rank, rsvd_chunk, rsvd_workspace; 
+            seed=rsvd_seed + dyn - 1, p_oversample=rsvd_oversample)
         v_scaled = v_trunc * Diagonal(s_trunc)
 
         @views u[:, :, dyn]      .= arrayType(u_trunc)

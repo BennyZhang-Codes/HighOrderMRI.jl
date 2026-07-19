@@ -1,3 +1,5 @@
+using CUDA
+
 const T = Float32
 
 function highorder_lowrank_test_data(; nDyn::Int=2)
@@ -22,6 +24,80 @@ function highorder_lowrank_test_data(; nDyn::Int=2)
     mask[1, 1] = false
 
     return grid, kspha, times, fieldmap, csm, mask, recon_terms
+end
+
+@testset "perform_rsvd_chunked" begin
+    
+    grid, kspha, times, fieldmap, _, mask, _ = highorder_lowrank_test_data()
+    nVox = sum(mask)
+    nSam = size(kspha, 2)
+    L_rank = 3
+    p_oversample = 3
+
+    L_total = L_rank + p_oversample
+    
+    
+    fieldmap_masked = vec(fieldmap)[vec(mask)]
+    bf = HighOrderMRI.basisfunc_spha(
+        grid.x[vec(mask)],
+        grid.y[vec(mask)],
+        grid.z[vec(mask)],
+        collect(1:size(kspha, 1)),
+    )
+    bf_err = bf[:, 5:end]
+    kspha_err = kspha[5:end, :, 1]
+
+    if CUDA.functional()
+        times_d = CuArray(times[:, 1])
+        fieldmap_d = CuArray(fieldmap_masked)
+        bf_err_d = CuArray(bf_err)
+        kspha_err_d = CuArray(kspha_err)
+
+        rsvd_workspace = HighOrderMRI.RSVDWorkspace(times_d, T, nSam, nVox, L_total, nVox)
+
+        u_full, s_full, v_full = HighOrderMRI.perform_rsvd(
+            times_d, fieldmap_d, bf_err_d, kspha_err_d,
+            nVox, nSam, L_rank, nVox, rsvd_workspace;
+            seed=17, p_oversample=p_oversample,
+        )
+
+
+        rsvd_workspace = HighOrderMRI.RSVDWorkspace(times_d, T, nSam, nVox, L_total, 3)
+        u_chunk, s_chunk, v_chunk = HighOrderMRI.perform_rsvd(
+            times_d, fieldmap_d, bf_err_d, kspha_err_d,
+            nVox, nSam, L_rank, 3, rsvd_workspace;
+            seed=17, p_oversample=p_oversample,
+        )
+
+        E_full = Array(u_full * Diagonal(s_full) * adjoint(v_full))
+        E_chunk = Array(u_chunk * Diagonal(s_chunk) * adjoint(v_chunk))
+        relerr_chunk = norm(E_full - E_chunk) / norm(E_full)
+
+        @test size(u_chunk) == (nSam, L_rank)
+        @test size(v_chunk) == (nVox, L_rank)
+        @test length(s_chunk) == L_rank
+        @test all(isfinite, Array(s_chunk))
+        @test relerr_chunk < T(1e-4)
+    end
+
+    rsvd_workspace = HighOrderMRI.RSVDWorkspace(times[:, 1], T, nSam, nVox, L_total, nVox)
+    u_full, s_full, v_full = HighOrderMRI.perform_rsvd(
+        times[:, 1], fieldmap_masked, bf_err, kspha_err,
+        nVox, nSam, L_rank, nVox, rsvd_workspace;
+        seed=17,
+    )
+
+    rsvd_workspace = HighOrderMRI.RSVDWorkspace(times[:, 1], T, nSam, nVox, L_total, 3)
+    u_chunk, s_chunk, v_chunk = HighOrderMRI.perform_rsvd(
+        times[:, 1], fieldmap_masked, bf_err, kspha_err,
+        nVox, nSam, L_rank, 3, rsvd_workspace;
+        seed=17,
+    )
+
+    E_full = u_full * Diagonal(s_full) * adjoint(v_full)
+    E_chunk = u_chunk * Diagonal(s_chunk) * adjoint(v_chunk)
+
+    @test norm(E_full - E_chunk) / norm(E_full) < 1f-4
 end
 
 @testset "HighOrderLowRankOp" begin
