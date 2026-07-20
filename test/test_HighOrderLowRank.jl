@@ -121,9 +121,15 @@ end
 
     @test op.nDyn == nDyn
     @test size(op.u) == (nSam, L_rank, nDyn)
-    @test size(op.v) == (sum(mask), L_rank, nDyn)
-    @test size(op.v_star) == (sum(mask), L_rank, nDyn)
-    @test length(op.nfftplan) == nDyn
+    @test size(op.v_shared.basis, 1) == sum(mask)
+
+    expected_shared_rank_max = min(128, sum(mask), L_rank * nDyn)
+    @test op.v_shared.max_rank == expected_shared_rank_max
+    @test size(op.v_shared.coeff) == (expected_shared_rank_max, L_rank, nDyn)
+    @test 0 < op.v_shared.rank <= expected_shared_rank_max
+    @test maximum(op.v_shared.errors) <= 1f-2 + 1f-5
+    @test size(op.nfft_traj, 3) == nDyn
+    @test op.nfft_dyn == 1
     @test size(op) == (nSam * nCha * nDyn, prod(grid.matrixSize))
 
     x = Complex{T}.(reshape(T.(1:prod(grid.matrixSize)), :))
@@ -145,6 +151,10 @@ end
     rhs = dot(x, adjoint(op) * y_test)
     relerr = abs(lhs - rhs) / (abs(lhs) + abs(rhs))
     @test relerr < T(1e-4)
+
+    v_reconstructed = similar(op.u, Complex{T}, sum(mask), L_rank)
+    HighOrderMRI.reconstruct_spatial_factors!(v_reconstructed, op.v_shared, 1)
+    @test all(isfinite, Array(v_reconstructed))
 
     op_2d = HighOrderLowRankOp(
         grid,

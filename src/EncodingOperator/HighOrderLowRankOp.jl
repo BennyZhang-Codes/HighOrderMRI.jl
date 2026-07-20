@@ -4,7 +4,7 @@ using NFFT
 
 export HighOrderLowRankOp
 
-mutable struct HighOrderLowRankWorkspace{AV}
+mutable struct HighOrderLowRankWorkspace{AV, AM}
     grid_flat_prod   :: AV
     grid_flat_ctprod :: AV
     k_signal         :: AV
@@ -12,6 +12,7 @@ mutable struct HighOrderLowRankWorkspace{AV}
     x_weighted       :: AV
     x_masked         :: AV
     x_l              :: AV
+    v_dynamic        :: AM  # [nVox, L]
 end
 
 """
@@ -21,9 +22,10 @@ Supports automatic switching between CPU and GPU compute backends.
 """
 mutable struct HighOrderLowRankOp{
     T, F1, F2, 
-    P<:AbstractNFFTPlan, 
-    AM<:AbstractArray{Complex{T}, 3}, 
-    AN<:AbstractArray{Complex{T}, 2},
+    P<:AbstractNFFTPlan{T},
+    AU<:AbstractArray{Complex{T},3},
+    VS<:SharedSpatialBasis,
+    AN<:AbstractArray{Complex{T},2},
     W<:HighOrderLowRankWorkspace,
     S<:AbstractVector{Complex{T}}
     } <: HOOp{Complex{T}}
@@ -33,12 +35,13 @@ mutable struct HighOrderLowRankOp{
     nDyn       :: Int
     L          :: Int                    # SVD truncation rank
     
-    u          :: AM                     # [nSam, L, nDyn]
-    v_star     :: AM                     # [nVox, L, nDyn]
-    v          :: AM                     # [nVox, L, nDyn]
+    u          :: AU                     # 
+    v_shared   :: VS                     # 
     csm        :: AN                     # [nVox, nCha]
     
-    nfftplan   :: Vector{P}              # NFFT plan adapted for CPU/GPU
+    nfftplan   :: P                      # one reusable CPU/GPU NFFT plan
+    nfft_traj  :: Array{T,3}             # [nDim, nSam, nDyn], stored on CPU
+    nfft_dyn   :: Int                    # trajectory currently active in nfftplan
     mask_idx   :: AbstractVector{Int32}  # Extracted 3D mask indices
     grid_size  :: Tuple                  # gridding size
 
@@ -76,24 +79,26 @@ kspha: [nTerm, nSam, nDyn]
 times: [nSam, nDyn]
 """
 function HighOrderLowRankOp(
-    grid            :: Grid{T}                                                             ,
-    kspha           :: AbstractArray{T, 3}                                                 , 
-    times           :: AbstractArray{T, 2}                                                 ;
-    fieldmap        :: AbstractArray{T}          = zeros(T, grid.matrixSize...)            , 
-    csm             :: AbstractArray{Complex{T}} = ones(Complex{T}, grid.matrixSize..., 1) , 
-    mask            :: AbstractArray{Bool}       = trues(grid.matrixSize...)               ,
-    recon_terms     :: String                    = nothing                                 ,
-    k_nominal       :: AbstractArray{T, 3}       = kspha[2:4, :, :]                        ,
-    kspha_dt                                     = nothing                                 ,
-    nBlock          :: Int64                     = 50                                      , 
+    grid             :: Grid{T}                                                             ,
+    kspha            :: AbstractArray{T, 3}                                                 , 
+    times            :: AbstractArray{T, 2}                                                 ;
+    fieldmap         :: AbstractArray{T}          = zeros(T, grid.matrixSize...)            , 
+    csm              :: AbstractArray{Complex{T}} = ones(Complex{T}, grid.matrixSize..., 1) , 
+    mask             :: AbstractArray{Bool}       = trues(grid.matrixSize...)               ,
+    recon_terms      :: String                    = nothing                                 ,
+    k_nominal        :: AbstractArray{T, 3}       = kspha[2:4, :, :]                        ,
+    kspha_dt                                      = nothing                                 ,
+    nBlock           :: Int64                     = 50                                      , 
     
-    gpus            :: Vector{Int}               = [0]                                     ,
-    L_rank          :: Int                       = 15                                      , 
-    arrayType       :: Type{<:AbstractArray}     = Array                                   ,
-    rsvd_seed       :: Int                       = 1234                                    ,
-    rsvd_chunk      :: Int                       = 4096                                    , 
-    rsvd_oversample :: Int                       = 5                                       ,
-    verbose         :: Bool                      = false                                   ,   
+    arrayType        :: Type{<:AbstractArray}     = Array                                   ,
+    gpus             :: Vector{Int}               = [0]                                     ,
+    L_rank           :: Int                       = 15                                      , 
+    rsvd_seed        :: Int                       = 1234                                    ,
+    rsvd_chunk       :: Int                       = 4096                                    , 
+    rsvd_oversample  :: Int                       = 5                                       ,
+    shared_rank_max  :: Int                       = 128                                     ,
+    shared_basis_tol :: T                         = T(1e-2)                                 , 
+    verbose          :: Bool                      = false                                   ,   
     
     kwargs...          
     ) where T <: AbstractFloat
@@ -143,9 +148,18 @@ function HighOrderLowRankOp(
         bf_err    = arrayType(zeros(T, nVox, 1))
     end
     @info "nSam=$nSam, nVox=$nVox, nDyn=$nDyn, nTerm=$nTerm, nCha=$nCha, nBlock=$nBlock"
-    u      = arrayType(zeros(Complex{T}, nSam, L_rank, nDyn))
-    v      = arrayType(zeros(Complex{T}, nVox, L_rank, nDyn))
-    v_star = arrayType(zeros(Complex{T}, nVox, L_rank, nDyn))
+
+    @assert shared_rank_max > 0 "shared_rank_max must be positive"
+
+    max_possible_shared_rank = min(nVox, L_rank * nDyn)
+    effective_shared_rank_max = min(shared_rank_max, max_possible_shared_rank)
+    if verbose && effective_shared_rank_max != shared_rank_max
+        @info("Clamping shared_rank_max", requested=shared_rank_max, effective=effective_shared_rank_max, max_possible=max_possible_shared_rank)
+    end
+
+    u = arrayType(zeros(Complex{T}, nSam, L_rank, nDyn))
+    v_shared = SharedSpatialBasis(u, T, nVox, L_rank, nDyn, effective_shared_rank_max, shared_basis_tol)
+    shared_workspace = SharedBasisUpdateWorkspace(u, T, nVox, L_rank, effective_shared_rank_max)
 
     @assert rsvd_chunk > 0 "rsvd_chunk must be positive for chunked rSVD"
     L_total = L_rank + rsvd_oversample
@@ -156,31 +170,49 @@ function HighOrderLowRankOp(
         kspha_err_dyn = kspha_err[:, :, dyn]
         u_trunc, s_trunc, v_trunc = perform_rsvd(times_dyn, fieldmap, bf_err, kspha_err_dyn, nVox, nSam, L_rank, rsvd_chunk, rsvd_workspace; 
             seed=rsvd_seed + dyn - 1, p_oversample=rsvd_oversample)
-        v_scaled = v_trunc * Diagonal(s_trunc)
 
-        @views u[:, :, dyn]      .= arrayType(u_trunc)
-        @views v[:, :, dyn]      .= arrayType(v_scaled)
-        @views v_star[:, :, dyn] .= arrayType(conj.(v_scaled))
+        v_scaled = shared_workspace.v_scaled
+        v_scaled .= v_trunc .* reshape(s_trunc, 1, L_rank)
+
+        @views u[:, :, dyn] .= u_trunc
+
+        total_energy = T(real(dot(s_trunc, s_trunc)))
+
+        relative_error, n_added = update_shared_basis!(v_shared, shared_workspace, v_scaled, dyn, total_energy)
+
+        if verbose
+            @info("Shared spatial basis update", dyn=dyn, added=n_added, rank=v_shared.rank, relative_error=relative_error)
+        end
+    end
+    if verbose
+        @info("Shared spatial basis complete", rank=v_shared.rank, max_error=maximum(v_shared.errors), mean_error=sum(v_shared.errors) / length(v_shared.errors))
     end
 
 
     if nZ == 1
         MatrixSize = (nX, nY)
-        scale = 1 / min(grid.Δx, grid.Δy)
+        scale = inv(T(min(grid.Δx, grid.Δy)))
         k_range = 2:3
     else
         MatrixSize = (nX, nY, nZ)
-        scale = 1 / min(grid.Δx, grid.Δy, grid.Δz)
+        scale = inv(T(min(grid.Δx, grid.Δy, grid.Δz)))
         k_range = 2:4
     end
 
-    k1_traj_1 = kspha[k_range, :, 1] ./ scale
-    nfftplan_1 = plan_nfft(arrayType, k1_traj_1, MatrixSize; m=3, σ=1.25, precompute=NFFT.TENSOR)
-    nfftplan = Vector{typeof(nfftplan_1)}(undef, nDyn)
-    nfftplan[1] = nfftplan_1
-    for dyn = 2:nDyn
-        k1_traj = kspha[k_range, :, dyn] ./ scale
-        nfftplan[dyn] = plan_nfft(arrayType, k1_traj, MatrixSize; m=3, σ=1.25, precompute=NFFT.TENSOR)
+    # Grid resolution fields are declared as `Real`, so they may be Float64
+    # even for a Grid{Float32}. Keep the trajectory and NFFT plan tied to the
+    # operator precision; otherwise a Float64 plan cannot dispatch on the
+    # ComplexF32 work arrays used by the GPU operator.
+    nfft_traj = Array{T,3}(kspha[k_range, :, :] ./ scale)
+    k1_traj_1 = copy(@view nfft_traj[:, :, 1])
+    nfftplan = plan_nfft(arrayType, k1_traj_1, MatrixSize; m=3, σ=1.25)
+    @assert eltype(nfftplan) == Complex{T} "NFFT plan precision must match the operator precision"
+    if verbose
+        @info(
+            "Streaming NFFT plan ready",
+            trajectory_eltype=eltype(nfft_traj),
+            plan_eltype=eltype(nfftplan),
+        )
     end
 
     nGrid = prod(grid.matrixSize)
@@ -192,13 +224,14 @@ function HighOrderLowRankOp(
         similar(u, Complex{T}, nVox),
         similar(u, Complex{T}, nVox),
         similar(u, Complex{T}, nVox),
+        shared_workspace.v_scaled,
     )
 
     Mv = Mtu = arrayType(Vector{Complex{T}}(undef, 0))  
-    return HighOrderLowRankOp{T, Nothing, typeof(ctprod!), typeof(nfftplan_1), typeof(u), typeof(csm), typeof(workspace), typeof(Mv)}(
+    return HighOrderLowRankOp{T, Nothing, typeof(ctprod!), typeof(nfftplan), typeof(u), typeof(v_shared), typeof(csm), typeof(workspace), typeof(Mv)}(
         nSam, nVox, nCha, nDyn, L_rank,
-        u, v_star, v, csm,
-        nfftplan, mask_idx, grid.matrixSize, workspace,
+        u, v_shared, csm,
+        nfftplan, nfft_traj, 1, mask_idx, grid.matrixSize, workspace,
         nRow, nCol, false, false, prod!, nothing, ctprod!,
         0, 0, 0, 
         Mv, Mtu,
@@ -208,7 +241,7 @@ end
 # -------------------------------------------------------------------------
 # Fused Kernels
 # -------------------------------------------------------------------------
-# Kernel fusion: Computes x_masked * v_star * csm and writes to the grid in a single step, saving an array read/write!
+# Kernel fusion: Computes x_masked * spatial_factor * csm and writes to the grid.
 function kernel_scatter_csm!(grid_flat, x_w, csm, c, mask_idx, nVox)
     v = (blockIdx().x - 1) * blockDim().x + threadIdx().x
     if v <= nVox
@@ -231,15 +264,26 @@ end
 # -------------------------------------------------------------------------
 # Zero-allocation prod! and ctprod!
 # -------------------------------------------------------------------------
+function activate_nfft_dynamic!(op::HighOrderLowRankOp, dyn::Int)
+    if op.nfft_dyn != dyn
+        nodes = copy(@view op.nfft_traj[:, :, dyn])
+        update_nfft_nodes!(op.nfftplan, nodes)
+        op.nfft_dyn = dyn
+    end
+
+    return op.nfftplan
+end
+
 function prod!(y::AbstractVector{Complex{T}}, op::HighOrderLowRankOp{T}, x::AbstractVector{Complex{T}}) where T
 
     workspace  = op.workspace
     grid_flat  = workspace.grid_flat_prod
     k_signal   = workspace.k_signal
     x_weighted = workspace.x_weighted
+    v_dynamic  = workspace.v_dynamic
 
     x_masked = length(x) == prod(op.grid_size) ? view(x, op.mask_idx) : x
-    y = reshape(y, op.nSam, op.nCha, op.nDyn)
+    y = reshape(y, op.nSam, op.nDyn, op.nCha)
     fill!(y, 0) 
     
     nfft_dims = op.grid_size[end] == 1 ? op.grid_size[1:2] : op.grid_size
@@ -249,8 +293,10 @@ function prod!(y::AbstractVector{Complex{T}}, op::HighOrderLowRankOp{T}, x::Abst
     blocks_vox = cld(op.nVox, threads)
 
     for dyn = 1:op.nDyn
+        nfftplan = activate_nfft_dynamic!(op, dyn)
+        reconstruct_spatial_factors!(v_dynamic, op.v_shared, dyn)
         for l = 1:op.L
-            @views @. x_weighted = x_masked * op.v_star[:, l, dyn]
+            @views @. x_weighted = x_masked * conj(v_dynamic[:, l])
             
             for c = 1:op.nCha
                 if grid_flat isa CuArray
@@ -261,8 +307,8 @@ function prod!(y::AbstractVector{Complex{T}}, op::HighOrderLowRankOp{T}, x::Abst
                     @views @. grid_flat[op.mask_idx] = x_weighted * op.csm[:, c]
                 end
                 
-                mul!(k_signal, op.nfftplan[dyn], nfft_img)
-                @views @. y[:, c, dyn] += k_signal * op.u[:, l, dyn]
+                mul!(k_signal, nfftplan, nfft_img)
+                @views @. y[:, dyn, c] += k_signal * op.u[:, l, dyn]
             end
         end
     end
@@ -272,13 +318,14 @@ end
 
 function ctprod!(x::AbstractVector{Complex{T}}, op::HighOrderLowRankOp{T}, y::AbstractVector{Complex{T}}) where T
 
-    y = reshape(y, op.nSam, op.nCha, op.nDyn)
+    y = reshape(y, op.nSam, op.nDyn, op.nCha)
 
     workspace  = op.workspace
     grid_flat  = workspace.grid_flat_ctprod
     k_weighted = workspace.k_weighted
     x_masked   = workspace.x_masked
     x_l        = workspace.x_l
+    v_dynamic  = workspace.v_dynamic
 
     fill!(x_masked, 0)
 
@@ -289,12 +336,14 @@ function ctprod!(x::AbstractVector{Complex{T}}, op::HighOrderLowRankOp{T}, y::Ab
     blocks_vox = cld(op.nVox, threads)
 
     for dyn = 1:op.nDyn
+        nfftplan = activate_nfft_dynamic!(op, dyn)
+        reconstruct_spatial_factors!(v_dynamic, op.v_shared, dyn)
         for l = 1:op.L
             fill!(x_l, 0)
             
             for c = 1:op.nCha
-                @views @. k_weighted = y[:, c, dyn] * conj(op.u[:, l, dyn])
-                mul!(nfft_img, adjoint(op.nfftplan[dyn]), k_weighted)
+                @views @. k_weighted = y[:, dyn, c] * conj(op.u[:, l, dyn])
+                mul!(nfft_img, adjoint(nfftplan), k_weighted)
                 
                 if grid_flat isa CuArray
                     @cuda threads=threads blocks=blocks_vox kernel_gather_csm!(
@@ -304,7 +353,7 @@ function ctprod!(x::AbstractVector{Complex{T}}, op::HighOrderLowRankOp{T}, y::Ab
                     @views @. x_l += grid_flat[op.mask_idx] * conj(op.csm[:, c])
                 end
             end
-            @views @. x_masked += x_l * op.v[:, l, dyn]
+            @views @. x_masked += x_l * v_dynamic[:, l]
         end
     end
     
@@ -368,8 +417,7 @@ function mul!(
 end
 
 function Base.:*(op::HighOrderLowRankOp{T}, x::AbstractVector{Complex{T}}) where T
-    y = fill!(similar(op.v, Complex{T}, op.nSam * op.nCha * op.nDyn), 0)
+    y = fill!(similar(op.u, Complex{T}, op.nSam * op.nCha * op.nDyn), 0)
     mul!(y, op, x)
     return y
 end
-
