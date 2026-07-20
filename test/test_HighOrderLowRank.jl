@@ -1,4 +1,5 @@
 using CUDA
+using AbstractNFFTs
 
 const T = Float32
 
@@ -120,17 +121,38 @@ end
     )
 
     @test op.nDyn == nDyn
-    @test size(op.u) == (nSam, L_rank, nDyn)
-    @test size(op.v_shared.basis, 1) == sum(mask)
 
-    expected_shared_rank_max = min(128, sum(mask), L_rank * nDyn)
-    @test op.v_shared.max_rank == expected_shared_rank_max
-    @test size(op.v_shared.coeff) == (expected_shared_rank_max, L_rank, nDyn)
-    @test 0 < op.v_shared.rank <= expected_shared_rank_max
-    @test maximum(op.v_shared.errors) <= 1f-2 + 1f-5
+    nVox = sum(mask)
+    nPoint = nSam * nDyn
+    expected_shared_rank_max = min(128, nVox, L_rank * nDyn)
+    shared_rank = size(op.basis, 2)
+
+    @test op.nDyn == nDyn
+    @test 0 < shared_rank <= expected_shared_rank_max
+
+    @test size(op.basis) == (nVox, shared_rank)
+
+    @test size(op.q) == (nPoint, shared_rank)
+
+    @test size(op.csm) == (nVox, nCha)
+    @test eltype(op.q) == Complex{T}
+    @test eltype(op.basis) == Complex{T}
+
+    @test all(isfinite, Array(op.q))
+    @test all(isfinite, Array(op.basis))
+
+    @test !hasproperty(op, :u)
+    @test !hasproperty(op, :v_shared)
+
     @test size(op.nfft_traj, 3) == nDyn
-    @test op.nfft_dyn == 1
+    @test size(op.nfft_traj, 2) == nSam
+    @test AbstractNFFTs.size_out(op.nfftplan) == (nPoint,)
+    
+    @test length(op.workspace.k_signal) == nPoint
+    @test length(op.workspace.k_weighted) == nPoint
+    
     @test size(op) == (nSam * nCha * nDyn, prod(grid.matrixSize))
+
 
     x = Complex{T}.(reshape(T.(1:prod(grid.matrixSize)), :))
     y = op * x
@@ -149,12 +171,8 @@ end
     y_test = Complex{T}.(collect(1:length(y))) .* Complex{T}(T(0.1), T(-0.05))
     lhs = dot(op * x, y_test)
     rhs = dot(x, adjoint(op) * y_test)
-    relerr = abs(lhs - rhs) / (abs(lhs) + abs(rhs))
+    relerr = abs(lhs - rhs) / max(abs(lhs), abs(rhs), eps(T))
     @test relerr < T(1e-4)
-
-    v_reconstructed = similar(op.u, Complex{T}, sum(mask), L_rank)
-    HighOrderMRI.reconstruct_spatial_factors!(v_reconstructed, op.v_shared, 1)
-    @test all(isfinite, Array(v_reconstructed))
 
     op_2d = HighOrderLowRankOp(
         grid,
@@ -167,6 +185,10 @@ end
         L_rank=L_rank,
         rsvd_seed=0,
     )
+    shared_rank_2d = size(op_2d.basis, 2)
     @test op_2d.nDyn == 1
+    @test size(op_2d.q) == (nSam, shared_rank_2d)
+    @test size(op_2d.basis) == (sum(mask), shared_rank_2d)
+    @test AbstractNFFTs.size_out(op_2d.nfftplan) == (nSam,)
     @test size(op_2d) == (nSam * nCha, prod(grid.matrixSize))
 end
