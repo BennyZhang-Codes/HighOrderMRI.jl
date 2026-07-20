@@ -94,6 +94,7 @@ function HighOrderLowRankOp(
     rsvd_seed        :: Int                       = 1234                                    ,
     rsvd_chunk       :: Int                       = 4096                                    , 
     rsvd_oversample  :: Int                       = 5                                       ,
+    rsvd_finalize    :: Symbol                    = :svd                                    ,
     shared_rank_max  :: Int                       = 128                                     ,
     shared_basis_tol :: T                         = T(1e-2)                                 , 
     verbose          :: Bool                      = false                                   ,   
@@ -120,7 +121,8 @@ function HighOrderLowRankOp(
     @assert size(csm)[1:3]     == (nX, nY, nZ)  "Coil-SensitivityMap must have same size as $((nX, nY, nZ)) in grid"
     @assert size(mask)         == (nX, nY, nZ)  "Mask must have same size as $((nX, nY, nZ)) in grid"
     @assert size(times)        == (nSam, nDyn)  "times must have size $((nSam, nDyn))"
-    
+    rsvd_finalize in (:svd, :gram) || throw(ArgumentError("rsvd_finalize must be :svd or :gram, " * "got $rsvd_finalize"))
+
     # prepare data 
     mask     = vec(mask)                               # [prod(MatrixSize)]
     kspha    = prep_kspha(kspha, k_nominal, nTerm; recon_terms=recon_terms)
@@ -166,15 +168,22 @@ function HighOrderLowRankOp(
     for dyn = 1:nDyn
         times_dyn     = times[:, dyn]
         kspha_err_dyn = kspha_err[:, :, dyn]
-        u_trunc, s_trunc, v_trunc = perform_rsvd(times_dyn, fieldmap, bf_err, kspha_err_dyn, nVox, nSam, L_rank, rsvd_chunk, rsvd_workspace; 
-            seed=rsvd_seed + dyn - 1, p_oversample=rsvd_oversample)
 
         v_scaled = shared_workspace.v_scaled
-        v_scaled .= v_trunc .* reshape(s_trunc, 1, L_rank)
 
+        if rsvd_finalize === :gram
+            u_trunc, total_energy = perform_rsvd(times_dyn, fieldmap, bf_err, kspha_err_dyn, nVox, nSam, L_rank, rsvd_chunk, rsvd_workspace; 
+                seed=rsvd_seed + dyn - 1, p_oversample=rsvd_oversample, rsvd_finalize=:gram, v_scaled=v_scaled)
+        elseif rsvd_finalize === :svd
+            u_trunc, s_trunc, v_trunc = perform_rsvd(times_dyn, fieldmap, bf_err, kspha_err_dyn, nVox, nSam, L_rank, rsvd_chunk, rsvd_workspace; 
+                seed=rsvd_seed + dyn - 1, p_oversample=rsvd_oversample, rsvd_finalize=:svd)
+
+            v_scaled .= v_trunc .* reshape(s_trunc, 1, L_rank)
+        
+            total_energy = T(real(dot(s_trunc, s_trunc)))
+        end
         @views u[:, :, dyn] .= u_trunc
 
-        total_energy = T(real(dot(s_trunc, s_trunc)))
 
         relative_error, n_added = update_shared_basis!(v_shared, shared_workspace, v_scaled, dyn, total_energy)
 

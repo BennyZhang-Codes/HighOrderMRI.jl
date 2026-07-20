@@ -177,18 +177,22 @@ end
 
 
 """
-phase:    [nSam, chunk_size] Float32
-encoding: [nSam, chunk_size] ComplexF32
-omega:    [nVox, L_total] ComplexF32
-W:        [nSam, L_total] ComplexF32
-B_adj:    [nVox, L_total] ComplexF32
+phase         [nSam, chunk_size] Float32
+encoding      [nSam, chunk_size] ComplexF32
+omega         [nVox, L_total] ComplexF32
+W             [nSam, L_total] ComplexF32
+B_adj         [nVox, L_total] ComplexF32
+gram          [L_total, L_total]
+right_vectors [L_total, L_total]
 """
 mutable struct RSVDWorkspace{RM<:AbstractMatrix, CM<:AbstractMatrix}
-    phase    :: RM  # [nSam, chunk_size]
-    encoding :: CM  # [nSam, chunk_size]
-    omega    :: CM  # [nVox, L_total]
-    W        :: CM  # [nSam, L_total]
-    B_adj    :: CM  # [nVox, L_total]
+    phase         :: RM  # [nSam, chunk_size]
+    encoding      :: CM  # [nSam, chunk_size]
+    omega         :: CM  # [nVox, L_total]
+    W             :: CM  # [nSam, L_total]
+    B_adj         :: CM  # [nVox, L_total]
+    gram          :: CM  # [L_total, L_total]
+    right_vectors :: CM  # [L_total, L_total]
 end
 
 function RSVDWorkspace(
@@ -206,8 +210,108 @@ function RSVDWorkspace(
         similar(prototype, Complex{T}, nVox, L_total),
         similar(prototype, Complex{T}, nSam, L_total),
         similar(prototype, Complex{T}, nVox, L_total),
+        similar(prototype, Complex{T}, L_total, L_total),
+        similar(prototype, Complex{T}, L_total, L_total),
     )
 end
+
+function finalize_rsvd_svd_scaled!(
+    v_scaled :: AbstractMatrix{Complex{T}},
+    Q        :: AbstractMatrix{Complex{T}},
+    B_adj    :: AbstractMatrix{Complex{T}},
+    L_rank   :: Int,
+) where T <: AbstractFloat
+
+    F = svd!(B_adj; full=false)
+
+    Z = @view F.V[:, 1:L_rank]
+    P = @view F.U[:, 1:L_rank]
+    s = @view F.S[1:L_rank]
+
+    # U = Q * Z
+    u_trunc = Q * Z
+
+    # Vscaled = P * Diagonal(s)
+    copyto!(v_scaled, P)
+    v_scaled .*= reshape(s, 1, L_rank)
+
+    total_energy = T(real(dot(s, s)))
+
+    return u_trunc, total_energy
+end
+
+function finalize_rsvd_gram!(
+    v_scaled :: AbstractMatrix{Complex{T}},
+    Q        :: AbstractMatrix{Complex{T}},
+    B_adj    :: AbstractMatrix{Complex{T}},
+    workspace:: RSVDWorkspace,
+    L_rank   :: Int;
+    allow_fallback::Bool = true
+) where T <: AbstractFloat
+
+    gram = workspace.gram
+
+    # G = BᴴB
+    mul!(gram, adjoint(B_adj), B_adj)
+
+    gram_cpu = Array(gram)
+
+    gram_cpu = (gram_cpu + adjoint(gram_cpu)) * T(0.5)
+
+    eig = eigen(Hermitian(gram_cpu))
+
+    order = sortperm(real.(eig.values); rev=true)
+
+    values = T.(real.(eig.values[order]))
+    vectors_cpu = eig.vectors[:, order]
+
+    if !all(isfinite, values) || !all(isfinite, vectors_cpu)
+        if !allow_fallback
+            error("Gram finalization failed numerical validation")
+        end
+        @warn "Non-finite Gram eigendecomposition; falling back to SVD" maxlog=1
+        return finalize_rsvd_svd_scaled!(v_scaled, Q, B_adj, L_rank)
+    end
+
+    λmax = maximum(abs, values)
+
+    if λmax <= zero(T)
+        if !allow_fallback
+            error("Gram finalization failed numerical validation")
+        end
+        @warn "Degenerate Gram matrix; falling back to SVD" maxlog=1
+        return finalize_rsvd_svd_scaled!(v_scaled, Q, B_adj, L_rank)
+    end
+
+    negative_tol = T(10) * eps(T) * T(size(gram, 1)) * λmax
+
+    if minimum(values) < -negative_tol
+        if !allow_fallback
+            error("Gram finalization failed numerical validation")
+        end
+        @warn "Gram matrix has significant negative eigenvalues; falling back to SVD" minimum_eigenvalue=minimum(values) negative_tol maxlog=1
+        return finalize_rsvd_svd_scaled!(v_scaled, Q, B_adj, L_rank)
+    end
+
+    values .= max.(values, zero(T))
+
+    copyto!(workspace.right_vectors, vectors_cpu)
+
+    Z = @view workspace.right_vectors[:, 1:L_rank]
+
+    # U = QZ
+    u_trunc = Q * Z
+
+    # Vscaled = BZ = PΣ
+    mul!(v_scaled, B_adj, Z)
+
+    # λ = σ²
+    total_energy = T(sum(@view values[1:L_rank]))
+
+    return u_trunc, total_energy
+end
+
+
 
 
 function perform_rsvd(
@@ -222,6 +326,9 @@ function perform_rsvd(
     workspace    :: RSVDWorkspace;
     seed         :: Int = 0,
     p_oversample :: Int = 5,
+    rsvd_finalize:: Symbol = :svd,
+    v_scaled              = nothing,
+    gram_allow_fallback::Bool = true,
     ) where T <: AbstractFloat
 
     @info "Performing chunked rSVD on CPU..."
@@ -299,13 +406,26 @@ function perform_rsvd(
         mul!(B_adj_chunk, adjoint(E_chunk), Q_cpu)
     end
 
-    F = svd!(B_adj_cpu)
 
-    u_trunc = Q_cpu * F.V[:, 1:L_rank]
-    s_trunc = F.S[1:L_rank]
-    v_trunc = F.U[:, 1:L_rank]
+    if rsvd_finalize === :svd
 
-    return u_trunc, s_trunc, v_trunc
+        F = svd!(B_adj_cpu; full=false)
+    
+        u_trunc = Q_cpu * F.V[:, 1:L_rank]
+        s_trunc = F.S[1:L_rank]
+        v_trunc = F.U[:, 1:L_rank]
+
+        return u_trunc, s_trunc, v_trunc
+    
+    elseif rsvd_finalize === :gram
+        v_scaled === nothing && throw(ArgumentError("v_scaled must be supplied when rsvd_finalize=:gram"))
+    
+        @assert size(v_scaled) == (nVox, L_rank)
+    
+        return finalize_rsvd_gram!(v_scaled, Q_cpu, B_adj_cpu, workspace, L_rank, allow_fallback=gram_allow_fallback)
+    else
+        throw(ArgumentError("Unsupported rsvd_finalize=$rsvd_finalize; " * "expected :svd or :gram"))
+    end
 end
 
 
@@ -338,6 +458,9 @@ function perform_rsvd(
     workspace    :: RSVDWorkspace;
     seed         :: Int = 0,
     p_oversample :: Int = 5,
+    rsvd_finalize:: Symbol = :svd,
+    v_scaled              = nothing,
+    gram_allow_fallback::Bool = true,
     ) where T <: AbstractFloat
 
     @info "Performing chunked rSVD on GPU..."
@@ -422,11 +545,23 @@ function perform_rsvd(
         mul!(B_adj_chunk, adjoint(E_chunk), Q_d)
     end
 
-    F = svd!(B_adj_d; full=false)
+    if rsvd_finalize === :svd
 
-    u_trunc = Q_d * F.V[:, 1:L_rank]
-    s_trunc = F.S[1:L_rank]
-    v_trunc = F.U[:, 1:L_rank]
-
-    return u_trunc, s_trunc, v_trunc
+        F = svd!(B_adj_d; full=false)
+    
+        u_trunc = Q_d * F.V[:, 1:L_rank]
+        s_trunc = F.S[1:L_rank]
+        v_trunc = F.U[:, 1:L_rank]
+    
+        return u_trunc, s_trunc, v_trunc
+    
+    elseif rsvd_finalize === :gram
+        v_scaled === nothing && throw(ArgumentError("v_scaled must be supplied when rsvd_finalize=:gram"))
+    
+        @assert size(v_scaled) == (nVox, L_rank)
+    
+        return finalize_rsvd_gram!(v_scaled, Q_d, B_adj_d, workspace, L_rank, allow_fallback=gram_allow_fallback)
+    else
+        throw(ArgumentError("Unsupported rsvd_finalize=$rsvd_finalize; " * "expected :svd or :gram"))
+    end
 end

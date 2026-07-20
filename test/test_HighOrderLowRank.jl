@@ -55,7 +55,12 @@ end
         kspha_err_d = CuArray(kspha_err)
 
         rsvd_workspace = HighOrderMRI.RSVDWorkspace(times_d, T, nSam, nVox, L_total, nVox)
-
+        @assert size(rsvd_workspace.omega)         == (nVox, L_total)
+        @assert size(rsvd_workspace.W)             == (nSam, L_total)
+        @assert size(rsvd_workspace.B_adj)         == (nVox, L_total)
+        @assert size(rsvd_workspace.gram)          == (L_total, L_total)
+        @assert size(rsvd_workspace.right_vectors) == (L_total, L_total)
+        
         u_full, s_full, v_full = HighOrderMRI.perform_rsvd(
             times_d, fieldmap_d, bf_err_d, kspha_err_d,
             nVox, nSam, L_rank, nVox, rsvd_workspace;
@@ -79,26 +84,75 @@ end
         @test length(s_chunk) == L_rank
         @test all(isfinite, Array(s_chunk))
         @test relerr_chunk < T(1e-4)
+
+
+        L_rank_gram = 1
+        p_oversample_gram = 3
+        L_total_gram = L_rank_gram + p_oversample_gram
+
+        rsvd_workspace_gram = HighOrderMRI.RSVDWorkspace(times_d, T, nSam, nVox, L_total_gram, 3)
+        
+        v_scaled_gram = similar(times_d, Complex{T}, nVox, L_rank_gram)
+        
+        u_gram, energy_gram = HighOrderMRI.perform_rsvd(times_d, fieldmap_d, bf_err_d,
+            kspha_err_d, nVox, nSam, L_rank_gram, 3, rsvd_workspace_gram;
+            seed=17, p_oversample=p_oversample, 
+            rsvd_finalize=:gram, v_scaled=v_scaled_gram, gram_allow_fallback=false)
+        
+        u_chunk, s_chunk, v_chunk = HighOrderMRI.perform_rsvd(times_d, fieldmap_d, bf_err_d, kspha_err_d,
+            nVox, nSam, L_rank_gram, 3, rsvd_workspace_gram;
+            seed=17, p_oversample=p_oversample,
+            rsvd_finalize=:svd,
+        )
+
+        E_svd = Array(u_chunk * Diagonal(s_chunk) * adjoint(v_chunk))
+        E_gram = Array(u_gram * adjoint(v_scaled_gram))
+        gram_error = norm(E_svd - E_gram) / max(norm(E_svd), eps(T))
+        energy_svd = sum(abs2, Array(s_chunk))
+        
+        @test gram_error < T(1e-3)
+        @test energy_gram ≈ energy_svd rtol=T(1e-3)
+        @test all(isfinite, Array(u_gram))
+        @test all(isfinite, Array(v_scaled_gram))
     end
 
     rsvd_workspace = HighOrderMRI.RSVDWorkspace(times[:, 1], T, nSam, nVox, L_total, nVox)
+    @assert size(rsvd_workspace.omega)         == (nVox, L_total)
+    @assert size(rsvd_workspace.W)             == (nSam, L_total)
+    @assert size(rsvd_workspace.B_adj)         == (nVox, L_total)
+    @assert size(rsvd_workspace.gram)          == (L_total, L_total)
+    @assert size(rsvd_workspace.right_vectors) == (L_total, L_total)
+
     u_full, s_full, v_full = HighOrderMRI.perform_rsvd(
         times[:, 1], fieldmap_masked, bf_err, kspha_err,
         nVox, nSam, L_rank, nVox, rsvd_workspace;
-        seed=17,
+        seed=17, p_oversample=p_oversample,
     )
 
     rsvd_workspace = HighOrderMRI.RSVDWorkspace(times[:, 1], T, nSam, nVox, L_total, 3)
     u_chunk, s_chunk, v_chunk = HighOrderMRI.perform_rsvd(
         times[:, 1], fieldmap_masked, bf_err, kspha_err,
         nVox, nSam, L_rank, 3, rsvd_workspace;
-        seed=17,
+        seed=17, p_oversample=p_oversample,
     )
 
     E_full = u_full * Diagonal(s_full) * adjoint(v_full)
     E_chunk = u_chunk * Diagonal(s_chunk) * adjoint(v_chunk)
 
     @test norm(E_full - E_chunk) / norm(E_full) < 1f-4
+
+    rsvd_workspace_gram = HighOrderMRI.RSVDWorkspace(times[:, 1], T, nSam, nVox, L_total, 3)
+    v_scaled_gram = zeros(Complex{T}, nVox, L_rank)
+    
+    u_gram, energy_gram = HighOrderMRI.perform_rsvd(times[:, 1], fieldmap_masked, bf_err, kspha_err,
+        nVox, nSam, L_rank, 3, rsvd_workspace_gram; 
+        seed=17, p_oversample=p_oversample,
+        rsvd_finalize=:gram, v_scaled=v_scaled_gram, gram_allow_fallback=false)
+    
+    E_gram = u_gram * adjoint(v_scaled_gram)
+    
+    @test norm(E_chunk - E_gram) / norm(E_chunk) < T(1e-3)
+    @test energy_gram ≈ sum(abs2, s_chunk) rtol=T(1e-3)
 end
 
 @testset "HighOrderLowRankOp" begin
@@ -118,6 +172,7 @@ end
         recon_terms=recon_terms,
         L_rank=L_rank,
         rsvd_seed=0,
+        rsvd_finalize=:gram,
     )
 
     @test op.nDyn == nDyn
@@ -184,6 +239,7 @@ end
         recon_terms=recon_terms,
         L_rank=L_rank,
         rsvd_seed=0,
+        rsvd_finalize=:gram,
     )
     shared_rank_2d = size(op_2d.basis, 2)
     @test op_2d.nDyn == 1
