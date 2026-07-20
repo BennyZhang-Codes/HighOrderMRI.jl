@@ -429,15 +429,27 @@ function perform_rsvd(
 end
 
 
-function kernel_phase_to_encoding!(E, phase)
-    idx = (blockIdx().x - 1) * blockDim().x + threadIdx().x
+function kernel_phase_to_encoding!(
+    encoding,
+    phase_highorder,
+    times,
+    fieldmap,
+)
+    iSam = (blockIdx().x - 1) * blockDim().x + threadIdx().x
+    iVox = (blockIdx().y - 1) * blockDim().y + threadIdx().y
 
-    if idx <= length(phase)
-        @inbounds E[idx] = cis(eltype(phase)(2π) * phase[idx])
+    if iSam <= size(encoding, 1) && iVox <= size(encoding, 2)
+        @inbounds begin
+            phase = phase_highorder[iSam, iVox] + times[iSam] * fieldmap[iVox]
+
+            encoding[iSam, iVox] = cis(eltype(phase_highorder)(2π) * phase)
+        end
     end
 
     return nothing
 end
+
+
 
 """
 phase_chunk: [nSam, chunk_size] Float32
@@ -481,16 +493,7 @@ function perform_rsvd(
     CUDA.seed!(seed)
     randn!(Ω_d)
 
-    # CUDA.seed!(seed)
-
-    # Ω_d = CUDA.randn(Complex{T}, nVox, L_total) 
-    # W_d = CUDA.zeros(Complex{T}, nSam, L_total)
-
-    # phase_workspace = CUDA.zeros(T, nSam, chunk_size)
-    # E_workspace = CUDA.zeros(Complex{T}, nSam, chunk_size)
-
-    times_mat = reshape(times, :, 1)
-    threads = 256
+    kernel_threads = (32, 8)
 
     # First pass: W = E * Ω
     for vox_start = 1:chunk_size:nVox
@@ -505,13 +508,9 @@ function perform_rsvd(
         bf_chunk = @view bf[vox_range, :]
         Ω_chunk = @view Ω_d[vox_range, :]
 
-        # phase_chunk = times * fieldmap_chunk' + kspha_err' * bf_chunk'
-        mul!(phase_chunk, times_mat, reshape(fieldmap_chunk, 1, :))
-
-        mul!(phase_chunk, transpose(kspha_err), transpose(bf_chunk), one(T), one(T))
-
-        blocks = cld(length(phase_chunk), threads)
-        @cuda threads=threads blocks=blocks kernel_phase_to_encoding!(E_chunk, phase_chunk)
+        mul!(phase_chunk, transpose(kspha_err), transpose(bf_chunk), one(T), zero(T))
+        kernel_blocks = (cld(nSam, kernel_threads[1]), cld(nChunk, kernel_threads[2]))
+        @cuda threads=kernel_threads blocks=kernel_blocks kernel_phase_to_encoding!(E_chunk, phase_chunk, times, fieldmap_chunk)
 
         mul!(W_d, E_chunk, Ω_chunk, one(Complex{T}), one(Complex{T}))
     end
@@ -535,12 +534,9 @@ function perform_rsvd(
         bf_chunk = @view bf[vox_range, :]
         B_adj_chunk = @view B_adj_d[vox_range, :]
 
-        mul!(phase_chunk, times_mat, reshape(fieldmap_chunk, 1, :))
-
-        mul!(phase_chunk, transpose(kspha_err), transpose(bf_chunk), one(T), one(T))
-
-        blocks = cld(length(phase_chunk), threads)
-        @cuda threads=threads blocks=blocks kernel_phase_to_encoding!(E_chunk, phase_chunk)
+        mul!(phase_chunk, transpose(kspha_err), transpose(bf_chunk), one(T), zero(T))
+        kernel_blocks = (cld(nSam, kernel_threads[1]), cld(nChunk, kernel_threads[2]))
+        @cuda threads=kernel_threads blocks=kernel_blocks kernel_phase_to_encoding!(E_chunk, phase_chunk, times, fieldmap_chunk)
 
         mul!(B_adj_chunk, adjoint(E_chunk), Q_d)
     end
