@@ -312,24 +312,24 @@ function finalize_rsvd_gram!(
 end
 
 
-
-
 function perform_rsvd(
-    times        :: Array{T}, 
-    fieldmap     :: Array{T}, 
-    bf           :: Array{T, 2}, 
-    kspha_err    :: Array{T, 2}, 
-    nVox         :: Int, 
-    nSam         :: Int, 
-    L_rank       :: Int,
-    chunk_size   :: Int,
-    workspace    :: RSVDWorkspace;
-    seed         :: Int = 0,
-    p_oversample :: Int = 5,
-    rsvd_finalize:: Symbol = :svd,
-    v_scaled              = nothing,
+    times         :: Array{T}, 
+    fieldmap      :: Array{T}, 
+    bf            :: Array{T, 2}, 
+    kspha_err     :: Array{T, 2}, 
+    nVox          :: Int, 
+    nSam          :: Int, 
+    L_rank        :: Int,
+    chunk_size    :: Int,
+    workspace     :: RSVDWorkspace;
+    seed          :: Int = 0,
+    p_oversample  :: Int = 5,
+    rsvd_finalize :: Symbol = :svd,
+    rsvd_backend  :: Symbol = :chunked,
+    v_scaled                = nothing,
     gram_allow_fallback::Bool = true,
     ) where T <: AbstractFloat
+    rsvd_backend === :chunked || throw(ArgumentError("rsvd_backend=$rsvd_backend is currently supported only for CuArray"))
 
     @info "Performing chunked rSVD on CPU..."
 
@@ -459,23 +459,26 @@ W:           [nSam, L_total]
 B_adj:       [nVox, L_total]
 """
 function perform_rsvd(
-    times        :: CuArray{T}, 
-    fieldmap     :: CuArray{T}, 
-    bf           :: CuArray{T, 2}, 
-    kspha_err    :: CuArray{T, 2}, 
-    nVox         :: Int, 
-    nSam         :: Int, 
-    L_rank       :: Int,
-    chunk_size   :: Int,
-    workspace    :: RSVDWorkspace;
-    seed         :: Int = 0,
-    p_oversample :: Int = 5,
-    rsvd_finalize:: Symbol = :svd,
+    times         :: CuArray{T}, 
+    fieldmap      :: CuArray{T}, 
+    bf            :: CuArray{T, 2}, 
+    kspha_err     :: CuArray{T, 2}, 
+    nVox          :: Int, 
+    nSam          :: Int, 
+    L_rank        :: Int,
+    chunk_size    :: Int,
+    workspace     :: RSVDWorkspace;
+    seed          :: Int = 0,
+    p_oversample  :: Int = 5,
+    rsvd_finalize :: Symbol = :svd,
+    rsvd_backend  :: Symbol = :kernel,
     v_scaled              = nothing,
     gram_allow_fallback::Bool = true,
     ) where T <: AbstractFloat
 
-    @info "Performing chunked rSVD on GPU..."
+    rsvd_backend in (:chunked, :adjoint_kernel, :kernel) || throw(ArgumentError("Unsupported rsvd_backend=$rsvd_backend; " * "expected :chunked, :adjoint_kernel, or :kernel"))
+
+    @info "Performing chunked rSVD on GPU..." backend=rsvd_backend
 
     L_total = L_rank + p_oversample
     @assert L_total <= min(nSam, nVox) "rSVD rank exceeds matrix dimensions"
@@ -488,31 +491,34 @@ function perform_rsvd(
     W_d             = workspace.W
     B_adj_d         = workspace.B_adj
 
-    fill!(W_d, 0)
-
     CUDA.seed!(seed)
     randn!(Ω_d)
 
     kernel_threads = (32, 8)
 
     # First pass: W = E * Ω
-    for vox_start = 1:chunk_size:nVox
-        vox_stop = min(vox_start + chunk_size - 1, nVox)
-        vox_range = vox_start:vox_stop
-        nChunk = length(vox_range)
+    if rsvd_backend === :kernel
+        run_kernel_rsvd_forward!(W_d, Ω_d, times, fieldmap, bf, kspha_err; threads=128)
+    else
+        fill!(W_d, zero(Complex{T}))
+        for vox_start = 1:chunk_size:nVox
+            vox_stop = min(vox_start + chunk_size - 1, nVox)
+            vox_range = vox_start:vox_stop
+            nChunk = length(vox_range)
 
-        phase_chunk = @view phase_workspace[:, 1:nChunk]
-        E_chunk = @view E_workspace[:, 1:nChunk]
+            phase_chunk = @view phase_workspace[:, 1:nChunk]
+            E_chunk = @view E_workspace[:, 1:nChunk]
 
-        fieldmap_chunk = @view fieldmap[vox_range]
-        bf_chunk = @view bf[vox_range, :]
-        Ω_chunk = @view Ω_d[vox_range, :]
+            fieldmap_chunk = @view fieldmap[vox_range]
+            bf_chunk = @view bf[vox_range, :]
+            Ω_chunk = @view Ω_d[vox_range, :]
 
-        mul!(phase_chunk, transpose(kspha_err), transpose(bf_chunk), one(T), zero(T))
-        kernel_blocks = (cld(nSam, kernel_threads[1]), cld(nChunk, kernel_threads[2]))
-        @cuda threads=kernel_threads blocks=kernel_blocks kernel_phase_to_encoding!(E_chunk, phase_chunk, times, fieldmap_chunk)
+            mul!(phase_chunk, transpose(kspha_err), transpose(bf_chunk), one(T), zero(T))
+            kernel_blocks = (cld(nSam, kernel_threads[1]), cld(nChunk, kernel_threads[2]))
+            @cuda threads=kernel_threads blocks=kernel_blocks kernel_phase_to_encoding!(E_chunk, phase_chunk, times, fieldmap_chunk)
 
-        mul!(W_d, E_chunk, Ω_chunk, one(Complex{T}), one(Complex{T}))
+            mul!(W_d, E_chunk, Ω_chunk, one(Complex{T}), one(Complex{T}))
+        end
     end
 
     # W = Q * R
@@ -522,23 +528,27 @@ function perform_rsvd(
     # Second pass: B_adj = E' * Q
     # B_adj_d = CUDA.zeros(Complex{T}, nVox, L_total)
 
-    for vox_start = 1:chunk_size:nVox
-        vox_stop = min(vox_start + chunk_size - 1, nVox)
-        vox_range = vox_start:vox_stop
-        nChunk = length(vox_range)
+    if rsvd_backend in (:adjoint_kernel, :kernel)
+        run_kernel_rsvd_adjoint_warp!(B_adj_d, Q_d, times, fieldmap, bf, kspha_err; threads=256)
+    else
+        for vox_start = 1:chunk_size:nVox
+            vox_stop = min(vox_start + chunk_size - 1, nVox)
+            vox_range = vox_start:vox_stop
+            nChunk = length(vox_range)
 
-        phase_chunk = @view phase_workspace[:, 1:nChunk]
-        E_chunk = @view E_workspace[:, 1:nChunk]
+            phase_chunk = @view phase_workspace[:, 1:nChunk]
+            E_chunk = @view E_workspace[:, 1:nChunk]
 
-        fieldmap_chunk = @view fieldmap[vox_range]
-        bf_chunk = @view bf[vox_range, :]
-        B_adj_chunk = @view B_adj_d[vox_range, :]
+            fieldmap_chunk = @view fieldmap[vox_range]
+            bf_chunk = @view bf[vox_range, :]
+            B_adj_chunk = @view B_adj_d[vox_range, :]
 
-        mul!(phase_chunk, transpose(kspha_err), transpose(bf_chunk), one(T), zero(T))
-        kernel_blocks = (cld(nSam, kernel_threads[1]), cld(nChunk, kernel_threads[2]))
-        @cuda threads=kernel_threads blocks=kernel_blocks kernel_phase_to_encoding!(E_chunk, phase_chunk, times, fieldmap_chunk)
+            mul!(phase_chunk, transpose(kspha_err), transpose(bf_chunk), one(T), zero(T))
+            kernel_blocks = (cld(nSam, kernel_threads[1]), cld(nChunk, kernel_threads[2]))
+            @cuda threads=kernel_threads blocks=kernel_blocks kernel_phase_to_encoding!(E_chunk, phase_chunk, times, fieldmap_chunk)
 
-        mul!(B_adj_chunk, adjoint(E_chunk), Q_d)
+            mul!(B_adj_chunk, adjoint(E_chunk), Q_d)
+        end
     end
 
     if rsvd_finalize === :svd

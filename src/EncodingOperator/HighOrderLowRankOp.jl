@@ -95,6 +95,7 @@ function HighOrderLowRankOp(
     rsvd_chunk       :: Int                       = 4096                                    , 
     rsvd_oversample  :: Int                       = 5                                       ,
     rsvd_finalize    :: Symbol                    = :svd                                    ,
+    rsvd_backend     :: Symbol                    = :auto                                   ,
     shared_rank_max  :: Int                       = 128                                     ,
     shared_basis_tol :: T                         = T(1e-2)                                 , 
     verbose          :: Bool                      = false                                   ,   
@@ -122,6 +123,8 @@ function HighOrderLowRankOp(
     @assert size(mask)         == (nX, nY, nZ)  "Mask must have same size as $((nX, nY, nZ)) in grid"
     @assert size(times)        == (nSam, nDyn)  "times must have size $((nSam, nDyn))"
     rsvd_finalize in (:svd, :gram) || throw(ArgumentError("rsvd_finalize must be :svd or :gram, " * "got $rsvd_finalize"))
+    rsvd_backend in (:auto, :chunked, :adjoint_kernel, :kernel) || throw(ArgumentError("Unsupported rsvd_backend=$rsvd_backend"))
+    rsvd_backend = rsvd_backend === :auto ? (arrayType == CuArray ? :kernel : :chunked) : rsvd_backend
 
     # prepare data 
     mask     = vec(mask)                               # [prod(MatrixSize)]
@@ -173,10 +176,10 @@ function HighOrderLowRankOp(
 
         if rsvd_finalize === :gram
             u_trunc, total_energy = perform_rsvd(times_dyn, fieldmap, bf_err, kspha_err_dyn, nVox, nSam, L_rank, rsvd_chunk, rsvd_workspace; 
-                seed=rsvd_seed + dyn - 1, p_oversample=rsvd_oversample, rsvd_finalize=:gram, v_scaled=v_scaled)
+                seed=rsvd_seed + dyn - 1, p_oversample=rsvd_oversample, rsvd_finalize=:gram, rsvd_backend=rsvd_backend, v_scaled=v_scaled)
         elseif rsvd_finalize === :svd
             u_trunc, s_trunc, v_trunc = perform_rsvd(times_dyn, fieldmap, bf_err, kspha_err_dyn, nVox, nSam, L_rank, rsvd_chunk, rsvd_workspace; 
-                seed=rsvd_seed + dyn - 1, p_oversample=rsvd_oversample, rsvd_finalize=:svd)
+                seed=rsvd_seed + dyn - 1, p_oversample=rsvd_oversample, rsvd_finalize=:svd, rsvd_backend=rsvd_backend)
 
             v_scaled .= v_trunc .* reshape(s_trunc, 1, L_rank)
         

@@ -114,6 +114,57 @@ end
         @test energy_gram ≈ energy_svd rtol=T(1e-3)
         @test all(isfinite, Array(u_gram))
         @test all(isfinite, Array(v_scaled_gram))
+
+        phase_ref = reshape(times[:, 1], :, 1) * reshape(fieldmap_masked, 1, :) + transpose(kspha_err) * transpose(bf_err)
+        E_ref = @. cis(T(2π) * phase_ref)
+
+        omega_ref = randn(Complex{T}, nVox, L_total)
+        W_ref = E_ref * omega_ref
+        
+        omega_d = CuArray(omega_ref)
+        W_d = CUDA.zeros(Complex{T}, nSam, L_total)
+        
+        HighOrderMRI.run_kernel_rsvd_forward!(W_d, omega_d, times_d, fieldmap_d, bf_err_d, kspha_err_d)
+
+        W_kernel = Array(W_d)
+        forward_kernel_error = norm(W_kernel - W_ref) / max(norm(W_ref), eps(T))
+        @show forward_kernel_error
+        @test forward_kernel_error < T(1e-4)
+        
+
+        Q_ref = randn(Complex{T}, nSam, L_total)
+        B_adj_ref = adjoint(E_ref) * Q_ref
+        Q_d = CuArray(Q_ref)
+        B_adj_d = CUDA.zeros(Complex{T}, nVox, L_total)
+        HighOrderMRI.run_kernel_rsvd_adjoint!(B_adj_d, Q_d, times_d, fieldmap_d, bf_err_d, kspha_err_d)
+        B_adj_kernel = Array(B_adj_d)
+        adjoint_kernel_error = norm(B_adj_kernel - B_adj_ref) / max(norm(B_adj_ref), eps(T))
+        @show adjoint_kernel_error 
+        @test adjoint_kernel_error < T(1e-4)
+        
+
+
+        B_adj_warp_d = CUDA.zeros(Complex{T}, nVox, L_total)
+
+        HighOrderMRI.run_kernel_rsvd_adjoint_warp!(B_adj_warp_d, Q_d, times_d, fieldmap_d, bf_err_d, kspha_err_d; threads=128)
+        B_adj_warp = Array(B_adj_warp_d)
+        adjoint_warp_error = norm(B_adj_warp - B_adj_ref) / max(norm(B_adj_ref), eps(T))
+        adjoint_layout_error = norm(B_adj_warp - B_adj_kernel) / max(norm(B_adj_kernel), eps(T))
+        @show adjoint_warp_error adjoint_layout_error
+        @test adjoint_warp_error < T(1e-4)
+        @test adjoint_layout_error < T(1e-4)
+        
+
+        u_kernel, s_kernel, v_kernel = HighOrderMRI.perform_rsvd(times_d, fieldmap_d, bf_err_d, kspha_err_d,
+            nVox, nSam, L_rank_gram, 3, rsvd_workspace_gram;
+            seed=17, p_oversample=p_oversample,
+            rsvd_finalize=:svd, rsvd_backend=:kernel,
+        )
+        E_kernel = Array(u_kernel * Diagonal(s_kernel) * adjoint(v_kernel))
+        integrated_kernel_error = norm(E_kernel - E_svd) / max(norm(E_svd), eps(T))
+        @show integrated_kernel_error
+        @test integrated_kernel_error < T(1e-3)
+        
     end
 
     rsvd_workspace = HighOrderMRI.RSVDWorkspace(times[:, 1], T, nSam, nVox, L_total, nVox)
