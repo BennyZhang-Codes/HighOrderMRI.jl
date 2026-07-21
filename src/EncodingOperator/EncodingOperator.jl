@@ -3,13 +3,12 @@ abstract type HOOp{T} <: AbstractLinearOperator{T} end
 include("prep_kspha.jl")
 
 # the formal version HighOrderOp, the extended signal model with field dynamics and off-resonance
-include("HighOrderOp.jl")         # Array-based implementation
+include("Explicit/CUDA_kernel.jl")   # Kernel functions for CUDA
+include("HighOrderOp.jl")            # Array-based implementation
+include("HighOrderOp_Kernel.jl")     # Kernel-based implementation
 
-include("CUDA_kernel.jl")         # Kernel functions for CUDA
-include("HighOrderOp_Kernel.jl")  # Kernel-based implementation
 
-
-include("perform_rsvd.jl")          # randomized SVD for low-rank approximation
-include("shared_spatial_basis.jl")
-include("streaming_nfft_plan.jl")
-include("HighOrderLowRankOp.jl")    # low rank approximation of temporal-spatial varing phase (NFFT-based implementation)
+include("LowRankApproximation/perform_rsvd.jl")          # randomized SVD for low-rank approximation
+include("LowRankApproximation/shared_spatial_basis.jl")
+include("LowRankApproximation/streaming_nfft_plan.jl")
+include("HighOrderLowRankOp.jl")    # low rank approximation of temporal-spatial varing phase
