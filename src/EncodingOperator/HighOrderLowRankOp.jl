@@ -77,28 +77,29 @@ kspha: [nTerm, nSam, nDyn]
 times: [nSam, nDyn]
 """
 function HighOrderLowRankOp(
-    grid             :: Grid{T}                                                             ,
-    kspha            :: AbstractArray{T, 3}                                                 , 
-    times            :: AbstractArray{T, 2}                                                 ;
-    fieldmap         :: AbstractArray{T}          = zeros(T, grid.matrixSize...)            , 
-    csm              :: AbstractArray{Complex{T}} = ones(Complex{T}, grid.matrixSize..., 1) , 
-    mask             :: AbstractArray{Bool}       = trues(grid.matrixSize...)               ,
-    recon_terms      :: String                    = nothing                                 ,
-    k_nominal        :: AbstractArray{T, 3}       = kspha[2:4, :, :]                        ,
+    grid              :: Grid{T}                                                             ,
+    kspha             :: AbstractArray{T, 3}                                                 , 
+    times             :: AbstractArray{T, 2}                                                 ;
+    fieldmap          :: AbstractArray{T}          = zeros(T, grid.matrixSize...)            , 
+    csm               :: AbstractArray{Complex{T}} = ones(Complex{T}, grid.matrixSize..., 1) , 
+    mask              :: AbstractArray{Bool}       = trues(grid.matrixSize...)               ,
+    recon_terms       :: String                    = nothing                                 ,
+    k_nominal         :: AbstractArray{T, 3}       = kspha[2:4, :, :]                        ,
     kspha_dt                                      = nothing                                 ,
-    nBlock           :: Int64                     = 50                                      , 
+    nBlock            :: Int64                     = 50                                      , 
     
-    arrayType        :: Type{<:AbstractArray}     = Array                                   ,
-    gpus             :: Vector{Int}               = [0]                                     ,
-    L_rank           :: Int                       = 15                                      , 
-    rsvd_seed        :: Int                       = 1234                                    ,
-    rsvd_chunk       :: Int                       = 4096                                    , 
-    rsvd_oversample  :: Int                       = 5                                       ,
-    rsvd_finalize    :: Symbol                    = :svd                                    ,
-    rsvd_backend     :: Symbol                    = :auto                                   ,
-    shared_rank_max  :: Int                       = 128                                     ,
-    shared_basis_tol :: T                         = T(1e-2)                                 , 
-    verbose          :: Bool                      = false                                   ,   
+    arrayType         :: Type{<:AbstractArray}     = Array                                   ,
+    gpus              :: Vector{Int}               = [0]                                     ,
+    L_rank            :: Int                       = 15                                      , 
+    rsvd_seed         :: Int                       = 1234                                    ,
+    rsvd_chunk        :: Int                       = 4096                                    , 
+    rsvd_oversample   :: Int                       = 5                                       ,
+    rsvd_finalize     :: Symbol                    = :svd                                    ,
+    rsvd_backend      :: Symbol                    = :auto                                   ,
+    rsvd_distribution :: Symbol                    = :auto                                   ,
+    shared_rank_max   :: Int                       = 128                                     ,
+    shared_basis_tol  :: T                         = T(1e-2)                                 , 
+    verbose           :: Bool                      = false                                   ,   
     
     kwargs...          
     ) where T <: AbstractFloat
@@ -114,7 +115,7 @@ function HighOrderLowRankOp(
     csm      = ndims(csm) == 3      ? reshape(csm, nX, nY, 1, nCha) : csm
     mask     = ndims(mask) == 2     ? reshape(mask, nX, nY, 1) : mask
 
-    if verbose @info "HighOrderLowRankOp Setup: ArrayType=$arrayType, nRow=$(nSam*nCha), nCol=$(prod(grid.matrixSize)), nVox in mask=$nVox, gpus=$gpus" end
+    @info "HighOrderLowRankOp Setup: ArrayType=$arrayType, nRow=$(nSam*nCha), nCol=$(prod(grid.matrixSize)), nVox in mask=$nVox, gpus=$gpus"
 
     @assert nTerm              in [9, 16]       "kspha must have 9 or 16 terms (row) for up to 2nd or 3rd order terms"
     @assert size(k_nominal, 1) == 3             "k_nominal must have 3 terms (row) for kx, ky, kz"
@@ -124,35 +125,61 @@ function HighOrderLowRankOp(
     @assert size(times)        == (nSam, nDyn)  "times must have size $((nSam, nDyn))"
     rsvd_finalize in (:svd, :gram) || throw(ArgumentError("rsvd_finalize must be :svd or :gram, " * "got $rsvd_finalize"))
     rsvd_backend in (:auto, :chunked, :adjoint_kernel, :kernel) || throw(ArgumentError("Unsupported rsvd_backend=$rsvd_backend"))
-    rsvd_backend = rsvd_backend === :auto ? (arrayType == CuArray ? :kernel : :chunked) : rsvd_backend
+    rsvd_distribution in (:auto, :single, :voxel) || throw(ArgumentError("Unsupported rsvd_distribution=$rsvd_distribution; " * "expected :auto, :single, or :voxel"))
+    isempty(gpus) && throw(ArgumentError("gpus must contain at least one GPU id"))
+    length(unique(gpus)) == length(gpus) || throw(ArgumentError("gpus contains duplicate GPU ids: $gpus"))
 
-    # prepare data 
-    mask     = vec(mask)                               # [prod(MatrixSize)]
-    kspha    = prep_kspha(kspha, k_nominal, nTerm; recon_terms=recon_terms)
-    csm      = reshape(csm, :, nCha)[mask.!=0, :]      # [nVox, nCha]
-    fieldmap = vec(fieldmap)[mask.!=0]                 # [nVox]
-    bf       = basisfunc_spha(grid.x[mask.!=0], grid.y[mask.!=0], grid.z[mask.!=0], collect(1:nTerm))  # compute basis functions (spherical harmonics)
+    is_gpu = arrayType == CuArray
+    primary_gpu = first(gpus)
+    rsvd_backend = rsvd_backend === :auto ? (is_gpu ? :kernel : :chunked) : rsvd_backend
+    use_distributed_rsvd =
+    rsvd_distribution === :voxel || (rsvd_distribution === :auto && is_gpu && length(gpus) > 1 && rsvd_finalize === :gram && rsvd_backend === :kernel)
 
-    mask_idx = Int32.(findall(mask .!= 0))
-    mask_idx = arrayType(mask_idx)
-
-    times     = arrayType(times)
-    fieldmap  = arrayType(fieldmap)
-    bf        = arrayType(bf)
-
-    csm       = arrayType(csm)
-
-
-    if nTerm >= 5
-        kspha_err = arrayType(kspha[5:end, :, :])
-        bf_err    = arrayType(bf[:, 5:end])
-    else
-        kspha_err = arrayType(zeros(T, 1, nSam, nDyn))
-        bf_err    = arrayType(zeros(T, nVox, 1))
+    if use_distributed_rsvd
+        is_gpu || throw(ArgumentError("rsvd_distribution=:voxel requires arrayType=CuArray"))
+        rsvd_finalize === :gram || throw(ArgumentError("Multi-GPU voxel-distributed rSVD currently requires " * "rsvd_finalize=:gram"))
+        rsvd_backend === :kernel || throw(ArgumentError("Multi-GPU voxel-distributed rSVD currently requires " * "rsvd_backend=:kernel"))
     end
+    if is_gpu CUDA.device!(primary_gpu) end
+    
+    if verbose
+        @info("rSVD execution configuration", backend=rsvd_backend, distribution=use_distributed_rsvd ? :voxel : :single, gpus=gpus, primary_gpu=is_gpu ? primary_gpu : nothing)
+    end
+
+
+    # -------------------------------------------------------------
+    # Host-side data preparation
+    # -------------------------------------------------------------
+    mask_host = vec(mask)   # [prod(MatrixSize)]
+    kspha = prep_kspha(kspha, k_nominal, nTerm; recon_terms=recon_terms)
+    
+    csm_host = Matrix{Complex{T}}(reshape(csm, :, nCha)[mask_host .!= 0, :])   # [nVox, nCha]
+    fieldmap_host = Vector{T}(vec(fieldmap)[mask_host .!= 0])                  # [nVox]
+    bf_host = Matrix{T}(basisfunc_spha(grid.x[mask_host .!= 0], grid.y[mask_host .!= 0], grid.z[mask_host .!= 0], collect(1:nTerm)))  # compute basis functions (spherical harmonics)
+    times_host = Matrix{T}(times)
+    mask_idx_host = Int32.(findall(mask_host .!= 0))
+    
+    if nTerm >= 5
+        kspha_err_host = Array{T,3}(kspha[5:end, :, :])
+        bf_err_host = Matrix{T}(bf_host[:, 5:end])
+    else
+        kspha_err_host = zeros(T, 1, nSam, nDyn)
+        bf_err_host = zeros(T, nVox, 1)
+    end
+
+
     @info "nSam=$nSam, nVox=$nVox, nDyn=$nDyn, nTerm=$nTerm, nCha=$nCha, nBlock=$nBlock"
 
     @assert shared_rank_max > 0 "shared_rank_max must be positive"
+    @assert rsvd_chunk > 0 "rsvd_chunk must be positive for chunked rSVD"
+    @assert L_rank > 0 "L_rank must be positive"
+    @assert rsvd_oversample >= 0 "rsvd_oversample must be non-negative"
+
+    L_total = L_rank + rsvd_oversample
+
+    @assert L_total <= min(nSam, nVox) "L_rank + rsvd_oversample exceeds matrix dimensions"
+
+    rsvd_chunk = min(rsvd_chunk, nVox)
 
     max_possible_shared_rank = min(nVox, L_rank * nDyn)
     effective_shared_rank_max = min(shared_rank_max, max_possible_shared_rank)
@@ -160,60 +187,122 @@ function HighOrderLowRankOp(
         @info("Clamping shared_rank_max", requested=shared_rank_max, effective=effective_shared_rank_max, max_possible=max_possible_shared_rank)
     end
 
-    u = arrayType(zeros(Complex{T}, nSam, L_rank, nDyn))
-    v_shared = SharedSpatialBasis(u, T, nVox, L_rank, nDyn, effective_shared_rank_max, shared_basis_tol)
-    shared_workspace = SharedBasisUpdateWorkspace(u, T, nVox, L_rank, effective_shared_rank_max)
 
-    @assert rsvd_chunk > 0 "rsvd_chunk must be positive for chunked rSVD"
-    L_total = L_rank + rsvd_oversample
-    rsvd_chunk = min(rsvd_chunk, nVox)
-    rsvd_workspace = RSVDWorkspace(u, T, nSam, nVox, L_total, rsvd_chunk)
-    for dyn = 1:nDyn
-        times_dyn     = times[:, dyn]
-        kspha_err_dyn = kspha_err[:, :, dyn]
-
-        v_scaled = shared_workspace.v_scaled
-
-        if rsvd_finalize === :gram
-            u_trunc, total_energy = perform_rsvd(times_dyn, fieldmap, bf_err, kspha_err_dyn, nVox, nSam, L_rank, rsvd_chunk, rsvd_workspace; 
-                seed=rsvd_seed + dyn - 1, p_oversample=rsvd_oversample, rsvd_finalize=:gram, rsvd_backend=rsvd_backend, v_scaled=v_scaled)
-        elseif rsvd_finalize === :svd
-            u_trunc, s_trunc, v_trunc = perform_rsvd(times_dyn, fieldmap, bf_err, kspha_err_dyn, nVox, nSam, L_rank, rsvd_chunk, rsvd_workspace; 
-                seed=rsvd_seed + dyn - 1, p_oversample=rsvd_oversample, rsvd_finalize=:svd, rsvd_backend=rsvd_backend)
-
-            v_scaled .= v_trunc .* reshape(s_trunc, 1, L_rank)
-        
-            total_energy = T(real(dot(s_trunc, s_trunc)))
+    if use_distributed_rsvd
+        q_host, basis_host, shared_rank, shared_errors = let
+            distributed_workspace = DistributedRSVDWorkspace(fieldmap_host, bf_err_host, nSam, L_total, L_rank, gpus)
+            distributed_shared = DistributedSharedSpatialBasis(distributed_workspace, nDyn, effective_shared_rank_max, shared_basis_tol)
+    
+            # [nSam, L_rank, nDyn]
+            u_host = zeros(Complex{T}, nSam, L_rank, nDyn)
+    
+            for dyn = 1:nDyn
+                times_dyn = times_host[:, dyn]
+                kspha_err_dyn = kspha_err_host[:, :, dyn]
+    
+                u_trunc, total_energy = perform_rsvd_multi_gpu!(distributed_workspace, times_dyn, kspha_err_dyn; seed=rsvd_seed + dyn - 1)
+    
+                @views u_host[:, :, dyn] .= u_trunc
+                relative_error, n_added = update_distributed_shared_basis!(distributed_shared, distributed_workspace, dyn, total_energy)
+                if verbose @info("Distributed shared spatial basis update", dyn=dyn, added=n_added, rank=distributed_shared.rank, relative_error=relative_error) end
+            end
+    
+            shared_rank_local = distributed_shared.rank
+            errors_local = copy(distributed_shared.errors)
+    
+            basis_host_local = gather_distributed_shared_basis(distributed_shared)
+    
+            # q_d = U_d * C_dᴴ
+            q_host_local = zeros(Complex{T}, nSam * nDyn, shared_rank_local)
+            q_dyn = zeros(Complex{T}, nSam, shared_rank_local)
+            for dyn = 1:nDyn
+                rows = ((dyn - 1) * nSam + 1):(dyn * nSam)
+    
+                U_dyn = @view u_host[:, :, dyn]
+                C_dyn = @view distributed_shared.coeff[1:shared_rank_local, :, dyn]
+    
+                mul!(q_dyn, U_dyn, adjoint(C_dyn))
+                @views q_host_local[rows, :] .= q_dyn
+            end
+            (q_host_local, basis_host_local, shared_rank_local, errors_local)
         end
-        @views u[:, :, dyn] .= u_trunc
-
-
-        relative_error, n_added = update_shared_basis!(v_shared, shared_workspace, v_scaled, dyn, total_energy)
-
-        if verbose
-            @info("Shared spatial basis update", dyn=dyn, added=n_added, rank=v_shared.rank, relative_error=relative_error)
+        GC.gc(true)
+        for gpu_id in unique(gpus)
+            CUDA.device!(gpu_id)
+            CUDA.reclaim()
         end
+        CUDA.device!(primary_gpu)
+        q = arrayType(q_host)
+        basis = arrayType(basis_host)
+    else
+        if is_gpu
+            CUDA.device!(primary_gpu)
+        end
+        times_device = arrayType(times_host)
+        fieldmap_device = arrayType(fieldmap_host)
+        bf_err_device = arrayType(bf_err_host)
+        kspha_err_device = arrayType(kspha_err_host)
+    
+        u = arrayType(zeros(Complex{T}, nSam, L_rank, nDyn))
+    
+        shared = SharedSpatialBasis(u, T, nVox, L_rank, nDyn, effective_shared_rank_max, shared_basis_tol)
+        shared_workspace = SharedBasisUpdateWorkspace(u, T, nVox, L_rank, effective_shared_rank_max)
+        rsvd_workspace = RSVDWorkspace(u, T, nSam, nVox, L_total, rsvd_chunk)
+    
+        for dyn = 1:nDyn
+            times_dyn = times_device[:, dyn]
+            kspha_err_dyn = kspha_err_device[:, :, dyn]
+    
+            v_scaled = shared_workspace.v_scaled
+    
+            if rsvd_finalize === :gram
+                u_trunc, total_energy = perform_rsvd(
+                    times_dyn, fieldmap_device, bf_err_device, kspha_err_dyn,
+                    nVox, nSam, L_rank, rsvd_chunk, rsvd_workspace;
+                    seed=rsvd_seed + dyn - 1, p_oversample=rsvd_oversample,
+                    rsvd_finalize=:gram, rsvd_backend=rsvd_backend, v_scaled=v_scaled, verbose=verbose)
+            else
+                u_trunc, s_trunc, v_trunc = perform_rsvd(
+                    times_dyn, fieldmap_device, bf_err_device, kspha_err_dyn,
+                    nVox, nSam, L_rank, rsvd_chunk, rsvd_workspace;
+                    seed=rsvd_seed + dyn - 1, p_oversample=rsvd_oversample, 
+                    rsvd_finalize=:svd, rsvd_backend=rsvd_backend, verbose=verbose)
+    
+                v_scaled .= v_trunc .* reshape(s_trunc, 1, L_rank)
+                total_energy = T(real(dot(s_trunc, s_trunc)))
+            end
+    
+            @views u[:, :, dyn] .= u_trunc
+            relative_error, n_added = update_shared_basis!(shared, shared_workspace, v_scaled, dyn, total_energy)
+            if verbose @info("Shared spatial basis update", dyn=dyn, added=n_added, rank=shared.rank, relative_error=relative_error) end
+        end
+    
+        shared_rank = shared.rank
+        shared_errors = copy(shared.errors)
+    
+        q = similar(u, Complex{T}, nSam * nDyn, shared_rank)
+        q_dyn = similar(u, Complex{T}, nSam, shared_rank)
+    
+        for dyn = 1:nDyn
+            rows = ((dyn - 1) * nSam + 1):(dyn * nSam)
+    
+            U_dyn = @view u[:, :, dyn]
+            C_dyn = @view shared.coeff[1:shared_rank, :, dyn]
+    
+            mul!(q_dyn, U_dyn, adjoint(C_dyn))
+            @views q[rows, :] .= q_dyn
+        end
+    
+        basis = copy(@view shared.basis[:, 1:shared_rank])
     end
-    @info("Shared spatial basis complete", rank=v_shared.rank, max_error=maximum(v_shared.errors), mean_error=sum(v_shared.errors) / length(v_shared.errors))
 
-
-    shared_rank = v_shared.rank
-    q = similar(u, Complex{T}, nSam * nDyn, shared_rank)
-    q_dyn = similar(u, Complex{T}, nSam, shared_rank)
-
-    for dyn = 1:nDyn
-        rows = ((dyn - 1) * nSam + 1):(dyn * nSam)
+    if is_gpu CUDA.device!(primary_gpu) end
+    csm = arrayType(csm_host)
+    mask_idx = arrayType(mask_idx_host)
     
-        U_dyn = @view u[:, :, dyn]
-        C_dyn = @view v_shared.coeff[1:shared_rank, :, dyn]
-    
-        # Q_dyn = U_dyn * C_dynᴴ
-        mul!(q_dyn, U_dyn, adjoint(C_dyn))
-    
-        @views q[rows, :] .= q_dyn
-    end
+    @info("Shared spatial basis complete", rank=shared_rank, max_error=maximum(shared_errors), mean_error=sum(shared_errors) / length(shared_errors))
     @info("Global temporal basis ready", shared_rank=shared_rank, nPoint=nSam * nDyn, size=size(q))
-    basis = copy(@view v_shared.basis[:, 1:shared_rank])
+    if verbose && use_distributed_rsvd @info("Multi-GPU rSVD workspace released", setup_gpus=gpus, operator_gpu=primary_gpu) end
 
 
     if nZ == 1
@@ -229,15 +318,8 @@ function HighOrderLowRankOp(
     nfft_traj = Array{T,3}(kspha[k_range, :, :] ./ scale)
     nfft_nodes = reshape(nfft_traj, length(k_range), nSam * nDyn) # dyn1 [all samples]、dyn2 [all samples] ……
     nfftplan = plan_nfft(arrayType, nfft_nodes, MatrixSize; m=3, σ=1.25)
-    @assert eltype(nfftplan) == Complex{T}
     @assert eltype(nfftplan) == Complex{T} "NFFT plan precision must match the operator precision"
-    if verbose
-        @info("Streaming NFFT plan ready", trajectory_eltype=eltype(nfft_traj), plan_eltype=eltype(nfftplan))
-    end
-    if verbose
-        @info("Global NFFT plan ready", trajectory_eltype=eltype(nfft_nodes), plan_eltype=eltype(nfftplan),
-            nPoint=nSam * nDyn, nfft_per_forward=shared_rank * nCha, previous_nfft_per_forward=nDyn * L_rank * nCha)
-    end
+    if verbose @info("Global NFFT plan ready", trajectory_eltype=eltype(nfft_nodes), plan_eltype=eltype(nfftplan), nPoint=nSam * nDyn, nfft_per_forward=shared_rank * nCha, previous_nfft_per_forward=nDyn * L_rank * nCha) end
 
     nGrid = prod(grid.matrixSize)
     workspace = HighOrderLowRankWorkspace(
@@ -314,9 +396,7 @@ function prod!(y::AbstractVector{Complex{T}}, op::HighOrderLowRankOp{T}, x::Abst
         
         for c = 1:op.nCha
             if grid_flat isa CuArray
-                @cuda threads=threads blocks=blocks_vox kernel_scatter_csm!(
-                    grid_flat, x_weighted, op.csm, c, op.mask_idx, op.nVox
-                )
+                @cuda threads=threads blocks=blocks_vox kernel_scatter_csm!(grid_flat, x_weighted, op.csm, c, op.mask_idx, op.nVox)
             else
                 @views @. grid_flat[op.mask_idx] = x_weighted * op.csm[:, c]
             end
@@ -359,9 +439,7 @@ function ctprod!(x::AbstractVector{Complex{T}}, op::HighOrderLowRankOp{T}, y::Ab
             mul!(nfft_img, adjoint(op.nfftplan), k_weighted)
             
             if grid_flat isa CuArray
-                @cuda threads=threads blocks=blocks_vox kernel_gather_csm!(
-                    x_l, grid_flat, op.csm, c, op.mask_idx, op.nVox
-                )
+                @cuda threads=threads blocks=blocks_vox kernel_gather_csm!(x_l, grid_flat, op.csm, c, op.mask_idx, op.nVox)
             else
                 @views @. x_l += grid_flat[op.mask_idx] * conj(op.csm[:, c])
             end

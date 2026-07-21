@@ -164,7 +164,95 @@ end
         integrated_kernel_error = norm(E_kernel - E_svd) / max(norm(E_svd), eps(T))
         @show integrated_kernel_error
         @test integrated_kernel_error < T(1e-3)
+
+
+        if length(collect(CUDA.devices())) >= 4
+            test_gpus = [0, 1, 2, 3]
+            workspace_multi = HighOrderMRI.DistributedRSVDWorkspace(fieldmap_masked, bf_err, nSam, L_total, L_rank, test_gpus)
+            
+            omega_multi = randn(Complex{T}, nVox, L_total)
+            W_ref_multi = E_ref * omega_multi
+            W_multi = HighOrderMRI.distributed_rsvd_forward!(workspace_multi, times[:, 1], kspha_err; omega=omega_multi)
+            forward_multi_error = norm(W_multi - W_ref_multi) / max(norm(W_ref_multi), eps(T))
+            
+            Q_multi = randn(Complex{T}, nSam, L_total)
+            B_ref_multi = adjoint(E_ref) * Q_multi
+            gram_ref_multi = adjoint(B_ref_multi) * B_ref_multi
+            B_multi, gram_multi = HighOrderMRI.distributed_rsvd_adjoint!(workspace_multi, Q_multi)
+            adjoint_multi_error = norm(B_multi - B_ref_multi) / max(norm(B_ref_multi), eps(T))
+            gram_multi_error = norm(gram_multi - gram_ref_multi) / max(norm(gram_ref_multi), eps(T))
+            
+            @show forward_multi_error
+            @show adjoint_multi_error
+            @show gram_multi_error
+            
+            @test forward_multi_error < T(1e-4)
+            @test adjoint_multi_error < T(1e-4)
+            @test gram_multi_error < T(1e-4)
+
+
+            u_multi, energy_multi = HighOrderMRI.perform_rsvd_multi_gpu!(workspace_multi, times[:, 1], kspha_err; seed=17, omega=omega_multi)
+            v_multi = HighOrderMRI.gather_distributed_v_scaled(workspace_multi)
+
+            W_reference = E_ref * omega_multi
+            qr_reference = qr(W_reference)
+            Q_seed = Matrix{Complex{T}}(I, nSam, L_total)
+            Q_reference = Matrix(qr_reference.Q * Q_seed)
+            B_reference = adjoint(E_ref) * Q_reference
+            gram_reference = adjoint(B_reference) * B_reference
+            gram_reference = (gram_reference + adjoint(gram_reference)) * T(0.5)
+            eig_reference = eigen(Hermitian(gram_reference))
+            order = sortperm(real.(eig_reference.values); rev=true)
+            values_reference = max.(T.(real.(eig_reference.values[order])), zero(T))
+            Z_reference = eig_reference.vectors[:, order[1:L_rank]]
+            u_reference = Q_reference * Z_reference
+            v_reference = B_reference * Z_reference
+            E_multi =
+            u_multi * adjoint(v_multi)
         
+            E_reference_rsvd = u_reference * adjoint(v_reference)
+            distributed_rsvd_error = norm(E_multi - E_reference_rsvd) / max(norm(E_reference_rsvd), eps(T))
+            energy_reference = sum(values_reference[1:L_rank])
+            @test distributed_rsvd_error < T(1e-3)
+            @test energy_multi ≈ energy_reference rtol=T(1e-3)
+            @show distributed_rsvd_error
+
+
+
+
+            nDyn_test = size(times, 2)
+            max_rank_test = min(nVox, L_rank * nDyn_test)
+            shared_tol_test = T(1e-2)
+            
+            distributed_shared = HighOrderMRI.DistributedSharedSpatialBasis(workspace_multi, nDyn_test, max_rank_test, shared_tol_test)
+            reference_shared = HighOrderMRI.SharedSpatialBasis(times[:, 1], T, nVox, L_rank, nDyn_test, max_rank_test, shared_tol_test)
+            reference_workspace = HighOrderMRI.SharedBasisUpdateWorkspace(times[:, 1], T, nVox, L_rank, max_rank_test)
+            
+            for dyn = 1:nDyn_test
+                kspha_dyn = kspha[5:end, :, dyn]
+                omega_dyn = randn(Complex{T}, nVox, L_total)
+                _, total_energy = HighOrderMRI.perform_rsvd_multi_gpu!(workspace_multi, times[:, dyn], kspha_dyn; seed=17 + dyn - 1, omega=omega_dyn)
+                v_scaled_reference = HighOrderMRI.gather_distributed_v_scaled(workspace_multi)
+                reference_error, reference_added = HighOrderMRI.update_shared_basis!(reference_shared, reference_workspace, v_scaled_reference, dyn, total_energy)
+                distributed_error, distributed_added = HighOrderMRI.update_distributed_shared_basis!(distributed_shared, workspace_multi, dyn, total_energy)
+                @test distributed_added == reference_added
+                @test distributed_error ≈ reference_error rtol=T(1e-3)
+            end
+    
+            distributed_basis = HighOrderMRI.gather_distributed_shared_basis(distributed_shared)
+            @test distributed_shared.rank == reference_shared.rank
+            
+            for dyn = 1:nDyn_test
+                V_reference = zeros(Complex{T}, nVox, L_rank)
+                HighOrderMRI.reconstruct_spatial_factors!(V_reference, reference_shared, dyn)
+                r = distributed_shared.rank
+                C_distributed = @view distributed_shared.coeff[1:r, :, dyn]
+                V_distributed = distributed_basis * C_distributed
+                distributed_shared_error = norm(V_distributed - V_reference) / max(norm(V_reference), eps(T))
+                @show dyn distributed_shared_error
+                @test distributed_shared_error < T(1e-4)
+            end
+        end
     end
 
     rsvd_workspace = HighOrderMRI.RSVDWorkspace(times[:, 1], T, nSam, nVox, L_total, nVox)

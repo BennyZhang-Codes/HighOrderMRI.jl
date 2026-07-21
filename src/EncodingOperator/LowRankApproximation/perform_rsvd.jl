@@ -328,10 +328,11 @@ function perform_rsvd(
     rsvd_backend  :: Symbol = :chunked,
     v_scaled                = nothing,
     gram_allow_fallback::Bool = true,
+    verbose       :: Bool = false,
     ) where T <: AbstractFloat
     rsvd_backend === :chunked || throw(ArgumentError("rsvd_backend=$rsvd_backend is currently supported only for CuArray"))
 
-    @info "Performing chunked rSVD on CPU..."
+    if verbose @info "Performing chunked rSVD on CPU..." backend=rsvd_backend end
 
     L_total = L_rank + p_oversample
     @assert L_total <= min(nSam, nVox) "rSVD rank exceeds matrix dimensions"
@@ -348,13 +349,6 @@ function perform_rsvd(
 
     rng = Random.Xoshiro(seed)
     randn!(rng, Ω_cpu)
-
-    # rng = Random.Xoshiro(seed)
-    # Ω_cpu = randn(rng, Complex{T}, nVox, L_total)
-    # W_cpu = zeros(Complex{T}, nSam, L_total)
-
-    # phase_workspace = zeros(T, nSam, chunk_size)
-    # E_workspace = zeros(Complex{T}, nSam, chunk_size)
 
     times_mat = reshape(times, :, 1)
 
@@ -474,11 +468,12 @@ function perform_rsvd(
     rsvd_backend  :: Symbol = :kernel,
     v_scaled              = nothing,
     gram_allow_fallback::Bool = true,
+    verbose::Bool = false,
     ) where T <: AbstractFloat
 
     rsvd_backend in (:chunked, :adjoint_kernel, :kernel) || throw(ArgumentError("Unsupported rsvd_backend=$rsvd_backend; " * "expected :chunked, :adjoint_kernel, or :kernel"))
 
-    @info "Performing chunked rSVD on GPU..." backend=rsvd_backend
+    if verbose @info "Performing rSVD on GPU..." backend=rsvd_backend end
 
     L_total = L_rank + p_oversample
     @assert L_total <= min(nSam, nVox) "rSVD rank exceeds matrix dimensions"
