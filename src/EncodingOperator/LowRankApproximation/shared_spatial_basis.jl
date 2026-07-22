@@ -128,7 +128,7 @@ function update_shared_basis!(
 
     while n_add < L && remaining_energy > allowed_energy
         n_add += 1
-        remaining_energy -= values[n_add]
+        remaining_energy = n_add == L ? zero(T) : sum(@view values[(n_add + 1):L])
     end
 
     relative_error = sqrt(max(remaining_energy, zero(T)) / total_energy)

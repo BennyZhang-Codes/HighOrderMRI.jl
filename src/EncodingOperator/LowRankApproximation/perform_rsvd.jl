@@ -326,11 +326,13 @@ function perform_rsvd(
     p_oversample  :: Int = 5,
     rsvd_finalize :: Symbol = :svd,
     rsvd_backend  :: Symbol = :chunked,
+    rsvd_fastmath :: Bool = false,
     v_scaled                = nothing,
     gram_allow_fallback::Bool = true,
     verbose       :: Bool = false,
     ) where T <: AbstractFloat
     rsvd_backend === :chunked || throw(ArgumentError("rsvd_backend=$rsvd_backend is currently supported only for CuArray"))
+    rsvd_fastmath && throw(ArgumentError("rsvd_fastmath=true requires a CUDA kernel backend"))
 
     if verbose @info "Performing chunked rSVD on CPU..." backend=rsvd_backend end
 
@@ -466,6 +468,7 @@ function perform_rsvd(
     p_oversample  :: Int = 5,
     rsvd_finalize :: Symbol = :svd,
     rsvd_backend  :: Symbol = :kernel,
+    rsvd_fastmath :: Bool = false,
     v_scaled              = nothing,
     gram_allow_fallback::Bool = true,
     verbose::Bool = false,
@@ -493,7 +496,11 @@ function perform_rsvd(
 
     # First pass: W = E * Ω
     if rsvd_backend === :kernel
-        run_kernel_rsvd_forward!(W_d, Ω_d, times, fieldmap, bf, kspha_err; threads=128)
+        run_kernel_rsvd_forward!(
+            W_d, Ω_d, times, fieldmap, bf, kspha_err;
+            threads=128,
+            fastmath=rsvd_fastmath,
+        )
     else
         fill!(W_d, zero(Complex{T}))
         for vox_start = 1:chunk_size:nVox
@@ -524,7 +531,11 @@ function perform_rsvd(
     # B_adj_d = CUDA.zeros(Complex{T}, nVox, L_total)
 
     if rsvd_backend in (:adjoint_kernel, :kernel)
-        run_kernel_rsvd_adjoint_warp!(B_adj_d, Q_d, times, fieldmap, bf, kspha_err; threads=256)
+        run_kernel_rsvd_adjoint_warp!(
+            B_adj_d, Q_d, times, fieldmap, bf, kspha_err;
+            threads=256,
+            fastmath=rsvd_fastmath,
+        )
     else
         for vox_start = 1:chunk_size:nVox
             vox_stop = min(vox_start + chunk_size - 1, nVox)

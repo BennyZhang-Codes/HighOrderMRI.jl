@@ -97,6 +97,7 @@ function HighOrderLowRankOp(
     rsvd_finalize     :: Symbol                    = :svd                                    ,
     rsvd_backend      :: Symbol                    = :auto                                   ,
     rsvd_distribution :: Symbol                    = :auto                                   ,
+    rsvd_fastmath     :: Bool                      = false                                   ,
     shared_rank_max   :: Int                       = 128                                     ,
     shared_basis_tol  :: T                         = T(1e-2)                                 , 
     verbose           :: Bool                      = false                                   ,   
@@ -132,6 +133,9 @@ function HighOrderLowRankOp(
     is_gpu = arrayType == CuArray
     primary_gpu = first(gpus)
     rsvd_backend = rsvd_backend === :auto ? (is_gpu ? :kernel : :chunked) : rsvd_backend
+    if rsvd_fastmath && !(is_gpu && rsvd_backend in (:kernel, :adjoint_kernel))
+        throw(ArgumentError("rsvd_fastmath=true requires arrayType=CuArray and a kernel rSVD backend"))
+    end
     use_distributed_rsvd =
     rsvd_distribution === :voxel || (rsvd_distribution === :auto && is_gpu && length(gpus) > 1 && rsvd_finalize === :gram && rsvd_backend === :kernel)
 
@@ -143,7 +147,15 @@ function HighOrderLowRankOp(
     if is_gpu CUDA.device!(primary_gpu) end
     
     if verbose
-        @info("rSVD execution configuration", backend=rsvd_backend, distribution=use_distributed_rsvd ? :voxel : :single, gpus=gpus, primary_gpu=is_gpu ? primary_gpu : nothing)
+        @info(
+            "rSVD execution configuration",
+            backend=rsvd_backend,
+            distribution=use_distributed_rsvd ? :voxel : :single,
+            fastmath=rsvd_fastmath,
+            kspha_layout=use_distributed_rsvd ? :sample_major : :term_major,
+            gpus=gpus,
+            primary_gpu=is_gpu ? primary_gpu : nothing,
+        )
     end
 
 
@@ -191,45 +203,93 @@ function HighOrderLowRankOp(
     if use_distributed_rsvd
         q_host, basis_host, shared_rank, shared_errors = let
             distributed_workspace = DistributedRSVDWorkspace(fieldmap_host, bf_err_host, nSam, L_total, L_rank, gpus)
-            distributed_shared = DistributedSharedSpatialBasis(distributed_workspace, nDyn, effective_shared_rank_max, shared_basis_tol)
-    
-            # [nSam, L_rank, nDyn]
-            u_host = zeros(Complex{T}, nSam, L_rank, nDyn)
-    
-            for dyn = 1:nDyn
-                times_dyn = times_host[:, dyn]
-                kspha_err_dyn = kspha_err_host[:, :, dyn]
-    
-                u_trunc, total_energy = perform_rsvd_multi_gpu!(distributed_workspace, times_dyn, kspha_err_dyn; seed=rsvd_seed + dyn - 1)
-    
-                @views u_host[:, :, dyn] .= u_trunc
-                relative_error, n_added = update_distributed_shared_basis!(distributed_shared, distributed_workspace, dyn, total_energy)
-                if verbose @info("Distributed shared spatial basis update", dyn=dyn, added=n_added, rank=distributed_shared.rank, relative_error=relative_error) end
+            distributed_shared = nothing
+            try
+                distributed_shared = DistributedSharedSpatialBasis(distributed_workspace, nDyn, effective_shared_rank_max, shared_basis_tol)
+        
+                # [nSam, L_rank, nDyn]
+                u_host = zeros(Complex{T}, nSam, L_rank, nDyn)
+        
+                rsvd_time = 0.0
+                shared_time = 0.0
+                rsvd_timing = DistributedRSVDTiming()
+                for dyn = 1:nDyn
+                    times_dyn = times_host[:, dyn]
+                    kspha_err_dyn = kspha_err_host[:, :, dyn]
+        
+                    t0 = time_ns()
+                    u_trunc, total_energy = perform_rsvd_multi_gpu!(
+                        distributed_workspace,
+                        times_dyn,
+                        kspha_err_dyn;
+                        seed=rsvd_seed + dyn - 1,
+                        timing=rsvd_timing,
+                        fastmath=rsvd_fastmath,
+                    )
+                    rsvd_time += (time_ns() - t0) * 1e-9
+
+                    @views u_host[:, :, dyn] .= u_trunc
+
+                    t0 = time_ns()
+                    relative_error, n_added = update_distributed_shared_basis!(distributed_shared, distributed_workspace, dyn, total_energy)
+                    shared_time += (time_ns() - t0) * 1e-9
+
+                    if verbose @info("Distributed shared spatial basis update", dyn=dyn, added=n_added, rank=distributed_shared.rank, relative_error=relative_error) end
+                end
+                profiled_rsvd_time = distributed_rsvd_total_time(rsvd_timing)
+                timing_denominator = max(profiled_rsvd_time, eps(Float64))
+                @info(
+                    "Distributed rSVD phase timing",
+                    n_dynamic=rsvd_timing.n_calls,
+                    fastmath=rsvd_fastmath,
+                    kspha_layout=:sample_major,
+                    forward_time=rsvd_timing.forward_time,
+                    qr_time=rsvd_timing.qr_time,
+                    adjoint_gram_time=rsvd_timing.adjoint_gram_time,
+                    finalize_time=rsvd_timing.finalize_time,
+                    profiled_total=profiled_rsvd_time,
+                    outer_total=rsvd_time,
+                    unaccounted_time=max(rsvd_time - profiled_rsvd_time, 0.0),
+                    mean_per_dynamic_ms=1e3 * profiled_rsvd_time / max(rsvd_timing.n_calls, 1),
+                    forward_fraction=rsvd_timing.forward_time / timing_denominator,
+                    qr_fraction=rsvd_timing.qr_time / timing_denominator,
+                    adjoint_gram_fraction=rsvd_timing.adjoint_gram_time / timing_denominator,
+                    finalize_fraction=rsvd_timing.finalize_time / timing_denominator,
+                )
+                @info "Distributed setup timing" rsvd_time shared_time total=rsvd_time+shared_time
+        
+                shared_rank_local = distributed_shared.rank
+                errors_local = copy(distributed_shared.errors)
+        
+                basis_host_local = gather_distributed_shared_basis(distributed_shared, distributed_workspace)
+        
+                # q_d = U_d * C_dᴴ
+                q_host_local = zeros(Complex{T}, nSam * nDyn, shared_rank_local)
+                q_dyn = zeros(Complex{T}, nSam, shared_rank_local)
+                for dyn = 1:nDyn
+                    rows = ((dyn - 1) * nSam + 1):(dyn * nSam)
+        
+                    U_dyn = @view u_host[:, :, dyn]
+                    C_dyn = @view distributed_shared.coeff[1:shared_rank_local, :, dyn]
+        
+                    mul!(q_dyn, U_dyn, adjoint(C_dyn))
+                    @views q_host_local[rows, :] .= q_dyn
+                end
+                (q_host_local, basis_host_local, shared_rank_local, errors_local)
+            finally
+                try
+                    release_distributed_workspaces!(distributed_workspace, distributed_shared)
+                finally
+                    shutdown_distributed_workers!(distributed_workspace.workers)
+                end
             end
-    
-            shared_rank_local = distributed_shared.rank
-            errors_local = copy(distributed_shared.errors)
-    
-            basis_host_local = gather_distributed_shared_basis(distributed_shared)
-    
-            # q_d = U_d * C_dᴴ
-            q_host_local = zeros(Complex{T}, nSam * nDyn, shared_rank_local)
-            q_dyn = zeros(Complex{T}, nSam, shared_rank_local)
-            for dyn = 1:nDyn
-                rows = ((dyn - 1) * nSam + 1):(dyn * nSam)
-    
-                U_dyn = @view u_host[:, :, dyn]
-                C_dyn = @view distributed_shared.coeff[1:shared_rank_local, :, dyn]
-    
-                mul!(q_dyn, U_dyn, adjoint(C_dyn))
-                @views q_host_local[rows, :] .= q_dyn
-            end
-            (q_host_local, basis_host_local, shared_rank_local, errors_local)
         end
-        GC.gc(true)
-        for gpu_id in unique(gpus)
-            CUDA.device!(gpu_id)
-            CUDA.reclaim()
+        if verbose
+            @info(
+                "Multi-GPU rSVD workspace released",
+                setup_gpus=gpus,
+                operator_gpu=primary_gpu,
+            )
         end
         CUDA.device!(primary_gpu)
         q = arrayType(q_host)
@@ -260,13 +320,15 @@ function HighOrderLowRankOp(
                     times_dyn, fieldmap_device, bf_err_device, kspha_err_dyn,
                     nVox, nSam, L_rank, rsvd_chunk, rsvd_workspace;
                     seed=rsvd_seed + dyn - 1, p_oversample=rsvd_oversample,
-                    rsvd_finalize=:gram, rsvd_backend=rsvd_backend, v_scaled=v_scaled, verbose=verbose)
+                    rsvd_finalize=:gram, rsvd_backend=rsvd_backend,
+                    rsvd_fastmath=rsvd_fastmath, v_scaled=v_scaled, verbose=verbose)
             else
                 u_trunc, s_trunc, v_trunc = perform_rsvd(
                     times_dyn, fieldmap_device, bf_err_device, kspha_err_dyn,
                     nVox, nSam, L_rank, rsvd_chunk, rsvd_workspace;
                     seed=rsvd_seed + dyn - 1, p_oversample=rsvd_oversample, 
-                    rsvd_finalize=:svd, rsvd_backend=rsvd_backend, verbose=verbose)
+                    rsvd_finalize=:svd, rsvd_backend=rsvd_backend,
+                    rsvd_fastmath=rsvd_fastmath, verbose=verbose)
     
                 v_scaled .= v_trunc .* reshape(s_trunc, 1, L_rank)
                 total_energy = T(real(dot(s_trunc, s_trunc)))

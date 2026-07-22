@@ -10,6 +10,7 @@ include("HighOrderOp_Kernel.jl")     # Kernel-based implementation
 
 include("LowRankApproximation/CUDA_kernel.jl")   # Kernel functions for CUDA
 include("LowRankApproximation/perform_rsvd.jl")          # randomized SVD for low-rank approximation
+include("LowRankApproximation/distributed_gpu_worker.jl")
 include("LowRankApproximation/distributed_rsvd.jl")      # distributed randomized SVD for low-rank approximation
 include("LowRankApproximation/shared_spatial_basis.jl")
 include("LowRankApproximation/distributed_shared_spatial_basis.jl")
