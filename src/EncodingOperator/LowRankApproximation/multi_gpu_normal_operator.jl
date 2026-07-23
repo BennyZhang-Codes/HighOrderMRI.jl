@@ -2,13 +2,7 @@ using CUDA
 using LinearAlgebra
 import LinearOperatorCollection
 
-export MultiGPUHighOrderNormalOp,
-       HighOrderLowRankNormalOp,
-       multi_gpu_normal_operator,
-       multi_gpu_normal_timing,
-       reset_multi_gpu_normal_timing!,
-       release_multi_gpu_normal_operator!,
-       release_highorder_normal_backend!
+export release_highorder_normal_backend!
 
 
 mutable struct MultiGPUHighOrderNormalWorkspace{T<:AbstractFloat}
@@ -19,34 +13,6 @@ mutable struct MultiGPUHighOrderNormalWorkspace{T<:AbstractFloat}
     k_weighted   :: CuVector{Complex{T}}
     x_input      :: CuVector{Complex{T}}
     x_output     :: CuVector{Complex{T}}
-end
-
-
-struct MultiGPUHighOrderNormalEvents
-    upload   :: NTuple{2,CUDA.CuEvent}
-    channels :: Vector{NTuple{3,CUDA.CuEvent}}
-    download :: NTuple{2,CUDA.CuEvent}
-end
-
-
-function MultiGPUHighOrderNormalEvents(nChannel::Int)
-    nChannel > 0 || throw(ArgumentError("nChannel must be positive"))
-    return MultiGPUHighOrderNormalEvents(
-        ntuple(_ -> CUDA.CuEvent(), 2),
-        [ntuple(_ -> CUDA.CuEvent(), 3) for _ = 1:nChannel],
-        ntuple(_ -> CUDA.CuEvent(), 2),
-    )
-end
-
-
-function release_multi_gpu_normal_events!(events::MultiGPUHighOrderNormalEvents)
-    foreach(finalize, events.upload)
-    for channel_events in events.channels
-        foreach(finalize, channel_events)
-    end
-    foreach(finalize, events.download)
-    empty!(events.channels)
-    return nothing
 end
 
 
@@ -61,129 +27,7 @@ mutable struct MultiGPUHighOrderNormalShard{T<:AbstractFloat, P<:AbstractNFFTPla
     nfftplan      :: Union{Nothing,P}
     grid_size     :: Tuple
     workspace     :: MultiGPUHighOrderNormalWorkspace{T}
-    timing_events :: Union{Nothing,MultiGPUHighOrderNormalEvents}
     released      :: Bool
-end
-
-
-"""
-Per-GPU accumulated timing for a `MultiGPUHighOrderNormalOp`.
-
-GPU stage times are measured with CUDA events and are available when
-`normal_detailed_timing=true`. `total_time` is worker wall time and is collected
-in both detailed and non-detailed modes.
-"""
-mutable struct MultiGPUHighOrderNormalWorkerTiming
-    gpu_id        :: Int
-    channels      :: UnitRange{Int}
-    n_calls       :: Int
-    thread_ids    :: Set{Int}
-    upload_time   :: Float64
-    forward_time  :: Float64
-    adjoint_time  :: Float64
-    download_time :: Float64
-    total_time    :: Float64
-end
-
-
-function MultiGPUHighOrderNormalWorkerTiming(
-    gpu_id   :: Int,
-    channels :: UnitRange{Int},
-)
-    return MultiGPUHighOrderNormalWorkerTiming(gpu_id, channels, 0, Set{Int}(), 0.0, 0.0, 0.0, 0.0, 0.0)
-end
-
-
-struct MultiGPUHighOrderNormalWorkerSample
-    gpu_id        :: Int
-    channels      :: UnitRange{Int}
-    thread_id     :: Int
-    upload_time   :: Float64
-    forward_time  :: Float64
-    adjoint_time  :: Float64
-    download_time :: Float64
-    total_time    :: Float64
-end
-
-
-"""
-Timing of the most recent and all accumulated multiplications by a
-`MultiGPUHighOrderNormalOp`.
-
-`input_time` covers gathering the masked image and copying it to host memory.
-`worker_time` is the wall time of the parallel GPU section, including host-to-device
-input copies, local normal-operator evaluation, and device-to-host result copies.
-`reduction_time` covers the host reduction, upload to the primary GPU, and scatter
-back to the full image grid.
-"""
-mutable struct MultiGPUHighOrderNormalTiming
-    detailed             :: Bool
-    n_calls              :: Int
-    input_time           :: Float64
-    worker_time          :: Float64
-    reduction_time       :: Float64
-    total_time           :: Float64
-    input_time_total     :: Float64
-    worker_time_total    :: Float64
-    reduction_time_total :: Float64
-    total_time_total     :: Float64
-    per_gpu              :: Vector{MultiGPUHighOrderNormalWorkerTiming}
-end
-
-
-function MultiGPUHighOrderNormalTiming(
-    gpus           :: AbstractVector{Int} = Int[],
-    channel_ranges :: AbstractVector{<:UnitRange{Int}} = UnitRange{Int}[];
-    detailed       :: Bool = false,
-)
-    length(gpus) == length(channel_ranges) || throw(DimensionMismatch("gpus and channel_ranges must have the same length"))
-    per_gpu = [
-        MultiGPUHighOrderNormalWorkerTiming(gpus[i], channel_ranges[i])
-        for i in eachindex(gpus)
-    ]
-    return MultiGPUHighOrderNormalTiming(detailed, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, per_gpu)
-end
-
-
-function accumulate_worker_timing!(
-    timing :: MultiGPUHighOrderNormalWorkerTiming,
-    sample :: MultiGPUHighOrderNormalWorkerSample,
-)
-    timing.gpu_id == sample.gpu_id || throw(ArgumentError("worker GPU id changed"))
-    timing.channels == sample.channels || throw(ArgumentError("worker channel range changed"))
-
-    timing.n_calls += 1
-    push!(timing.thread_ids, sample.thread_id)
-    timing.upload_time += sample.upload_time
-    timing.forward_time += sample.forward_time
-    timing.adjoint_time += sample.adjoint_time
-    timing.download_time += sample.download_time
-    timing.total_time += sample.total_time
-    return timing
-end
-
-
-function reset_multi_gpu_normal_timing!(timing::MultiGPUHighOrderNormalTiming)
-    timing.n_calls = 0
-    timing.input_time = 0.0
-    timing.worker_time = 0.0
-    timing.reduction_time = 0.0
-    timing.total_time = 0.0
-    timing.input_time_total = 0.0
-    timing.worker_time_total = 0.0
-    timing.reduction_time_total = 0.0
-    timing.total_time_total = 0.0
-
-    for worker_timing in timing.per_gpu
-        worker_timing.n_calls = 0
-        empty!(worker_timing.thread_ids)
-        worker_timing.upload_time = 0.0
-        worker_timing.forward_time = 0.0
-        worker_timing.adjoint_time = 0.0
-        worker_timing.download_time = 0.0
-        worker_timing.total_time = 0.0
-    end
-    return timing
 end
 
 
@@ -201,7 +45,6 @@ mutable struct MultiGPUHighOrderNormalState{
     primary_sum   :: CuVector{Complex{T}}
     host_input    :: Vector{Complex{T}}
     host_outputs  :: Vector{Vector{Complex{T}}}
-    timing        :: MultiGPUHighOrderNormalTiming
     released      :: Bool
 end
 
@@ -344,9 +187,6 @@ function local_highorder_normal!(shard::MultiGPUHighOrderNormalShard{T}) where {
     # per-channel normal operators. Keeping one channel's k-space at a time
     # avoids a persistent nPoint-by-nLocalChannel buffer on every GPU.
     for c = 1:length(shard.channels)
-        channel_events = shard.timing_events === nothing ? nothing : shard.timing_events.channels[c]
-        channel_events === nothing || CUDA.record(channel_events[1])
-
         fill!(workspace.k_channel, zero(Complex{T}))
 
         for r = 1:shared_rank
@@ -358,7 +198,6 @@ function local_highorder_normal!(shard::MultiGPUHighOrderNormalShard{T}) where {
             @views @. workspace.k_channel += workspace.k_signal * shard.q[:, r]
         end
 
-        channel_events === nothing || CUDA.record(channel_events[2])
         @. workspace.k_channel *= shard.weights2
 
         for r = 1:shared_rank
@@ -368,7 +207,6 @@ function local_highorder_normal!(shard::MultiGPUHighOrderNormalShard{T}) where {
                 workspace.x_output, workspace.grid_adjoint, shard.basis,
                 r, shard.csm, c, shard.mask_idx, nVox)
         end
-        channel_events === nothing || CUDA.record(channel_events[3])
     end
 
     return workspace.x_output
@@ -379,13 +217,15 @@ function release_multi_gpu_normal_shard!(shard::MultiGPUHighOrderNormalShard)
     shard.released && return nothing
     shard.released = true
 
-    if shard.timing_events !== nothing
-        release_multi_gpu_normal_events!(shard.timing_events)
-        shard.timing_events = nothing
-    end
+    # NFFT and CUDA kernels may still be executing asynchronously when the
+    # solver returns. Complete every operation on this device before any
+    # plan-owned or workspace allocation can be released.
+    CUDA.device!(shard.gpu_id)
+    CUDA.device_synchronize(; blocking=true)
 
     # The plan owns backend-specific GPU buffers. Drop its last reference on
-    # the worker that owns the CUDA context before collecting and reclaiming.
+    # the worker that owns the CUDA context. Its internal allocations are
+    # collected once, after every worker has stopped.
     shard.nfftplan = nothing
 
     CUDA.unsafe_free!(shard.q)
@@ -403,8 +243,10 @@ function release_multi_gpu_normal_shard!(shard::MultiGPUHighOrderNormalShard)
     CUDA.unsafe_free!(workspace.x_input)
     CUDA.unsafe_free!(workspace.x_output)
 
-    GC.gc(true)
-    CUDA.reclaim()
+    # Do not call GC.gc or CUDA.reclaim from persistent GPU workers. Julia's
+    # GC is process-wide, while reclaim performs a device-wide memory-pool
+    # trim; running either operation concurrently on several CUDA contexts can
+    # make teardown race with finalizers from another device.
     return nothing
 end
 
@@ -425,61 +267,22 @@ function multi_gpu_normal_prod!(
     input_gpu == state.primary_gpu || throw(ArgumentError("input is on GPU $input_gpu, but the operator primary GPU is $(state.primary_gpu)"))
     output_gpu == state.primary_gpu || throw(ArgumentError("output is on GPU $output_gpu, but the operator primary GPU is $(state.primary_gpu)"))
 
-    total_start = time_ns()
     CUDA.device!(state.primary_gpu)
 
-    input_start = time_ns()
     threads = 256
     blocks_vox = cld(state.nVox, threads)
     @cuda threads=threads blocks=blocks_vox kernel_gather_masked_image!(state.primary_input, x, state.mask_idx, state.nVox)
     copyto!(state.host_input, state.primary_input)
-    input_time = (time_ns() - input_start) * 1e-9
 
-    worker_start = time_ns()
-    worker_samples = Vector{MultiGPUHighOrderNormalWorkerSample}(undef, length(state.workers))
-    run_on_workers!(worker_samples, state.workers; phase=:normal_operator) do i
+    completed = Vector{Nothing}(undef, length(state.workers))
+    run_on_workers!(completed, state.workers; phase=:normal_operator) do i
         shard = state.shards[i]
-        worker_total_start = time_ns()
-        events = shard.timing_events
-
-        events === nothing || CUDA.record(events.upload[1])
         copyto!(shard.workspace.x_input, state.host_input)
-        events === nothing || CUDA.record(events.upload[2])
-
         local_highorder_normal!(shard)
-
-        events === nothing || CUDA.record(events.download[1])
         copyto!(state.host_outputs[i], shard.workspace.x_output)
-        events === nothing || CUDA.record(events.download[2])
-
-        upload_time = 0.0
-        forward_time = 0.0
-        adjoint_time = 0.0
-        download_time = 0.0
-        if events !== nothing
-            CUDA.synchronize(events.download[2])
-            upload_time = Float64(CUDA.elapsed(events.upload[1], events.upload[2]))
-            for channel_events in events.channels
-                forward_time += Float64(CUDA.elapsed(channel_events[1], channel_events[2]))
-                adjoint_time += Float64(CUDA.elapsed(channel_events[2], channel_events[3]))
-            end
-            download_time = Float64(CUDA.elapsed(events.download[1], events.download[2]))
-        end
-
-        MultiGPUHighOrderNormalWorkerSample(
-            shard.gpu_id,
-            shard.channels,
-            Threads.threadid(),
-            upload_time,
-            forward_time,
-            adjoint_time,
-            download_time,
-            (time_ns() - worker_total_start) * 1e-9,
-        )
+        nothing
     end
-    worker_time = (time_ns() - worker_start) * 1e-9
 
-    reduction_start = time_ns()
     host_sum = state.host_outputs[1]
     for i = 2:length(state.host_outputs)
         host_part = state.host_outputs[i]
@@ -492,21 +295,6 @@ function multi_gpu_normal_prod!(
     fill!(y, zero(Complex{T}))
     @cuda threads=threads blocks=blocks_vox kernel_scatter_masked_image!(y, state.primary_sum, state.mask_idx, state.nVox)
     CUDA.synchronize()
-    reduction_time = (time_ns() - reduction_start) * 1e-9
-
-    timing = state.timing
-    timing.n_calls += 1
-    timing.input_time = input_time
-    timing.worker_time = worker_time
-    timing.reduction_time = reduction_time
-    timing.total_time = (time_ns() - total_start) * 1e-9
-    timing.input_time_total += timing.input_time
-    timing.worker_time_total += timing.worker_time
-    timing.reduction_time_total += timing.reduction_time
-    timing.total_time_total += timing.total_time
-    for i in eachindex(worker_samples)
-        accumulate_worker_timing!(timing.per_gpu[i], worker_samples[i])
-    end
 
     return y
 end
@@ -531,7 +319,6 @@ function MultiGPUHighOrderNormalOp(
     weights              :: AbstractArray;
     gpus                 :: Vector{Int},
     verbose              :: Bool = false,
-    detailed_timing      :: Bool = false,
     _weights_are_squared :: Bool = false,
 ) where {T<:AbstractFloat}
     op.q isa CuArray || throw(ArgumentError("MultiGPUHighOrderNormalOp requires a CuArray HighOrderLowRankOp"))
@@ -612,7 +399,6 @@ function MultiGPUHighOrderNormalOp(
                 nfftplan,
                 op.grid_size,
                 workspace,
-                detailed_timing ? MultiGPUHighOrderNormalEvents(length(channels)) : nothing,
                 false,
             )
         end
@@ -625,9 +411,10 @@ function MultiGPUHighOrderNormalOp(
                         release_multi_gpu_normal_shard!(shards_any[i])
                     else
                         # A failure can occur after a plan was allocated but
-                        # before the shard was returned to the caller.
-                        GC.gc(true)
-                        CUDA.reclaim()
+                        # before the shard was returned to the caller. Wait for
+                        # any submitted work here; unreachable allocations are
+                        # collected after all workers have stopped.
+                        CUDA.device_synchronize(; blocking=true)
                     end
                     nothing
                 end
@@ -635,6 +422,7 @@ function MultiGPUHighOrderNormalOp(
                 @warn "Failed to clean up a partially constructed multi-GPU normal operator" exception=(cleanup_error, catch_backtrace())
             end
             shutdown_distributed_workers!(workers)
+            GC.gc(false)
         end
         rethrow()
     end
@@ -665,7 +453,6 @@ function MultiGPUHighOrderNormalOp(
         primary_sum,
         host_input,
         host_outputs,
-        MultiGPUHighOrderNormalTiming(setup_gpus, channel_ranges; detailed=detailed_timing),
         false,
     )
 
@@ -680,81 +467,10 @@ function MultiGPUHighOrderNormalOp(
             nPoint,
             nVox=op.nVox,
             transfer=:host_staged,
-            detailed_timing,
         )
     end
 
     return MultiGPUHighOrderNormalOp(nGrid, nGrid, false, true, product, nothing, nothing, 0, 0, 0, empty_vector, empty_vector, state)
-end
-
-
-multi_gpu_normal_operator(args...; kwargs...) = MultiGPUHighOrderNormalOp(args...; kwargs...)
-
-
-function multi_gpu_normal_timing(op::MultiGPUHighOrderNormalOp)
-    timing = op.state.timing
-    n_calls = timing.n_calls
-    call_denominator = max(n_calls, 1)
-    per_gpu = map(timing.per_gpu) do worker_timing
-        worker_calls = worker_timing.n_calls
-        worker_denominator = max(worker_calls, 1)
-        gpu_stage_time =
-            worker_timing.upload_time +
-            worker_timing.forward_time +
-            worker_timing.adjoint_time +
-            worker_timing.download_time
-        worker_time_denominator = max(worker_timing.total_time, eps(Float64))
-        unaccounted_time = max(worker_timing.total_time - gpu_stage_time, 0.0)
-        (
-            gpu_id               = worker_timing.gpu_id,
-            channels             = worker_timing.channels,
-            n_channel            = length(worker_timing.channels),
-            n_calls              = worker_calls,
-            thread_ids           = sort!(collect(worker_timing.thread_ids)),
-            upload_time          = worker_timing.upload_time,
-            forward_time         = worker_timing.forward_time,
-            adjoint_time         = worker_timing.adjoint_time,
-            download_time        = worker_timing.download_time,
-            gpu_stage_time,
-            total_time           = worker_timing.total_time,
-            unaccounted_time,
-            upload_fraction      = worker_timing.upload_time   / worker_time_denominator,
-            forward_fraction     = worker_timing.forward_time  / worker_time_denominator,
-            adjoint_fraction     = worker_timing.adjoint_time  / worker_time_denominator,
-            download_fraction    = worker_timing.download_time / worker_time_denominator,
-            unaccounted_fraction = unaccounted_time            / worker_time_denominator,
-            mean_upload_time     = worker_timing.upload_time   / worker_denominator,
-            mean_forward_time    = worker_timing.forward_time  / worker_denominator,
-            mean_adjoint_time    = worker_timing.adjoint_time  / worker_denominator,
-            mean_download_time   = worker_timing.download_time / worker_denominator,
-            mean_gpu_stage_time  = gpu_stage_time              / worker_denominator,
-            mean_total_time      = worker_timing.total_time    / worker_denominator,
-        )
-    end
-
-    return (
-        detailed             = timing.detailed,
-        n_calls,
-        input_time           = timing.input_time,
-        worker_time          = timing.worker_time,
-        reduction_time       = timing.reduction_time,
-        total_time           = timing.total_time,
-        input_time_total     = timing.input_time_total,
-        worker_time_total    = timing.worker_time_total,
-        reduction_time_total = timing.reduction_time_total,
-        total_time_total     = timing.total_time_total,
-        mean_input_time      = timing.input_time_total     / call_denominator,
-        mean_worker_time     = timing.worker_time_total    / call_denominator,
-        mean_reduction_time  = timing.reduction_time_total / call_denominator,
-        mean_total_time      = timing.total_time_total     / call_denominator,
-        per_gpu,
-    )
-end
-
-
-function reset_multi_gpu_normal_timing!(op::MultiGPUHighOrderNormalOp)
-    reset_multi_gpu_normal_timing!(op.state.timing)
-    return op
 end
 
 
@@ -776,6 +492,7 @@ function release_multi_gpu_normal_operator!(op::MultiGPUHighOrderNormalOp{T}) wh
             shutdown_distributed_workers!(state.workers)
         finally
             CUDA.device!(state.primary_gpu)
+            CUDA.device_synchronize(; blocking=true)
             CUDA.unsafe_free!(state.mask_idx)
             CUDA.unsafe_free!(state.primary_input)
             CUDA.unsafe_free!(state.primary_sum)
@@ -784,8 +501,15 @@ function release_multi_gpu_normal_operator!(op::MultiGPUHighOrderNormalOp{T}) wh
             state.host_outputs = Vector{Vector{Complex{T}}}()
             empty!(state.shards)
             empty!(state.workers)
+
+            # Workers and their job closures no longer retain NFFT plans, so a
+            # single coordinator-side collection can now release plan-owned
+            # objects safely. Do not call CUDA.reclaim here: unsafe_free!
+            # already returns explicit workspaces to CUDA.jl's reusable pool,
+            # and trimming several device pools during teardown has caused
+            # cuMemFreeAsync/context failures on large multi-GPU workloads.
             GC.gc(false)
-            CUDA.reclaim()
+            CUDA.device!(state.primary_gpu)
         end
     end
 
@@ -881,7 +605,6 @@ function ensure_highorder_normal_backend!(
         weights2;
         gpus=backend.gpus,
         verbose=backend.verbose,
-        detailed_timing=backend.detailed_timing,
         _weights_are_squared=true,
     )
     backend.operator = normal_op
@@ -904,32 +627,6 @@ function LinearOperatorCollection.normalOperator(
     weights2 = normal_weights2(op, weights)
     normal_op = ensure_highorder_normal_backend!(op, weights2)
     return highorder_normal_view(op, normal_op)
-end
-
-
-function multi_gpu_normal_timing(op::HighOrderLowRankNormalOp)
-    return multi_gpu_normal_timing(op.parent)
-end
-
-
-function reset_multi_gpu_normal_timing!(op::HighOrderLowRankNormalOp)
-    reset_multi_gpu_normal_timing!(op.parent)
-    return op
-end
-
-
-function multi_gpu_normal_timing(op::HighOrderLowRankOp)
-    normal_op = op.normal_backend.operator
-    normal_op isa MultiGPUHighOrderNormalOp || error("the HighOrderLowRankOp does not own an initialized multi-GPU normal backend")
-    return multi_gpu_normal_timing(normal_op)
-end
-
-
-function reset_multi_gpu_normal_timing!(op::HighOrderLowRankOp)
-    normal_op = op.normal_backend.operator
-    normal_op isa MultiGPUHighOrderNormalOp || error("the HighOrderLowRankOp does not own an initialized multi-GPU normal backend")
-    reset_multi_gpu_normal_timing!(normal_op)
-    return op
 end
 
 

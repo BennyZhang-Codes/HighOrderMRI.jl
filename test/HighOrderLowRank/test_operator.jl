@@ -66,7 +66,7 @@
     W = WeightingOp(Complex{T}; weights, rep=nCha)
     E = ∘(W, op)
     normal_op = normalOperator(E)
-    @test !(normal_op isa HighOrderLowRankNormalOp)
+    @test !(normal_op isa HighOrderMRI.HighOrderLowRankNormalOp)
     @test normal_op * x ≈ adjoint(E) * (E * x) rtol=T(1e-4) atol=T(1e-5)
 
     squared_weights = abs2.(weights)

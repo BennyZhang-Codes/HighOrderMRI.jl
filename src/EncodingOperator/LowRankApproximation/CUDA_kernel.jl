@@ -17,19 +17,6 @@ end
     return values
 end
 
-@inline function accumulate_rank_tuple(
-    acc    :: NTuple{L,Complex{T}},
-    phase  :: Complex{T},
-    matrix :: CuDeviceMatrix{Complex{T}},
-    irow   :: I,
-) where {L,T<:AbstractFloat,I<:Integer}
-
-    return ntuple(Val(L)) do irank
-        @inbounds acc[irank] + phase * matrix[irow, irank]
-    end
-end
-
-
 @inline function accumulate_phase_tuple(
     acc        :: NTuple{L,Complex{T}},
     phase_real :: T,
@@ -53,12 +40,7 @@ end
 end
 
 
-@inline phase_sincos(theta::T, ::Val{false}) where {T<:AbstractFloat} = sincos(theta)
-
-
-@inline function phase_sincos(theta::T, ::Val{true}) where {T<:AbstractFloat}
-    return @fastmath sincos(theta)
-end
+@inline phase_sincos(theta::T) where {T<:AbstractFloat} = sincos(theta)
 
 
 @inline function load_kspha(
@@ -89,7 +71,6 @@ function run_kernel_rsvd_forward!(
     bf       :: CuMatrix{T},
     kspha    :: CuMatrix{T};
     threads  :: Int = 128,
-    fastmath :: Bool = false,
     kspha_transposed::Bool = false,
 ) where {T<:AbstractFloat}
 
@@ -114,7 +95,7 @@ function run_kernel_rsvd_forward!(
 
     @cuda threads=threads blocks=blocks shmem=shmem_bytes CUDA_kernel_rsvd_forward!(
             W, omega, times, fieldmap, bf, kspha, Int32(nSam), Int32(nVox),
-            Val(M), Val(L), Val(fastmath), Val(kspha_transposed))
+            Val(M), Val(L), Val(kspha_transposed))
 
     return W
 end
@@ -128,45 +109,6 @@ function run_kernel_rsvd_adjoint!(
     bf       :: CuMatrix{T},
     kspha    :: CuMatrix{T};
     threads  :: Int = 128,
-    fastmath :: Bool = false,
-    kspha_transposed::Bool = false,
-) where {T<:AbstractFloat}
-
-    nSam = size(Q, 1)
-    L    = size(Q, 2)
-    nVox = size(B_adj, 1)
-    M    = kspha_transposed ? size(kspha, 2) : size(kspha, 1)
-
-    @assert size(B_adj) == (nVox, L)
-    @assert size(times) == (nSam,)
-    @assert size(fieldmap) == (nVox,)
-    @assert size(bf) == (nVox, M)
-    expected_kspha_size = kspha_transposed ? (nSam, M) : (M, nSam)
-    @assert size(kspha) == expected_kspha_size
-    @assert L <= 32 "Fused rSVD kernel currently supports L_total <= 32"
-
-    blocks  = nVox
-    nWarp   = threads ÷ 32
-
-    M_pad = M + (M % 2)
-
-    shmem_bytes = M_pad * sizeof(T) + nWarp * L * sizeof(Complex{T})
-
-    @cuda threads=threads blocks=blocks shmem=shmem_bytes CUDA_kernel_rsvd_adjoint!(
-        B_adj, Q, times, fieldmap, bf, kspha, Int32(nSam), Int32(nVox),
-        Val(M), Val(L), Val(fastmath), Val(kspha_transposed))
-    return B_adj
-end
-
-function run_kernel_rsvd_adjoint_warp!(
-    B_adj    :: CuMatrix{Complex{T}},
-    Q        :: CuMatrix{Complex{T}},
-    times    :: CuVector{T},
-    fieldmap :: CuVector{T},
-    bf       :: CuMatrix{T},
-    kspha    :: CuMatrix{T};
-    threads  :: Int = 128,
-    fastmath :: Bool = false,
     kspha_transposed::Bool = false,
 ) where {T<:AbstractFloat}
 
@@ -193,9 +135,9 @@ function run_kernel_rsvd_adjoint_warp!(
 
     shmem_bytes = warps_per_block * M * sizeof(T)
 
-    @cuda threads=threads blocks=blocks shmem=shmem_bytes CUDA_kernel_rsvd_adjoint_warp!(
+    @cuda threads=threads blocks=blocks shmem=shmem_bytes CUDA_kernel_rsvd_adjoint!(
             B_adj, Q, times, fieldmap, bf, kspha, Int32(nSam), Int32(nVox),
-            Val(M), Val(L), Val(fastmath), Val(kspha_transposed))
+            Val(M), Val(L), Val(kspha_transposed))
 
     return B_adj
 end
@@ -211,9 +153,8 @@ function CUDA_kernel_rsvd_forward!(
     nVox     :: Int32,
     ::Val{M},
     ::Val{L},
-    fastmath :: Val{F},
     kspha_transposed::Val{K},
-) where {T<:AbstractFloat,M,L,F,K}
+) where {T<:AbstractFloat,M,L,K}
 
     isam = blockIdx().x
 
@@ -252,7 +193,7 @@ function CUDA_kernel_rsvd_forward!(
             phase = muladd(bf[ivox, iterm], s_kspha[iterm], phase)
         end
 
-        phase_sin, phase_cos = phase_sincos(T(2π) * phase, fastmath)
+        phase_sin, phase_cos = phase_sincos(T(2π) * phase)
         acc = accumulate_phase_tuple(acc, phase_cos, phase_sin, omega, ivox)
 
         ivox += stride
@@ -294,95 +235,8 @@ function CUDA_kernel_rsvd_adjoint!(
     nVox     :: Int32,
     ::Val{M},
     ::Val{L},
-    fastmath :: Val{F},
     kspha_transposed::Val{K},
-) where {T<:AbstractFloat,M,L,F,K}
-
-    ivox = blockIdx().x
-
-    if ivox > nVox
-        return nothing
-    end
-
-    tid = threadIdx().x
-    stride = blockDim().x
-
-    lane = (tid - 1) % Int32(32)
-    iwarp = (tid - 1) ÷ Int32(32)
-    nWarp = blockDim().x ÷ Int32(32)
-
-    M_pad = M + (M % 2)
-
-    s_bf      = CuDynamicSharedArray(T, M)
-    s_partial = CuDynamicSharedArray(Complex{T}, nWarp * L, M_pad * sizeof(T))
-
-    iterm = tid
-    while iterm <= M
-        @inbounds s_bf[iterm] = bf[ivox, iterm]
-        iterm += stride
-    end
-
-    sync_threads()
-
-    b0 = @inbounds fieldmap[ivox]
-
-    acc = ntuple(_ -> zero(Complex{T}), Val(L))
-
-    isam = tid
-    while isam <= nSam
-        phase = @inbounds times[isam] * b0
-
-        @inbounds for iterm = 1:M
-            phase = muladd(
-                s_bf[iterm],
-                load_kspha(kspha, iterm, isam, kspha_transposed),
-                phase,
-            )
-        end
-
-        phase_sin, phase_cos = phase_sincos(T(2π) * phase, fastmath)
-        acc = accumulate_phase_tuple(acc, phase_cos, -phase_sin, Q, isam)
-
-        isam += stride
-    end
-
-    acc = reduce_warp_tuple(acc)
-
-    if lane == 0
-        offset = iwarp * L
-        @inbounds for irank = 1:L
-            s_partial[offset + irank] = acc[irank]
-        end
-    end
-
-    sync_threads()
-
-    if tid <= L
-        total = zero(Complex{T})
-        @inbounds for iwarp = 0:(nWarp - 1)
-            total += s_partial[iwarp * L + tid]
-        end
-        @inbounds B_adj[ivox, tid] = total
-    end
-
-    return nothing
-end
-
-
-function CUDA_kernel_rsvd_adjoint_warp!(
-    B_adj    :: CuDeviceMatrix{Complex{T}},
-    Q        :: CuDeviceMatrix{Complex{T}},
-    times    :: CuDeviceVector{T},
-    fieldmap :: CuDeviceVector{T},
-    bf       :: CuDeviceMatrix{T},
-    kspha    :: CuDeviceMatrix{T},
-    nSam     :: Int32,
-    nVox     :: Int32,
-    ::Val{M},
-    ::Val{L},
-    fastmath :: Val{F},
-    kspha_transposed::Val{K},
-) where {T<:AbstractFloat,M,L,F,K}
+) where {T<:AbstractFloat,M,L,K}
 
     tid = threadIdx().x
 
@@ -428,7 +282,7 @@ function CUDA_kernel_rsvd_adjoint_warp!(
                 )
             end
 
-            phase_sin, phase_cos = phase_sincos(T(2π) * phase, fastmath)
+            phase_sin, phase_cos = phase_sincos(T(2π) * phase)
 
             # conj(E) = cos(phase) - i*sin(phase)
             acc = accumulate_phase_tuple(acc, phase_cos, -phase_sin, Q, isam)

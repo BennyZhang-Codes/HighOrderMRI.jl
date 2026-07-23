@@ -60,39 +60,15 @@ end
 
 
 mutable struct DistributedRSVDTiming
-    detailed                   :: Bool
-    n_calls                    :: Int
-    forward_time               :: Float64
-    qr_time                    :: Float64
-    adjoint_gram_time          :: Float64
-    finalize_time              :: Float64
-
-    # Optional detailed timings. GPU stages are accumulated from the slowest
-    # shard for each dynamic, i.e. the multi-GPU critical path rather than the
-    # sum over devices.
-    transpose_time             :: Float64
-    forward_upload_time        :: Float64
-    forward_sketch_time        :: Float64
-    forward_kernel_time        :: Float64
-    forward_download_time      :: Float64
-    forward_reduce_time        :: Float64
-    adjoint_upload_time        :: Float64
-    adjoint_kernel_time        :: Float64
-    gram_time                  :: Float64
-    adjoint_download_time      :: Float64
-    adjoint_reduce_time        :: Float64
+    n_calls          :: Int
+    forward_time     :: Float64
+    qr_time          :: Float64
+    adjoint_gram_time:: Float64
+    finalize_time    :: Float64
 end
 
 
-function DistributedRSVDTiming(; detailed::Bool=false)
-    return DistributedRSVDTiming(
-        detailed,
-        0,
-        0.0, 0.0, 0.0, 0.0,
-        0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-        0.0, 0.0, 0.0, 0.0, 0.0,
-    )
-end
+DistributedRSVDTiming() = DistributedRSVDTiming(0, 0.0, 0.0, 0.0, 0.0)
 
 
 function reset_distributed_rsvd_timing!(timing::DistributedRSVDTiming)
@@ -101,17 +77,6 @@ function reset_distributed_rsvd_timing!(timing::DistributedRSVDTiming)
     timing.qr_time = 0.0
     timing.adjoint_gram_time = 0.0
     timing.finalize_time = 0.0
-    timing.transpose_time = 0.0
-    timing.forward_upload_time = 0.0
-    timing.forward_sketch_time = 0.0
-    timing.forward_kernel_time = 0.0
-    timing.forward_download_time = 0.0
-    timing.forward_reduce_time = 0.0
-    timing.adjoint_upload_time = 0.0
-    timing.adjoint_kernel_time = 0.0
-    timing.gram_time = 0.0
-    timing.adjoint_download_time = 0.0
-    timing.adjoint_reduce_time = 0.0
     return timing
 end
 
@@ -220,8 +185,6 @@ function distributed_rsvd_forward!(
     kspha     :: Matrix{T};
     omega     :: Union{Nothing, AbstractMatrix{Complex{T}}} = nothing,
     seed      :: Int = 0,
-    fastmath  :: Bool = false,
-    timing    :: Union{Nothing, DistributedRSVDTiming} = nothing,
 ) where {T<:AbstractFloat}
 
     @assert length(times) == workspace.nSam
@@ -229,271 +192,80 @@ function distributed_rsvd_forward!(
     @assert size(kspha, 1) == size(workspace.kspha_t_host, 2)
     if omega !== nothing @assert size(omega) == (workspace.nVox, workspace.L_total) end
 
-    profile_detail = timing !== nothing && timing.detailed
-
-    transpose_start = profile_detail ? time_ns() : UInt64(0)
     permutedims!(workspace.kspha_t_host, kspha, (2, 1))
-    if profile_detail
-        timing.transpose_time += (time_ns() - transpose_start) * 1e-9
-    end
 
     nShard = length(workspace.shards)
-    partial_W = if profile_detail
-        shard_results = Vector{Any}(undef, nShard)
+    partial_W = Vector{Matrix{Complex{T}}}(undef, nShard)
 
-        run_on_workers!(shard_results, workspace.workers) do i
-            shard = workspace.shards[i]
-            events = ntuple(_ -> CUDA.CuEvent(), 4)
+    run_on_workers!(partial_W, workspace.workers) do i
+        shard = workspace.shards[i]
 
-            try
-                CUDA.record(events[1])
-                copyto!(shard.times, times)
-                copyto!(shard.kspha_t, workspace.kspha_t_host)
-                CUDA.record(events[2])
+        copyto!(shard.times, times)
+        copyto!(shard.kspha_t, workspace.kspha_t_host)
 
-                if omega === nothing
-                    shard_seed = seed + 1_000_003 * (i - 1)
-                    Random.seed!(shard.rng, shard_seed)
-                    randn!(shard.rng, shard.omega)
-                else
-                    omega_local = omega[shard.voxels, :]
-                    copyto!(shard.omega, omega_local)
-                end
-                CUDA.record(events[3])
-
-                run_kernel_rsvd_forward!(
-                    shard.W,
-                    shard.omega,
-                    shard.times,
-                    shard.fieldmap,
-                    shard.bf,
-                    shard.kspha_t;
-                    threads=128,
-                    fastmath,
-                    kspha_transposed=true,
-                )
-                CUDA.record(events[4])
-                CUDA.synchronize(events[4])
-
-                upload_time = Float64(CUDA.elapsed(events[1], events[2]))
-                sketch_time = Float64(CUDA.elapsed(events[2], events[3]))
-                kernel_time = Float64(CUDA.elapsed(events[3], events[4]))
-
-                download_start = time_ns()
-                W_host = Array(shard.W)
-                download_time = (time_ns() - download_start) * 1e-9
-
-                (W=W_host, upload_time, sketch_time, kernel_time, download_time)
-            finally
-                # Run event finalizers while this worker still owns the CUDA
-                # context; do not leave driver resources for an arbitrary GC
-                # thread to reclaim later.
-                foreach(finalize, events)
-            end
+        if omega === nothing
+            shard_seed = seed + 1_000_003 * (i - 1)
+            Random.seed!(shard.rng, shard_seed)
+            randn!(shard.rng, shard.omega)
+        else
+            omega_local = omega[shard.voxels, :]
+            copyto!(shard.omega, omega_local)
         end
 
-        timing.forward_upload_time += maximum(r.upload_time for r in shard_results)
-        timing.forward_sketch_time += maximum(r.sketch_time for r in shard_results)
-        timing.forward_kernel_time += maximum(r.kernel_time for r in shard_results)
-        timing.forward_download_time += maximum(r.download_time for r in shard_results)
+        CUDA.@sync run_kernel_rsvd_forward!(
+            shard.W,
+            shard.omega,
+            shard.times,
+            shard.fieldmap,
+            shard.bf,
+            shard.kspha_t;
+            threads=128,
+            kspha_transposed=true,
+        )
 
-        Matrix{Complex{T}}[r.W for r in shard_results]
-    else
-        shard_parts = Vector{Matrix{Complex{T}}}(undef, nShard)
-
-        run_on_workers!(shard_parts, workspace.workers) do i
-            shard = workspace.shards[i]
-
-            copyto!(shard.times, times)
-            copyto!(shard.kspha_t, workspace.kspha_t_host)
-
-            if omega === nothing
-                shard_seed = seed + 1_000_003 * (i - 1)
-                Random.seed!(shard.rng, shard_seed)
-                randn!(shard.rng, shard.omega)
-            else
-                omega_local = omega[shard.voxels, :]
-                copyto!(shard.omega, omega_local)
-            end
-
-            CUDA.@sync run_kernel_rsvd_forward!(
-                shard.W,
-                shard.omega,
-                shard.times,
-                shard.fieldmap,
-                shard.bf,
-                shard.kspha_t;
-                threads=128,
-                fastmath,
-                kspha_transposed=true,
-            )
-
-            Array(shard.W)
-        end
-
-        shard_parts
+        Array(shard.W)
     end
 
-    reduce_start = profile_detail ? time_ns() : UInt64(0)
     W = zeros(Complex{T}, workspace.nSam, workspace.L_total)
 
     for W_local in partial_W
         W .+= W_local
     end
-    if profile_detail
-        timing.forward_reduce_time += (time_ns() - reduce_start) * 1e-9
-    end
 
     return W
 end
 
-function distributed_rsvd_adjoint!(
-    workspace :: DistributedRSVDWorkspace{T},
-    Q         :: Matrix{Complex{T}};
-    fastmath  :: Bool = false,
-) where {T<:AbstractFloat}
-
-    @assert size(Q) == (workspace.nSam, workspace.L_total)
-
-    nShard = length(workspace.shards)
-
-    local_B = Vector{Matrix{Complex{T}}}(undef, nShard)
-    local_gram = Vector{Matrix{Complex{T}}}(undef, nShard)
-
-    tasks = Task[]
-
-    for (i, shard) in enumerate(workspace.shards)
-        push!(tasks, Threads.@spawn begin
-            CUDA.device!(shard.gpu_id)
-
-            copyto!(shard.Q, Q)
-
-            CUDA.@sync begin
-                run_kernel_rsvd_adjoint_warp!(
-                    shard.B_adj,
-                    shard.Q,
-                    shard.times,
-                    shard.fieldmap,
-                    shard.bf,
-                    shard.kspha_t;
-                    threads=256,
-                    fastmath,
-                    kspha_transposed=true,
-                )
-                mul!(shard.gram, adjoint(shard.B_adj), shard.B_adj)
-            end
-
-            local_B[i] = Array(shard.B_adj)
-            local_gram[i] = Array(shard.gram)
-        end)
-    end
-
-    foreach(fetch, tasks)
-
-    B_adj = zeros(Complex{T}, workspace.nVox, workspace.L_total)
-
-    gram = zeros(Complex{T}, workspace.L_total, workspace.L_total)
-
-    for (i, shard) in enumerate(workspace.shards)
-        B_adj[shard.voxels, :] .= local_B[i]
-        gram .+= local_gram[i]
-    end
-
-    return B_adj, gram
-end
-
-
-
 function distributed_rsvd_adjoint_gram!(
     workspace :: DistributedRSVDWorkspace{T},
-    Q         :: Matrix{Complex{T}};
-    fastmath  :: Bool = false,
-    timing    :: Union{Nothing, DistributedRSVDTiming} = nothing,
+    Q         :: Matrix{Complex{T}},
 ) where {T<:AbstractFloat}
 
     @assert size(Q) == (workspace.nSam, workspace.L_total)
 
-    profile_detail = timing !== nothing && timing.detailed
     nShard = length(workspace.shards)
-    local_grams = if profile_detail
-        shard_results = Vector{Any}(undef, nShard)
+    local_grams = Vector{Matrix{Complex{T}}}(undef, nShard)
 
-        run_on_workers!(shard_results, workspace.workers) do i
-            shard = workspace.shards[i]
-            events = ntuple(_ -> CUDA.CuEvent(), 4)
+    run_on_workers!(local_grams, workspace.workers) do i
+        shard = workspace.shards[i]
+        copyto!(shard.Q, Q)
 
-            try
-                CUDA.record(events[1])
-                copyto!(shard.Q, Q)
-                CUDA.record(events[2])
-
-                run_kernel_rsvd_adjoint_warp!(
-                    shard.B_adj,
-                    shard.Q,
-                    shard.times,
-                    shard.fieldmap,
-                    shard.bf,
-                    shard.kspha_t;
-                    threads=256,
-                    fastmath,
-                    kspha_transposed=true,
-                )
-                CUDA.record(events[3])
-
-                mul!(shard.gram, adjoint(shard.B_adj), shard.B_adj)
-                CUDA.record(events[4])
-                CUDA.synchronize(events[4])
-
-                upload_time = Float64(CUDA.elapsed(events[1], events[2]))
-                kernel_time = Float64(CUDA.elapsed(events[2], events[3]))
-                gram_time = Float64(CUDA.elapsed(events[3], events[4]))
-
-                download_start = time_ns()
-                gram_host = Array(shard.gram)
-                download_time = (time_ns() - download_start) * 1e-9
-
-                (gram=gram_host, upload_time, kernel_time, gram_time, download_time)
-            finally
-                foreach(finalize, events)
-            end
+        CUDA.@sync begin
+            run_kernel_rsvd_adjoint!(
+                shard.B_adj,
+                shard.Q,
+                shard.times,
+                shard.fieldmap,
+                shard.bf,
+                shard.kspha_t;
+                threads=256,
+                kspha_transposed=true,
+            )
+            mul!(shard.gram, adjoint(shard.B_adj), shard.B_adj)
         end
 
-        timing.adjoint_upload_time += maximum(r.upload_time for r in shard_results)
-        timing.adjoint_kernel_time += maximum(r.kernel_time for r in shard_results)
-        timing.gram_time += maximum(r.gram_time for r in shard_results)
-        timing.adjoint_download_time += maximum(r.download_time for r in shard_results)
-
-        Matrix{Complex{T}}[r.gram for r in shard_results]
-    else
-        shard_parts = Vector{Matrix{Complex{T}}}(undef, nShard)
-
-        run_on_workers!(shard_parts, workspace.workers) do i
-            shard = workspace.shards[i]
-
-            copyto!(shard.Q, Q)
-
-            CUDA.@sync begin
-                run_kernel_rsvd_adjoint_warp!(
-                    shard.B_adj,
-                    shard.Q,
-                    shard.times,
-                    shard.fieldmap,
-                    shard.bf,
-                    shard.kspha_t;
-                    threads=256,
-                    fastmath,
-                    kspha_transposed=true,
-                )
-                mul!(shard.gram, adjoint(shard.B_adj), shard.B_adj)
-            end
-
-            Array(shard.gram)
-        end
-
-        shard_parts
+        Array(shard.gram)
     end
 
-    reduce_start = profile_detail ? time_ns() : UInt64(0)
     gram = zeros(Complex{T}, workspace.L_total, workspace.L_total)
 
     for local_gram in local_grams
@@ -501,9 +273,6 @@ function distributed_rsvd_adjoint_gram!(
     end
 
     gram = (gram + adjoint(gram)) * T(0.5)
-    if profile_detail
-        timing.adjoint_reduce_time += (time_ns() - reduce_start) * 1e-9
-    end
     return gram
 end
 
@@ -560,11 +329,10 @@ function perform_rsvd_multi_gpu!(
     seed      :: Int = 0,
     omega             = nothing,
     timing    :: Union{Nothing, DistributedRSVDTiming} = nothing,
-    fastmath  :: Bool = false,
 ) where {T<:AbstractFloat}
 
     t0 = time_ns()
-    W = distributed_rsvd_forward!(workspace, times, kspha; seed, omega, fastmath, timing)
+    W = distributed_rsvd_forward!(workspace, times, kspha; seed, omega)
     forward_time = (time_ns() - t0) * 1e-9
 
     t0 = time_ns()
@@ -576,7 +344,7 @@ function perform_rsvd_multi_gpu!(
     qr_time = (time_ns() - t0) * 1e-9
 
     t0 = time_ns()
-    gram = distributed_rsvd_adjoint_gram!(workspace, Q; fastmath, timing)
+    gram = distributed_rsvd_adjoint_gram!(workspace, Q)
     adjoint_gram_time = (time_ns() - t0) * 1e-9
 
     t0 = time_ns()
@@ -602,18 +370,9 @@ function gather_distributed_v_scaled(
     nShard = length(workspace.shards)
 
     local_parts = Vector{Matrix{Complex{T}}}(undef, nShard)
-
-    tasks = Task[]
-
-    for (i, shard) in enumerate(workspace.shards)
-        push!(tasks, Threads.@spawn begin
-            CUDA.device!(shard.gpu_id)
-
-            local_parts[i] = Array(shard.v_scaled)
-        end)
+    run_on_workers!(local_parts, workspace.workers) do i
+        Array(workspace.shards[i].v_scaled)
     end
-
-    foreach(fetch, tasks)
 
     v_scaled = zeros(Complex{T}, workspace.nVox, workspace.L_rank)
 

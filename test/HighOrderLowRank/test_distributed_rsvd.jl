@@ -69,29 +69,21 @@
                 @test all(isnothing, worker_outputs)
             end
 
-            @testset "distributed forward and adjoint" begin
+            @testset "distributed forward" begin
                 omega = randn(Complex{T}, data.nVox, data.L_total)
                 W_ref = data.E_ref * omega
                 W = HighOrderMRI.distributed_rsvd_forward!(
                     workspace, data.times[:, 1], data.kspha_err; omega,
                 )
                 forward_multi_error = norm(W - W_ref) / max(norm(W_ref), eps(T))
-                Q = randn(Complex{T}, data.nSam, data.L_total)
-                B_ref = adjoint(data.E_ref) * Q
-                gram_ref = adjoint(B_ref) * B_ref
-                B, gram = HighOrderMRI.distributed_rsvd_adjoint!(workspace, Q)
-                adjoint_multi_error = norm(B - B_ref) / max(norm(B_ref), eps(T))
-                gram_multi_error = norm(gram - gram_ref) / max(norm(gram_ref), eps(T))
 
-                @show forward_multi_error adjoint_multi_error gram_multi_error
+                @show forward_multi_error
                 @test forward_multi_error < T(1e-4)
-                @test adjoint_multi_error < T(1e-4)
-                @test gram_multi_error < T(1e-4)
             end
 
             @testset "distributed finalization" begin
                 omega = randn(Complex{T}, data.nVox, data.L_total)
-                timing = HighOrderMRI.DistributedRSVDTiming(detailed=true)
+                timing = HighOrderMRI.DistributedRSVDTiming()
                 u_multi, energy_multi = HighOrderMRI.perform_rsvd_multi_gpu!(
                     workspace,
                     data.times[:, 1],
@@ -99,7 +91,6 @@
                     seed=17,
                     omega,
                     timing,
-                    fastmath=true,
                 )
                 v_multi = HighOrderMRI.gather_distributed_v_scaled(workspace)
 
@@ -131,25 +122,10 @@
                 @test timing.adjoint_gram_time >= 0.0
                 @test timing.finalize_time >= 0.0
                 @test HighOrderMRI.distributed_rsvd_total_time(timing) >= 0.0
-                @test timing.detailed
-                @test timing.transpose_time >= 0.0
-                @test timing.forward_upload_time >= 0.0
-                @test timing.forward_sketch_time >= 0.0
-                @test timing.forward_kernel_time >= 0.0
-                @test timing.forward_download_time >= 0.0
-                @test timing.forward_reduce_time >= 0.0
-                @test timing.adjoint_upload_time >= 0.0
-                @test timing.adjoint_kernel_time >= 0.0
-                @test timing.gram_time >= 0.0
-                @test timing.adjoint_download_time >= 0.0
-                @test timing.adjoint_reduce_time >= 0.0
 
                 HighOrderMRI.reset_distributed_rsvd_timing!(timing)
                 @test timing.n_calls == 0
-                @test timing.detailed
                 @test HighOrderMRI.distributed_rsvd_total_time(timing) == 0.0
-                @test timing.forward_kernel_time == 0.0
-                @test timing.adjoint_kernel_time == 0.0
             end
 
             @testset "distributed shared spatial basis" begin

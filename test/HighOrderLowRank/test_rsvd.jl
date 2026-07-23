@@ -47,44 +47,11 @@
     end
 
     if CUDA.functional()
-        @testset "CuArray chunked and Gram finalization" begin
+        @testset "CuArray Gram finalization" begin
             times_d = CuArray(data.times[:, 1])
             fieldmap_d = CuArray(data.fieldmap_masked)
             bf_err_d = CuArray(data.bf_err)
             kspha_err_d = CuArray(data.kspha_err)
-
-            workspace_full = HighOrderMRI.RSVDWorkspace(
-                times_d, T, data.nSam, data.nVox, data.L_total, data.nVox,
-            )
-            @test size(workspace_full.omega) == (data.nVox, data.L_total)
-            @test size(workspace_full.W) == (data.nSam, data.L_total)
-            @test size(workspace_full.B_adj) == (data.nVox, data.L_total)
-            @test size(workspace_full.gram) == (data.L_total, data.L_total)
-            @test size(workspace_full.right_vectors) == (data.L_total, data.L_total)
-
-            u_full, s_full, v_full = HighOrderMRI.perform_rsvd(
-                times_d, fieldmap_d, bf_err_d, kspha_err_d,
-                data.nVox, data.nSam, data.L_rank, data.nVox, workspace_full;
-                seed=17, p_oversample=data.p_oversample,
-            )
-
-            workspace_chunk = HighOrderMRI.RSVDWorkspace(
-                times_d, T, data.nSam, data.nVox, data.L_total, 3,
-            )
-            u_chunk, s_chunk, v_chunk = HighOrderMRI.perform_rsvd(
-                times_d, fieldmap_d, bf_err_d, kspha_err_d,
-                data.nVox, data.nSam, data.L_rank, 3, workspace_chunk;
-                seed=17, p_oversample=data.p_oversample,
-            )
-
-            E_full = Array(u_full * Diagonal(s_full) * adjoint(v_full))
-            E_chunk = Array(u_chunk * Diagonal(s_chunk) * adjoint(v_chunk))
-            relerr_chunk = norm(E_full - E_chunk) / norm(E_full)
-            @test size(u_chunk) == (data.nSam, data.L_rank)
-            @test size(v_chunk) == (data.nVox, data.L_rank)
-            @test length(s_chunk) == data.L_rank
-            @test all(isfinite, Array(s_chunk))
-            @test relerr_chunk < T(1e-4)
 
             L_rank_gram = 1
             L_total_gram = L_rank_gram + data.p_oversample

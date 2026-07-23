@@ -2,7 +2,58 @@ using CUDA
 using LinearAlgebra
 using NFFT
 
-export HighOrderLowRankOp
+export HighOrderLowRankOp, @rebuild_HOOp
+
+"""
+    @rebuild_HOOp variable constructor_expression
+
+Safely replace a large high-order operator stored in `variable`.
+
+If `variable` is already defined, its current value is closed when it supports
+`Base.close`, and the caller's binding is then set to `nothing`. A full Julia
+GC runs only after all temporary references to the old value have left scope.
+Finally, `constructor_expression` is evaluated and assigned to `variable`.
+
+The constructor expression is deliberately evaluated last, preventing the old
+and new operators from coexisting during setup.
+
+# Example
+
+```julia
+@rebuild_HOOp HOOp HighOrderLowRankOp(
+    grid,
+    kspha,
+    times;
+    arrayType=CuArray,
+    gpus=[1, 2, 3],
+)
+```
+
+The first argument must be a plain variable name. In a local scope, its type
+must permit assignment of `nothing`.
+"""
+macro rebuild_HOOp(variable, constructor_expression)
+    variable isa Symbol || throw(ArgumentError(
+        "@rebuild_HOOp expects a variable name as its first argument",
+    ))
+
+    return esc(quote
+        if @isdefined $variable
+            let old_operator = $variable
+                if old_operator !== nothing &&
+                   Base.applicable(Base.close, old_operator)
+                    Base.close(old_operator)
+                end
+            end
+            $variable = nothing
+        end
+
+        # No temporary or caller binding now retains the old operator. Return
+        # its arrays to CUDA.jl's pool before evaluating the new constructor.
+        Base.GC.gc(true)
+        $variable = $constructor_expression
+    end)
+end
 
 mutable struct HighOrderLowRankWorkspace{AV}
     grid_flat_prod   :: AV
@@ -26,21 +77,19 @@ mutable struct HighOrderNormalBackend
     distribution :: Symbol
     gpus          :: Vector{Int}
     verbose       :: Bool
-    detailed_timing :: Bool
     operator      :: Union{Nothing,AbstractLinearOperator}
     weights2      :: Union{Nothing,AbstractVector}
 end
 
 """
-HighOrderLowRankOp implements a high-order field encoding operator based on SVD low-rank approximation.
-Automatically separates 0th-order (outer demodulation) and 1st-order (NFFT) terms, and performs extremely fast SVD dimensionality reduction only on the remaining smooth high-order errors.
-Supports automatic switching between CPU and GPU compute backends.
+High-order field encoding operator using a low-rank approximation of the
+off-resonance and higher-order phase terms.
 
-For a `CuArray` operator, set `normal_distribution=:channel` and pass two or
-more `normal_gpus` (or reuse `gpus`) to make `normalOperator(W ∘ op)` construct
-a channel-sharded multi-GPU normal backend lazily. Release that backend with
-`close(op)` after reconstruction. Set `normal_detailed_timing=true` to accumulate
-per-GPU upload, forward, adjoint, download, and worker wall times.
+The zeroth-order term is applied as a temporal modulation, the first-order
+terms are handled by the NFFT trajectory, and the remaining smooth phase is
+represented by one global spatial basis shared by all dynamics. See the
+`HighOrderLowRankOp` constructor documentation for input dimensions and
+configuration options.
 """
 mutable struct HighOrderLowRankOp{
     T, F1, F2, 
@@ -85,6 +134,28 @@ end
 LinearOperators.storage_type(op::HighOrderLowRankOp) = typeof(op.Mv)
 
 
+"""
+    HighOrderLowRankOp(
+        grid::Grid{T},
+        kspha::AbstractArray{T,2},
+        times::AbstractArray{T,1};
+        kwargs...,
+    ) where T<:AbstractFloat
+
+# Description
+
+Construct a single-dynamic high-order low-rank encoding operator. This is a
+convenience overload: `kspha` and `times` are reshaped to add a singleton
+dynamic dimension and are then passed to the full constructor.
+
+# Arguments
+
+* `grid`: Cartesian reconstruction grid.
+* `kspha`: Spherical-harmonic coefficients with size `(nTerm, nSam)`.
+  `nTerm` must be `9` (up to second order) or `16` (up to third order).
+* `times`: Sampling times with length `nSam`.
+* `kwargs`: Keywords accepted by the dynamic-data constructor below.
+"""
 function HighOrderLowRankOp(
     grid        :: Grid{T}                                                             ,
     kspha       :: AbstractArray{T, 2}                                                 , 
@@ -97,8 +168,135 @@ function HighOrderLowRankOp(
 end
 
 """
-kspha: [nTerm, nSam, nDyn]
-times: [nSam, nDyn]
+    HighOrderLowRankOp(
+        grid::Grid{T},
+        kspha::AbstractArray{T,3},
+        times::AbstractArray{T,2};
+        fieldmap=zeros(T, grid.matrixSize...),
+        csm=ones(Complex{T}, grid.matrixSize..., 1),
+        mask=trues(grid.matrixSize...),
+        recon_terms=nothing,
+        k_nominal=kspha[2:4, :, :],
+        arrayType=Array,
+        gpus=[0],
+        L_rank=15,
+        rsvd_seed=1234,
+        rsvd_chunk=4096,
+        rsvd_oversample=5,
+        rsvd_finalize=:svd,
+        rsvd_backend=:auto,
+        rsvd_distribution=:auto,
+        shared_rank_max=128,
+        shared_basis_tol=T(1e-2),
+        normal_distribution=:single,
+        verbose=false,
+    ) where T<:AbstractFloat
+
+# Description
+
+Construct a high-order low-rank encoding operator for dynamic non-Cartesian
+MRI. For each dynamic, rSVD approximates the off-resonance and higher-order
+encoding matrix. The dynamic spatial bases are subsequently compressed into
+one global spatial basis, allowing the final operator to use one global NFFT
+plan instead of one NFFT per dynamic and low-rank term.
+
+# Arguments
+
+* `grid`: Cartesian reconstruction grid. `grid.matrixSize` defines the image
+  dimensions `(nX, nY, nZ)`.
+* `kspha`: Spherical-harmonic coefficients with size
+  `(nTerm, nSam, nDyn)`. `nTerm` must be `9` (up to second order) or `16`
+  (up to third order).
+* `times`: Sampling times with size `(nSam, nDyn)`.
+
+# Keywords
+
+* `fieldmap`: Off-resonance map with size `(nX, nY, nZ)`. Its units must be
+  consistent with `times` so that their product gives phase in cycles.
+  A two-dimensional `(nX, nY)` map is accepted when `nZ == 1`.
+* `csm`: Complex coil-sensitivity maps with size
+  `(nX, nY, nZ, nCha)`. A three-dimensional `(nX, nY, nCha)` array is
+  accepted when `nZ == 1`.
+* `mask`: Boolean reconstruction mask with size `(nX, nY, nZ)`. A
+  two-dimensional mask is accepted when `nZ == 1`. Only masked voxels enter
+  the low-rank approximation.
+* `recon_terms`: String selecting which spherical-harmonic orders are
+  reconstructed. Use three digits for `nTerm == 9` and four digits for
+  `nTerm == 16`; the digits correspond to zeroth-, first-, second-, and
+  third-order terms. A `0` removes that order, except that disabling the
+  first-order error replaces it with `k_nominal`. The default keeps every
+  available order (`"111"` or `"1111"`).
+* `k_nominal`: Nominal first-order trajectory with size
+  `(3, nSam, nDyn)`, ordered as `(kx, ky, kz)`. It is used when the
+  first-order error is disabled by `recon_terms`.
+* `arrayType`: Storage and execution backend. Use `Array` for CPU execution
+  or `CuArray` for CUDA execution.
+* `gpus`: Zero-based CUDA device IDs, as used by CUDA.jl. For a GPU operator,
+  the first entry is the primary GPU that owns the returned operator.
+  Additional entries can participate in voxel-distributed rSVD setup and
+  channel-distributed normal-operator evaluation.
+* `L_rank`: Truncation rank of the rSVD performed independently for each
+  dynamic. This is not the final shared rank printed during setup.
+* `rsvd_seed`: Base random seed. Dynamic `d` uses
+  `rsvd_seed + d - 1`, making repeated setups reproducible for a fixed
+  configuration.
+* `rsvd_chunk`: Voxel chunk size used by the `:chunked` rSVD backend. It
+  limits temporary memory but does not change the mathematical
+  approximation.
+* `rsvd_oversample`: Randomized-SVD oversampling parameter. The sketch width
+  is `L_rank + rsvd_oversample`, which must not exceed
+  `min(nSam, nVox)`.
+* `rsvd_finalize`: Finalization algorithm. `:svd` performs the conventional
+  tall-skinny SVD; `:gram` diagonalizes the small Gram matrix and substantially
+  lowers peak memory for large three-dimensional data.
+* `rsvd_backend`: rSVD implementation: `:chunked`, `:kernel`, or `:auto`.
+  `:auto` selects `:chunked` for `Array` and the fused CUDA `:kernel` backend
+  for `CuArray`.
+* `rsvd_distribution`: rSVD setup distribution: `:single`, `:voxel`, or
+  `:auto`. `:voxel` partitions masked voxels across `gpus` and currently
+  requires `arrayType=CuArray`, `rsvd_backend=:kernel`, and
+  `rsvd_finalize=:gram`. `:auto` selects this mode when those requirements
+  are satisfied and more than one GPU is supplied.
+* `shared_rank_max`: Upper bound on the rank of the global spatial basis. The
+  effective bound is clamped to `min(nVox, L_rank * nDyn)`.
+* `shared_basis_tol`: Relative approximation-error tolerance used while
+  merging the per-dynamic spatial bases. The final shared rank is selected
+  adaptively and can be larger than `L_rank`.
+* `normal_distribution`: Distribution of the normal operator used by CG.
+  `:single` uses the primary GPU. `:channel` partitions coil channels across
+  `gpus` and lazily constructs a multi-GPU implementation when
+  `normalOperator(W ∘ op)` is requested; it requires `CuArray` and at least
+  two GPUs.
+* `verbose`: Print rSVD configuration, shared-basis progress, timing, and
+  resource-release information.
+
+# Returns
+
+A `HighOrderLowRankOp{Complex{T}}` with size
+`(nSam * nDyn * nCha, prod(grid.matrixSize))`. Its `q` field has size
+`(nSam * nDyn, shared_rank)` and its masked spatial `basis` has size
+`(nVox, shared_rank)`. The output ordering is compatible with
+`vec(data)`, where `data` has size `(nSam, nDyn, nCha)`.
+
+# Notes
+
+Voxel-distributed rSVD accelerates operator setup; channel-distributed normal
+evaluation accelerates CG iterations. They are independent and are controlled
+by `rsvd_distribution` and `normal_distribution`, respectively. Start Julia
+with at least one default thread per participating GPU for effective
+concurrency. `recon_HOOp` releases its channel-distributed normal backend by
+default. After direct use of `normalOperator`, or when calling
+`recon_HOOp(...; release_backend=false)`, call `close(op)` when the backend is
+no longer needed. This stops its worker tasks and returns explicit workspaces
+to CUDA.jl's reusable memory pool; the reserved-memory value reported by
+`nvidia-smi` does not necessarily decrease immediately.
+
+Before replacing a large operator in the same variable, release the normal
+backend, set the old variable to `nothing`, and run `GC.gc()` before
+constructing the replacement. In an assignment such as
+`op = HighOrderLowRankOp(...)`, Julia keeps the old value of `op` alive until
+the new constructor finishes, which can otherwise make the old and new NFFT
+plans and spatial bases coexist temporarily.
 """
 function HighOrderLowRankOp(
     grid              :: Grid{T}                                                             ,
@@ -109,8 +307,6 @@ function HighOrderLowRankOp(
     mask              :: AbstractArray{Bool}       = trues(grid.matrixSize...)               ,
     recon_terms       :: String                    = nothing                                 ,
     k_nominal         :: AbstractArray{T, 3}       = kspha[2:4, :, :]                        ,
-    kspha_dt                                       = nothing                                 ,
-    nBlock            :: Int64                     = 50                                      , 
     
     arrayType         :: Type{<:AbstractArray}     = Array                                   ,
     gpus              :: Vector{Int}               = [0]                                     ,
@@ -121,16 +317,10 @@ function HighOrderLowRankOp(
     rsvd_finalize     :: Symbol                    = :svd                                    ,
     rsvd_backend      :: Symbol                    = :auto                                   ,
     rsvd_distribution :: Symbol                    = :auto                                   ,
-    rsvd_fastmath     :: Bool                      = false                                   ,
-    rsvd_detailed_timing:: Bool                    = false                                   ,
     shared_rank_max   :: Int                       = 128                                     ,
     shared_basis_tol  :: T                         = T(1e-2)                                 , 
     normal_distribution:: Symbol                   = :single                                ,
-    normal_gpus       :: Union{Nothing,Vector{Int}} = nothing                                 ,
-    normal_detailed_timing:: Bool                  = false                                   ,
     verbose           :: Bool                      = false                                   ,   
-    
-    kwargs...          
     ) where T <: AbstractFloat
 
     nX, nY, nZ = grid.nX, grid.nY, grid.nZ
@@ -153,7 +343,7 @@ function HighOrderLowRankOp(
     @assert size(mask)         == (nX, nY, nZ)  "Mask must have same size as $((nX, nY, nZ)) in grid"
     @assert size(times)        == (nSam, nDyn)  "times must have size $((nSam, nDyn))"
     rsvd_finalize in (:svd, :gram) || throw(ArgumentError("rsvd_finalize must be :svd or :gram, " * "got $rsvd_finalize"))
-    rsvd_backend in (:auto, :chunked, :adjoint_kernel, :kernel) || throw(ArgumentError("Unsupported rsvd_backend=$rsvd_backend"))
+    rsvd_backend in (:auto, :chunked, :kernel) || throw(ArgumentError("Unsupported rsvd_backend=$rsvd_backend"))
     rsvd_distribution in (:auto, :single, :voxel) || throw(ArgumentError("Unsupported rsvd_distribution=$rsvd_distribution; " * "expected :auto, :single, or :voxel"))
     normal_distribution in (:single, :channel) || throw(ArgumentError("Unsupported normal_distribution=$normal_distribution; expected :single or :channel"))
     isempty(gpus) && throw(ArgumentError("gpus must contain at least one GPU id"))
@@ -161,18 +351,11 @@ function HighOrderLowRankOp(
 
     is_gpu = arrayType == CuArray
     primary_gpu = first(gpus)
-    normal_gpu_ids = normal_gpus === nothing ? copy(gpus) : copy(normal_gpus)
-    isempty(normal_gpu_ids) && throw(ArgumentError("normal_gpus must contain at least one GPU id"))
-    length(unique(normal_gpu_ids)) == length(normal_gpu_ids) || throw(ArgumentError("normal_gpus contains duplicate GPU ids: $normal_gpu_ids"))
-    first(normal_gpu_ids) == primary_gpu || throw(ArgumentError("the first normal GPU ($(first(normal_gpu_ids))) must match the operator GPU ($primary_gpu)"))
     if normal_distribution === :channel
         is_gpu || throw(ArgumentError("normal_distribution=:channel requires arrayType=CuArray"))
-        length(normal_gpu_ids) >= 2 || throw(ArgumentError("normal_distribution=:channel requires at least two GPUs"))
+        length(gpus) >= 2 || throw(ArgumentError("normal_distribution=:channel requires at least two GPUs"))
     end
     rsvd_backend = rsvd_backend === :auto ? (is_gpu ? :kernel : :chunked) : rsvd_backend
-    if rsvd_fastmath && !(is_gpu && rsvd_backend in (:kernel, :adjoint_kernel))
-        throw(ArgumentError("rsvd_fastmath=true requires arrayType=CuArray and a kernel rSVD backend"))
-    end
     use_distributed_rsvd =
     rsvd_distribution === :voxel || (rsvd_distribution === :auto && is_gpu && length(gpus) > 1 && rsvd_finalize === :gram && rsvd_backend === :kernel)
 
@@ -180,8 +363,6 @@ function HighOrderLowRankOp(
         is_gpu || throw(ArgumentError("rsvd_distribution=:voxel requires arrayType=CuArray"))
         rsvd_finalize === :gram || throw(ArgumentError("Multi-GPU voxel-distributed rSVD currently requires " * "rsvd_finalize=:gram"))
         rsvd_backend === :kernel || throw(ArgumentError("Multi-GPU voxel-distributed rSVD currently requires " * "rsvd_backend=:kernel"))
-    elseif rsvd_detailed_timing
-        throw(ArgumentError("rsvd_detailed_timing=true currently requires multi-GPU voxel-distributed rSVD"))
     end
     if is_gpu CUDA.device!(primary_gpu) end
     
@@ -190,14 +371,9 @@ function HighOrderLowRankOp(
             "rSVD execution configuration",
             backend=rsvd_backend,
             distribution=use_distributed_rsvd ? :voxel : :single,
-            fastmath=rsvd_fastmath,
-            detailed_timing=rsvd_detailed_timing,
-            kspha_layout=use_distributed_rsvd ? :sample_major : :term_major,
             gpus=gpus,
             primary_gpu=is_gpu ? primary_gpu : nothing,
             normal_distribution,
-            normal_gpus=normal_gpu_ids,
-            normal_detailed_timing,
         )
     end
 
@@ -223,7 +399,7 @@ function HighOrderLowRankOp(
     end
 
 
-    @info "nSam=$nSam, nVox=$nVox, nDyn=$nDyn, nTerm=$nTerm, nCha=$nCha, nBlock=$nBlock"
+    @info "nSam=$nSam, nVox=$nVox, nDyn=$nDyn, nTerm=$nTerm, nCha=$nCha"
 
     @assert shared_rank_max > 0 "shared_rank_max must be positive"
     @assert rsvd_chunk > 0 "rsvd_chunk must be positive for chunked rSVD"
@@ -255,7 +431,7 @@ function HighOrderLowRankOp(
         
                 rsvd_time = 0.0
                 shared_time = 0.0
-                rsvd_timing = DistributedRSVDTiming(detailed=rsvd_detailed_timing)
+                rsvd_timing = DistributedRSVDTiming()
                 for dyn = 1:nDyn
                     times_dyn = times_host[:, dyn]
                     kspha_err_dyn = kspha_err_host[:, :, dyn]
@@ -267,7 +443,6 @@ function HighOrderLowRankOp(
                         kspha_err_dyn;
                         seed=rsvd_seed + dyn - 1,
                         timing=rsvd_timing,
-                        fastmath=rsvd_fastmath,
                     )
                     rsvd_time += (time_ns() - t0) * 1e-9
 
@@ -284,8 +459,6 @@ function HighOrderLowRankOp(
                 @info(
                     "Distributed rSVD phase timing",
                     n_dynamic=rsvd_timing.n_calls,
-                    fastmath=rsvd_fastmath,
-                    kspha_layout=:sample_major,
                     forward_time=rsvd_timing.forward_time,
                     qr_time=rsvd_timing.qr_time,
                     adjoint_gram_time=rsvd_timing.adjoint_gram_time,
@@ -299,40 +472,6 @@ function HighOrderLowRankOp(
                     adjoint_gram_fraction=rsvd_timing.adjoint_gram_time / timing_denominator,
                     finalize_fraction=rsvd_timing.finalize_time / timing_denominator,
                 )
-                if rsvd_timing.detailed
-                    forward_denominator = max(rsvd_timing.forward_time, eps(Float64))
-                    adjoint_denominator = max(rsvd_timing.adjoint_gram_time, eps(Float64))
-                    @info(
-                        "Distributed rSVD forward detail",
-                        aggregation=:maximum_per_stage_across_gpus,
-                        transpose_time=rsvd_timing.transpose_time,
-                        upload_time=rsvd_timing.forward_upload_time,
-                        sketch_time=rsvd_timing.forward_sketch_time,
-                        kernel_time=rsvd_timing.forward_kernel_time,
-                        download_time=rsvd_timing.forward_download_time,
-                        reduce_time=rsvd_timing.forward_reduce_time,
-                        transpose_fraction=rsvd_timing.transpose_time / forward_denominator,
-                        upload_fraction=rsvd_timing.forward_upload_time / forward_denominator,
-                        sketch_fraction=rsvd_timing.forward_sketch_time / forward_denominator,
-                        kernel_fraction=rsvd_timing.forward_kernel_time / forward_denominator,
-                        download_fraction=rsvd_timing.forward_download_time / forward_denominator,
-                        reduce_fraction=rsvd_timing.forward_reduce_time / forward_denominator,
-                    )
-                    @info(
-                        "Distributed rSVD adjoint/Gram detail",
-                        aggregation=:maximum_per_stage_across_gpus,
-                        upload_time=rsvd_timing.adjoint_upload_time,
-                        kernel_time=rsvd_timing.adjoint_kernel_time,
-                        gram_time=rsvd_timing.gram_time,
-                        download_time=rsvd_timing.adjoint_download_time,
-                        reduce_time=rsvd_timing.adjoint_reduce_time,
-                        upload_fraction=rsvd_timing.adjoint_upload_time / adjoint_denominator,
-                        kernel_fraction=rsvd_timing.adjoint_kernel_time / adjoint_denominator,
-                        gram_fraction=rsvd_timing.gram_time / adjoint_denominator,
-                        download_fraction=rsvd_timing.adjoint_download_time / adjoint_denominator,
-                        reduce_fraction=rsvd_timing.adjoint_reduce_time / adjoint_denominator,
-                    )
-                end
                 @info "Distributed setup timing" rsvd_time shared_time total=rsvd_time+shared_time
         
                 shared_rank_local = distributed_shared.rank
@@ -392,7 +531,6 @@ function HighOrderLowRankOp(
                     nVox, nSam, L_rank, rsvd_chunk, rsvd_workspace;
                     seed=rsvd_seed + dyn - 1, p_oversample=rsvd_oversample,
                     rsvd_finalize=:gram, rsvd_backend=rsvd_backend,
-                    rsvd_fastmath=rsvd_fastmath,
                     v_scaled=v_scaled, verbose=verbose)
             else
                 u_trunc, s_trunc, v_trunc = perform_rsvd(
@@ -400,7 +538,6 @@ function HighOrderLowRankOp(
                     nVox, nSam, L_rank, rsvd_chunk, rsvd_workspace;
                     seed=rsvd_seed + dyn - 1, p_oversample=rsvd_oversample, 
                     rsvd_finalize=:svd, rsvd_backend=rsvd_backend,
-                    rsvd_fastmath=rsvd_fastmath,
                     verbose=verbose)
     
                 v_scaled .= v_trunc .* reshape(s_trunc, 1, L_rank)
@@ -468,9 +605,8 @@ function HighOrderLowRankOp(
     )
     normal_backend = HighOrderNormalBackend(
         normal_distribution,
-        normal_gpu_ids,
+        copy(gpus),
         verbose,
-        normal_detailed_timing,
         nothing,
         nothing,
     )
