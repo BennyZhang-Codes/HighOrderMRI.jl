@@ -16,3 +16,4 @@ include("LowRankApproximation/shared_spatial_basis.jl")
 include("LowRankApproximation/distributed_shared_spatial_basis.jl")
 include("LowRankApproximation/streaming_nfft_plan.jl")
 include("HighOrderLowRankOp.jl")    # low rank approximation of temporal-spatial varing phase
+include("LowRankApproximation/multi_gpu_normal_operator.jl")

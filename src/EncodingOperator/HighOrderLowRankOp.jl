@@ -15,9 +15,32 @@ mutable struct HighOrderLowRankWorkspace{AV}
 end
 
 """
+Configuration and owned state for an optional optimized normal-operator backend.
+
+The backend is initialized lazily by `normalOperator`, because constructing the
+forward operator alone should not allocate one NFFT plan and workspace per GPU.
+`operator` is kept here so that `HighOrderLowRankOp` owns the multi-GPU resources
+and can release them with `close(op)`.
+"""
+mutable struct HighOrderNormalBackend
+    distribution :: Symbol
+    gpus          :: Vector{Int}
+    verbose       :: Bool
+    detailed_timing :: Bool
+    operator      :: Union{Nothing,AbstractLinearOperator}
+    weights2      :: Union{Nothing,AbstractVector}
+end
+
+"""
 HighOrderLowRankOp implements a high-order field encoding operator based on SVD low-rank approximation.
 Automatically separates 0th-order (outer demodulation) and 1st-order (NFFT) terms, and performs extremely fast SVD dimensionality reduction only on the remaining smooth high-order errors.
 Supports automatic switching between CPU and GPU compute backends.
+
+For a `CuArray` operator, set `normal_distribution=:channel` and pass two or
+more `normal_gpus` (or reuse `gpus`) to make `normalOperator(W ∘ op)` construct
+a channel-sharded multi-GPU normal backend lazily. Release that backend with
+`close(op)` after reconstruction. Set `normal_detailed_timing=true` to accumulate
+per-GPU upload, forward, adjoint, download, and worker wall times.
 """
 mutable struct HighOrderLowRankOp{
     T, F1, F2, 
@@ -44,6 +67,7 @@ mutable struct HighOrderLowRankOp{
     grid_size  :: Tuple                  # gridding size
 
     workspace  :: W
+    normal_backend :: HighOrderNormalBackend
 
     nrow       :: Int
     ncol       :: Int
@@ -85,7 +109,7 @@ function HighOrderLowRankOp(
     mask              :: AbstractArray{Bool}       = trues(grid.matrixSize...)               ,
     recon_terms       :: String                    = nothing                                 ,
     k_nominal         :: AbstractArray{T, 3}       = kspha[2:4, :, :]                        ,
-    kspha_dt                                      = nothing                                 ,
+    kspha_dt                                       = nothing                                 ,
     nBlock            :: Int64                     = 50                                      , 
     
     arrayType         :: Type{<:AbstractArray}     = Array                                   ,
@@ -98,8 +122,12 @@ function HighOrderLowRankOp(
     rsvd_backend      :: Symbol                    = :auto                                   ,
     rsvd_distribution :: Symbol                    = :auto                                   ,
     rsvd_fastmath     :: Bool                      = false                                   ,
+    rsvd_detailed_timing:: Bool                    = false                                   ,
     shared_rank_max   :: Int                       = 128                                     ,
     shared_basis_tol  :: T                         = T(1e-2)                                 , 
+    normal_distribution:: Symbol                   = :single                                ,
+    normal_gpus       :: Union{Nothing,Vector{Int}} = nothing                                 ,
+    normal_detailed_timing:: Bool                  = false                                   ,
     verbose           :: Bool                      = false                                   ,   
     
     kwargs...          
@@ -127,11 +155,20 @@ function HighOrderLowRankOp(
     rsvd_finalize in (:svd, :gram) || throw(ArgumentError("rsvd_finalize must be :svd or :gram, " * "got $rsvd_finalize"))
     rsvd_backend in (:auto, :chunked, :adjoint_kernel, :kernel) || throw(ArgumentError("Unsupported rsvd_backend=$rsvd_backend"))
     rsvd_distribution in (:auto, :single, :voxel) || throw(ArgumentError("Unsupported rsvd_distribution=$rsvd_distribution; " * "expected :auto, :single, or :voxel"))
+    normal_distribution in (:single, :channel) || throw(ArgumentError("Unsupported normal_distribution=$normal_distribution; expected :single or :channel"))
     isempty(gpus) && throw(ArgumentError("gpus must contain at least one GPU id"))
     length(unique(gpus)) == length(gpus) || throw(ArgumentError("gpus contains duplicate GPU ids: $gpus"))
 
     is_gpu = arrayType == CuArray
     primary_gpu = first(gpus)
+    normal_gpu_ids = normal_gpus === nothing ? copy(gpus) : copy(normal_gpus)
+    isempty(normal_gpu_ids) && throw(ArgumentError("normal_gpus must contain at least one GPU id"))
+    length(unique(normal_gpu_ids)) == length(normal_gpu_ids) || throw(ArgumentError("normal_gpus contains duplicate GPU ids: $normal_gpu_ids"))
+    first(normal_gpu_ids) == primary_gpu || throw(ArgumentError("the first normal GPU ($(first(normal_gpu_ids))) must match the operator GPU ($primary_gpu)"))
+    if normal_distribution === :channel
+        is_gpu || throw(ArgumentError("normal_distribution=:channel requires arrayType=CuArray"))
+        length(normal_gpu_ids) >= 2 || throw(ArgumentError("normal_distribution=:channel requires at least two GPUs"))
+    end
     rsvd_backend = rsvd_backend === :auto ? (is_gpu ? :kernel : :chunked) : rsvd_backend
     if rsvd_fastmath && !(is_gpu && rsvd_backend in (:kernel, :adjoint_kernel))
         throw(ArgumentError("rsvd_fastmath=true requires arrayType=CuArray and a kernel rSVD backend"))
@@ -143,6 +180,8 @@ function HighOrderLowRankOp(
         is_gpu || throw(ArgumentError("rsvd_distribution=:voxel requires arrayType=CuArray"))
         rsvd_finalize === :gram || throw(ArgumentError("Multi-GPU voxel-distributed rSVD currently requires " * "rsvd_finalize=:gram"))
         rsvd_backend === :kernel || throw(ArgumentError("Multi-GPU voxel-distributed rSVD currently requires " * "rsvd_backend=:kernel"))
+    elseif rsvd_detailed_timing
+        throw(ArgumentError("rsvd_detailed_timing=true currently requires multi-GPU voxel-distributed rSVD"))
     end
     if is_gpu CUDA.device!(primary_gpu) end
     
@@ -152,9 +191,13 @@ function HighOrderLowRankOp(
             backend=rsvd_backend,
             distribution=use_distributed_rsvd ? :voxel : :single,
             fastmath=rsvd_fastmath,
+            detailed_timing=rsvd_detailed_timing,
             kspha_layout=use_distributed_rsvd ? :sample_major : :term_major,
             gpus=gpus,
             primary_gpu=is_gpu ? primary_gpu : nothing,
+            normal_distribution,
+            normal_gpus=normal_gpu_ids,
+            normal_detailed_timing,
         )
     end
 
@@ -212,7 +255,7 @@ function HighOrderLowRankOp(
         
                 rsvd_time = 0.0
                 shared_time = 0.0
-                rsvd_timing = DistributedRSVDTiming()
+                rsvd_timing = DistributedRSVDTiming(detailed=rsvd_detailed_timing)
                 for dyn = 1:nDyn
                     times_dyn = times_host[:, dyn]
                     kspha_err_dyn = kspha_err_host[:, :, dyn]
@@ -256,6 +299,40 @@ function HighOrderLowRankOp(
                     adjoint_gram_fraction=rsvd_timing.adjoint_gram_time / timing_denominator,
                     finalize_fraction=rsvd_timing.finalize_time / timing_denominator,
                 )
+                if rsvd_timing.detailed
+                    forward_denominator = max(rsvd_timing.forward_time, eps(Float64))
+                    adjoint_denominator = max(rsvd_timing.adjoint_gram_time, eps(Float64))
+                    @info(
+                        "Distributed rSVD forward detail",
+                        aggregation=:maximum_per_stage_across_gpus,
+                        transpose_time=rsvd_timing.transpose_time,
+                        upload_time=rsvd_timing.forward_upload_time,
+                        sketch_time=rsvd_timing.forward_sketch_time,
+                        kernel_time=rsvd_timing.forward_kernel_time,
+                        download_time=rsvd_timing.forward_download_time,
+                        reduce_time=rsvd_timing.forward_reduce_time,
+                        transpose_fraction=rsvd_timing.transpose_time / forward_denominator,
+                        upload_fraction=rsvd_timing.forward_upload_time / forward_denominator,
+                        sketch_fraction=rsvd_timing.forward_sketch_time / forward_denominator,
+                        kernel_fraction=rsvd_timing.forward_kernel_time / forward_denominator,
+                        download_fraction=rsvd_timing.forward_download_time / forward_denominator,
+                        reduce_fraction=rsvd_timing.forward_reduce_time / forward_denominator,
+                    )
+                    @info(
+                        "Distributed rSVD adjoint/Gram detail",
+                        aggregation=:maximum_per_stage_across_gpus,
+                        upload_time=rsvd_timing.adjoint_upload_time,
+                        kernel_time=rsvd_timing.adjoint_kernel_time,
+                        gram_time=rsvd_timing.gram_time,
+                        download_time=rsvd_timing.adjoint_download_time,
+                        reduce_time=rsvd_timing.adjoint_reduce_time,
+                        upload_fraction=rsvd_timing.adjoint_upload_time / adjoint_denominator,
+                        kernel_fraction=rsvd_timing.adjoint_kernel_time / adjoint_denominator,
+                        gram_fraction=rsvd_timing.gram_time / adjoint_denominator,
+                        download_fraction=rsvd_timing.adjoint_download_time / adjoint_denominator,
+                        reduce_fraction=rsvd_timing.adjoint_reduce_time / adjoint_denominator,
+                    )
+                end
                 @info "Distributed setup timing" rsvd_time shared_time total=rsvd_time+shared_time
         
                 shared_rank_local = distributed_shared.rank
@@ -284,13 +361,7 @@ function HighOrderLowRankOp(
                 end
             end
         end
-        if verbose
-            @info(
-                "Multi-GPU rSVD workspace released",
-                setup_gpus=gpus,
-                operator_gpu=primary_gpu,
-            )
-        end
+        if verbose @info("Multi-GPU rSVD workspace released", setup_gpus=gpus, operator_gpu=primary_gpu) end
         CUDA.device!(primary_gpu)
         q = arrayType(q_host)
         basis = arrayType(basis_host)
@@ -321,14 +392,16 @@ function HighOrderLowRankOp(
                     nVox, nSam, L_rank, rsvd_chunk, rsvd_workspace;
                     seed=rsvd_seed + dyn - 1, p_oversample=rsvd_oversample,
                     rsvd_finalize=:gram, rsvd_backend=rsvd_backend,
-                    rsvd_fastmath=rsvd_fastmath, v_scaled=v_scaled, verbose=verbose)
+                    rsvd_fastmath=rsvd_fastmath,
+                    v_scaled=v_scaled, verbose=verbose)
             else
                 u_trunc, s_trunc, v_trunc = perform_rsvd(
                     times_dyn, fieldmap_device, bf_err_device, kspha_err_dyn,
                     nVox, nSam, L_rank, rsvd_chunk, rsvd_workspace;
                     seed=rsvd_seed + dyn - 1, p_oversample=rsvd_oversample, 
                     rsvd_finalize=:svd, rsvd_backend=rsvd_backend,
-                    rsvd_fastmath=rsvd_fastmath, verbose=verbose)
+                    rsvd_fastmath=rsvd_fastmath,
+                    verbose=verbose)
     
                 v_scaled .= v_trunc .* reshape(s_trunc, 1, L_rank)
                 total_energy = T(real(dot(s_trunc, s_trunc)))
@@ -393,12 +466,20 @@ function HighOrderLowRankOp(
         similar(q, Complex{T}, nVox),
         similar(q, Complex{T}, nVox),
     )
+    normal_backend = HighOrderNormalBackend(
+        normal_distribution,
+        normal_gpu_ids,
+        verbose,
+        normal_detailed_timing,
+        nothing,
+        nothing,
+    )
 
     Mv = Mtu = arrayType(Vector{Complex{T}}(undef, 0))  
     return HighOrderLowRankOp{T, Nothing, typeof(ctprod!), typeof(nfftplan), typeof(q), typeof(basis), typeof(csm), typeof(workspace), typeof(Mv)}(
         nSam, nVox, nCha, nDyn, L_rank,
         q, basis, csm,
-        nfftplan, nfft_traj, mask_idx, grid.matrixSize, workspace,
+        nfftplan, nfft_traj, mask_idx, grid.matrixSize, workspace, normal_backend,
         nRow, nCol, false, false, prod!, nothing, ctprod!,
         0, 0, 0, 
         Mv, Mtu,

@@ -41,6 +41,8 @@
     @test length(op.workspace.k_signal) == nPoint
     @test length(op.workspace.k_weighted) == nPoint
     @test size(op) == (nSam * nCha * nDyn, prod(grid.matrixSize))
+    @test op.normal_backend.distribution == :single
+    @test op.normal_backend.operator === nothing
 
     x = Complex{T}.(reshape(T.(1:prod(grid.matrixSize)), :))
     y = op * x
@@ -59,6 +61,25 @@
     rhs = dot(x, adjoint(op) * y_test)
     relerr = abs(lhs - rhs) / max(abs(lhs), abs(rhs), eps(T))
     @test relerr < T(1e-4)
+
+    weights = Complex{T}.(range(T(0.5), T(1.0); length=nPoint))
+    W = WeightingOp(Complex{T}; weights, rep=nCha)
+    E = ∘(W, op)
+    normal_op = normalOperator(E)
+    @test !(normal_op isa HighOrderLowRankNormalOp)
+    @test normal_op * x ≈ adjoint(E) * (E * x) rtol=T(1e-4) atol=T(1e-5)
+
+    squared_weights = abs2.(weights)
+    repeated_squared_weights = repeat(squared_weights, nCha)
+    W2 = WeightingOp(repeated_squared_weights)
+    @test HighOrderMRI.normal_weights2(op, W2) ≈ real.(squared_weights)
+
+    channel_dependent_weights = copy(repeated_squared_weights)
+    channel_dependent_weights[end] *= T(2)
+    @test_throws ArgumentError HighOrderMRI.normal_weights2(
+        op,
+        WeightingOp(channel_dependent_weights),
+    )
 
     op_2d = HighOrderLowRankOp(
         grid,

@@ -14,6 +14,38 @@ struct DistributedGPUWorkerError <: Exception
 end
 
 
+"""
+Warn when the default Julia thread pool cannot run every persistent GPU worker
+on a separate thread.
+
+Execution remains valid with fewer threads because CUDA work is asynchronous,
+but kernel submission, host transfers, and synchronization can be launched in
+waves. One additional coordinator thread is recommended for best overlap.
+"""
+function warn_if_insufficient_gpu_worker_threads(
+    nWorker         :: Int;
+    operation       :: Symbol = :multi_gpu,
+    default_threads :: Int = Threads.nthreads(:default),
+)
+    nWorker > 0 || throw(ArgumentError("nWorker must be positive"))
+    default_threads > 0 || throw(ArgumentError("default_threads must be positive"))
+
+    sufficient = default_threads >= nWorker
+    if !sufficient
+        recommended_threads = nWorker + 1
+        @warn(
+            "Julia default thread count is smaller than the number of GPU workers; multi-GPU execution may be CPU-thread limited",
+            operation,
+            default_threads,
+            gpu_workers=nWorker,
+            recommended_threads,
+            recommendation="restart Julia with --threads=$recommended_threads or set JULIA_NUM_THREADS=$recommended_threads",
+        )
+    end
+    return sufficient
+end
+
+
 function Base.showerror(io::IO, err::DistributedGPUWorkerError)
     print(
         io,

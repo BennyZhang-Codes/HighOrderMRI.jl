@@ -1,4 +1,19 @@
 @testset "distributed rSVD" begin
+    warning_message =
+        "Julia default thread count is smaller than the number of GPU workers; " *
+        "multi-GPU execution may be CPU-thread limited"
+    insufficient = @test_logs (:warn, warning_message) HighOrderMRI.warn_if_insufficient_gpu_worker_threads(
+        2;
+        operation=:test,
+        default_threads=1,
+    )
+    @test !insufficient
+    @test HighOrderMRI.warn_if_insufficient_gpu_worker_threads(
+        2;
+        operation=:test,
+        default_threads=2,
+    )
+
     if CUDA.functional() && length(collect(CUDA.devices())) >= 4
         data = rsvd_test_problem()
         test_gpus = collect(0:3)
@@ -61,7 +76,6 @@
                     workspace, data.times[:, 1], data.kspha_err; omega,
                 )
                 forward_multi_error = norm(W - W_ref) / max(norm(W_ref), eps(T))
-
                 Q = randn(Complex{T}, data.nSam, data.L_total)
                 B_ref = adjoint(data.E_ref) * Q
                 gram_ref = adjoint(B_ref) * B_ref
@@ -77,7 +91,7 @@
 
             @testset "distributed finalization" begin
                 omega = randn(Complex{T}, data.nVox, data.L_total)
-                timing = HighOrderMRI.DistributedRSVDTiming()
+                timing = HighOrderMRI.DistributedRSVDTiming(detailed=true)
                 u_multi, energy_multi = HighOrderMRI.perform_rsvd_multi_gpu!(
                     workspace,
                     data.times[:, 1],
@@ -117,10 +131,25 @@
                 @test timing.adjoint_gram_time >= 0.0
                 @test timing.finalize_time >= 0.0
                 @test HighOrderMRI.distributed_rsvd_total_time(timing) >= 0.0
+                @test timing.detailed
+                @test timing.transpose_time >= 0.0
+                @test timing.forward_upload_time >= 0.0
+                @test timing.forward_sketch_time >= 0.0
+                @test timing.forward_kernel_time >= 0.0
+                @test timing.forward_download_time >= 0.0
+                @test timing.forward_reduce_time >= 0.0
+                @test timing.adjoint_upload_time >= 0.0
+                @test timing.adjoint_kernel_time >= 0.0
+                @test timing.gram_time >= 0.0
+                @test timing.adjoint_download_time >= 0.0
+                @test timing.adjoint_reduce_time >= 0.0
 
                 HighOrderMRI.reset_distributed_rsvd_timing!(timing)
                 @test timing.n_calls == 0
+                @test timing.detailed
                 @test HighOrderMRI.distributed_rsvd_total_time(timing) == 0.0
+                @test timing.forward_kernel_time == 0.0
+                @test timing.adjoint_kernel_time == 0.0
             end
 
             @testset "distributed shared spatial basis" begin
