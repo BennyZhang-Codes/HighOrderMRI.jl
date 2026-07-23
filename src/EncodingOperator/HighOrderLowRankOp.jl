@@ -189,6 +189,7 @@ end
         shared_rank_max=128,
         shared_basis_tol=T(1e-2),
         normal_distribution=:single,
+        nfft_center_correction=true,
         verbose=false,
     ) where T<:AbstractFloat
 
@@ -267,6 +268,10 @@ plan instead of one NFFT per dynamic and low-rank term.
   `gpus` and lazily constructs a multi-GPU implementation when
   `normalOperator(W ∘ op)` is requested; it requires `CuArray` and at least
   two GPUs.
+* `nfft_center_correction`: Apply the half-voxel NFFT centre correction that
+  aligns AbstractNFFTs' integer-centred grid with `Grid`'s physical voxel
+  centres. Keep this enabled (the default) to match `HighOrderOp_Kernel`.
+  Set it to `false` only to reproduce the legacy NFFT coordinate convention.
 * `verbose`: Print rSVD configuration, shared-basis progress, timing, and
   resource-release information.
 
@@ -320,6 +325,7 @@ function HighOrderLowRankOp(
     shared_rank_max   :: Int                       = 128                                     ,
     shared_basis_tol  :: T                         = T(1e-2)                                 , 
     normal_distribution:: Symbol                   = :single                                ,
+    nfft_center_correction :: Bool                 = true                                   ,
     verbose           :: Bool                      = false                                   ,   
     ) where T <: AbstractFloat
 
@@ -593,6 +599,20 @@ function HighOrderLowRankOp(
     @assert eltype(nfftplan) == Complex{T} "NFFT plan precision must match the operator precision"
     if verbose @info("Global NFFT plan ready", trajectory_eltype=eltype(nfft_nodes), plan_eltype=eltype(nfftplan), nPoint=nSam * nDyn, nfft_per_forward=shared_rank * nCha, previous_nfft_per_forward=nDyn * L_rank * nCha) end
 
+    q_scale = inv(sqrt(T(nVox)))
+    if nfft_center_correction
+        # AbstractNFFTs uses uniform indices (-N/2):(N/2-1), whereas Grid's
+        # physical voxel centres are shifted by +1/2 in every active
+        # dimension. Apply the inverse centre-shift phase and operator
+        # normalisation to q once; their conjugates are then automatically
+        # used by ctprod! and the channel-distributed normal path.
+        center_phase = T(-0.5) .* vec(sum(nfft_traj; dims=1))
+        center_correction = arrayType(exp.(Complex{T}(0, T(2π)) .* center_phase))
+        q .*= q_scale .* reshape(center_correction, :, 1)
+    else
+        q .*= q_scale
+    end
+
     nGrid = prod(grid.matrixSize)
     workspace = HighOrderLowRankWorkspace(
         fill!(similar(q, Complex{T}, nGrid), 0),
@@ -684,7 +704,7 @@ function prod!(y::AbstractVector{Complex{T}}, op::HighOrderLowRankOp{T}, x::Abst
             @views @. y_global[:, c] += k_signal * op.q[:, r]
         end
     end
-    
+
     return y
 end
 
@@ -733,7 +753,7 @@ function ctprod!(x::AbstractVector{Complex{T}}, op::HighOrderLowRankOp{T}, y::Ab
     else
         x .= x_masked
     end
-    
+
     return x
 end
 
