@@ -1,13 +1,15 @@
 export HighOrderOp_Kernel
 
 """
-# Kernel-based implementation of the expanded signal encoding model.
-- support 2D or 3D reconstruction with up to third-order high-order dynamic field changes.
-- support GPU acceleration: kernel-based programming in CUDA.jl.
-- support multiple GPUs.
-- support multiple coil channels.
-- support off-resonance correction.
-- support masking of target reconstruction region.
+Kernel-based implementation of the explicit high-order signal encoding model.
+
+The forward phase convention is `exp(+2πim * phase)`, the operator
+normalization is `1 / sqrt(nVox)`, and the vectorized output ordering is
+samples first and then channels.
+
+- Supports 2D or 3D reconstruction with up to third-order dynamic fields.
+- Supports CUDA kernel acceleration and multiple GPUs.
+- Supports multiple receive channels, static off-resonance, and masking.
 """
 mutable struct HighOrderOp_Kernel{T,F1,F2} <: HOOp{T}
     nrow       :: Int
@@ -30,24 +32,42 @@ LinearOperators.storage_type(op::HighOrderOp_Kernel) = typeof(op.Mv)
     HighOrderOp_Kernel(grid::Grid{T}, kspha::AbstractArray{T, 2}, times::AbstractVector{T}; kwargs...)
 
 # Description
-    generates a `HighOrderOp_Kernel` which explicitely evaluates the MRI Fourier HighOrder encoding operator.
 
-# Arguments:
-* `grid::Grid{T}`                   - grid object.
-* `kspha::AbstractArray{T, 2}`      - [nSam, nTerm], Coefficients of field dynamics.
-* `times::AbstractVector{T}`        - [nSam], time points for trajectory.
+Construct a `HighOrderOp_Kernel` that explicitly evaluates the MRI high-order
+Fourier encoding operator.
 
-# Keywords:
-* `fieldmap::Matrix{T}`             - [nX, nY, nZ], fieldmap for off-resonance correction.
-* `csm::Array{Complex{T}, 3}`       - [nX, nY, nZ, nCha], coil sensitivity map.
-* `mask::AbstractArray{Bool, 2}`    - [nX, nY, nZ], mask for target recon region.
-* `recon_terms::String`             - digits flag (e.g. "1111") to indicate terms to be used in the HOOp.
-* `k_nominal::AbstractArray{T, 2}`  - [nSam, 3], nominal kspace trajectory.
-* `kspha_dt`                        - [nSam, nTerm], time-derivative of the coefficients of field dynamics.
-* `nBlock::Int64`                   - split trajectory into `nBlock` blocks to avoid memory overflow.
-* `use_gpu::Bool`                   - use GPU for HighOrder encoding/decoding(default: `true`).
-* `gpus::Vector{Int}`               - GPU device ids to be used (default: `[0]`).
-* `verbose::Bool`                   - print progress information(default: `false`).
+# Arguments
+
+* `grid::Grid{T}`                      - Cartesian reconstruction grid.
+* `kspha::AbstractArray{T, 2}`         - [nTerm, nSam], coefficients of field
+  dynamics. `nTerm` must be `9` (up to second order) or `16` (up to third
+  order).
+* `times::AbstractVector{T}`           - [nSam], sampling time points.
+
+# Keywords
+
+* `fieldmap::AbstractArray{T}`          - [nX, nY, nZ], off-resonance map.
+  [nX, nY] is accepted when `nZ == 1`.
+* `csm::AbstractArray{Complex{T}}`      - [nX, nY, nZ, nCha], complex coil
+  sensitivity maps. [nX, nY, nCha] is accepted when `nZ == 1`.
+* `mask::AbstractArray{Bool}`           - [nX, nY, nZ], reconstruction mask.
+  [nX, nY] is accepted when `nZ == 1`.
+* `recon_terms::Union{Nothing, AbstractString}` - Binary order-selection
+  string. Use three digits for `nTerm == 9` and four digits for
+  `nTerm == 16`; the digits select zeroth-, first-, second-, and third-order
+  terms. The default is `"111"` or `"1111"`.
+* `k_nominal::AbstractArray{T, 2}`      - [3, nSam], nominal first-order
+  trajectory ordered as [kx, ky, kz]. It replaces the measured first-order
+  coefficients when first-order error is disabled by `recon_terms`.
+* `kspha_dt`                            - [nTerm, nSam], optional time
+  derivative of the field-dynamic coefficients.
+* `nBlock::Int64`                       - Number of trajectory blocks used by
+  the derivative path to limit temporary memory.
+* `use_gpu::Bool`                       - Use CUDA execution; default is
+  `true`.
+* `gpus::Vector{Int}`                   - Zero-based CUDA device IDs.
+* `verbose::Bool`                       - Print progress information; default
+  is `false`.
 """
 function HighOrderOp_Kernel(
     grid        :: Grid{T}                                                             ,
@@ -56,7 +76,7 @@ function HighOrderOp_Kernel(
     fieldmap    :: AbstractArray{T}          = zeros(T, grid.matrixSize...)            , 
     csm         :: AbstractArray{Complex{T}} = ones(Complex{T}, grid.matrixSize..., 1) , 
     mask        :: AbstractArray{Bool}       = trues(grid.matrixSize...)               ,
-    recon_terms :: String                    = nothing                                 ,
+    recon_terms :: Union{Nothing,AbstractString} = nothing                            ,
     k_nominal   :: AbstractArray{T, 2}       = kspha[2:4, :]                           ,
     kspha_dt                                 = nothing                                 ,
     nBlock      :: Int64                     = 50                                      , 

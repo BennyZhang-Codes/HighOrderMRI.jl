@@ -111,7 +111,7 @@ mutable struct HighOrderLowRankOp{
     csm        :: AC                     # [nVox, nCha]
     
     nfftplan   :: P                      # one reusable CPU/GPU NFFT plan
-    nfft_traj  :: Array{T,3}             # [nDim, nSam, nDyn], stored on CPU
+    nfft_traj  :: Array{T,3}             # signed normalized NFFT nodes [nDim, nSam, nDyn]
     mask_idx   :: AbstractVector{Int32}  # Extracted 3D mask indices
     grid_size  :: Tuple                  # gridding size
 
@@ -150,11 +150,13 @@ dynamic dimension and are then passed to the full constructor.
 
 # Arguments
 
-* `grid`: Cartesian reconstruction grid.
-* `kspha`: Spherical-harmonic coefficients with size `(nTerm, nSam)`.
-  `nTerm` must be `9` (up to second order) or `16` (up to third order).
-* `times`: Sampling times with length `nSam`.
-* `kwargs`: Keywords accepted by the dynamic-data constructor below.
+* `grid::Grid{T}`                      - Cartesian reconstruction grid.
+* `kspha::AbstractArray{T, 2}`         - [nTerm, nSam], coefficients of field
+  dynamics. `nTerm` must be `9` (up to second order) or `16` (up to third
+  order).
+* `times::AbstractArray{T, 1}`         - [nSam], sampling time points.
+* `kwargs...`                          - Keywords accepted by the dynamic-data
+  constructor below.
 """
 function HighOrderLowRankOp(
     grid        :: Grid{T}                                                             ,
@@ -203,77 +205,75 @@ plan instead of one NFFT per dynamic and low-rank term.
 
 # Arguments
 
-* `grid`: Cartesian reconstruction grid. `grid.matrixSize` defines the image
-  dimensions `(nX, nY, nZ)`.
-* `kspha`: Spherical-harmonic coefficients with size
-  `(nTerm, nSam, nDyn)`. `nTerm` must be `9` (up to second order) or `16`
-  (up to third order).
-* `times`: Sampling times with size `(nSam, nDyn)`.
+* `grid::Grid{T}`                      - Cartesian reconstruction grid;
+  `grid.matrixSize` defines [nX, nY, nZ].
+* `kspha::AbstractArray{T, 3}`         - [nTerm, nSam, nDyn], coefficients of
+  field dynamics. `nTerm` must be `9` (up to second order) or `16` (up to
+  third order).
+* `times::AbstractArray{T, 2}`         - [nSam, nDyn], sampling time points.
 
 # Keywords
 
-* `fieldmap`: Off-resonance map with size `(nX, nY, nZ)`. Its units must be
-  consistent with `times` so that their product gives phase in cycles.
-  A two-dimensional `(nX, nY)` map is accepted when `nZ == 1`.
-* `csm`: Complex coil-sensitivity maps with size
-  `(nX, nY, nZ, nCha)`. A three-dimensional `(nX, nY, nCha)` array is
-  accepted when `nZ == 1`.
-* `mask`: Boolean reconstruction mask with size `(nX, nY, nZ)`. A
-  two-dimensional mask is accepted when `nZ == 1`. Only masked voxels enter
-  the low-rank approximation.
-* `recon_terms`: String selecting which spherical-harmonic orders are
-  reconstructed. Use three digits for `nTerm == 9` and four digits for
-  `nTerm == 16`; the digits correspond to zeroth-, first-, second-, and
-  third-order terms. A `0` removes that order, except that disabling the
-  first-order error replaces it with `k_nominal`. The default keeps every
-  available order (`"111"` or `"1111"`).
-* `k_nominal`: Nominal first-order trajectory with size
-  `(3, nSam, nDyn)`, ordered as `(kx, ky, kz)`. It is used when the
-  first-order error is disabled by `recon_terms`.
-* `arrayType`: Storage and execution backend. Use `Array` for CPU execution
-  or `CuArray` for CUDA execution.
-* `gpus`: Zero-based CUDA device IDs, as used by CUDA.jl. For a GPU operator,
-  the first entry is the primary GPU that owns the returned operator.
-  Additional entries can participate in voxel-distributed rSVD setup and
-  channel-distributed normal-operator evaluation.
-* `L_rank`: Truncation rank of the rSVD performed independently for each
-  dynamic. This is not the final shared rank printed during setup.
-* `rsvd_seed`: Base random seed. Dynamic `d` uses
+* `fieldmap::AbstractArray{T}`          - [nX, nY, nZ], off-resonance map.
+  Its units must be consistent with `times` so that their product gives phase
+  in cycles. [nX, nY] is accepted when `nZ == 1`.
+* `csm::AbstractArray{Complex{T}}`      - [nX, nY, nZ, nCha], complex coil
+  sensitivity maps. [nX, nY, nCha] is accepted when `nZ == 1`.
+* `mask::AbstractArray{Bool}`           - [nX, nY, nZ], reconstruction mask.
+  [nX, nY] is accepted when `nZ == 1`; only masked voxels enter the low-rank
+  approximation.
+* `recon_terms::Union{Nothing, AbstractString}` - Binary order-selection
+  string. Use three digits for `nTerm == 9` and four digits for
+  `nTerm == 16`; the digits select zeroth-, first-, second-, and third-order
+  terms. A `0` removes that order, except that disabling first-order error
+  replaces it with `k_nominal`. The default is `"111"` or `"1111"`.
+* `k_nominal::AbstractArray{T, 3}`      - [3, nSam, nDyn], nominal first-order
+  trajectory ordered as [kx, ky, kz]. It is used when first-order error is
+  disabled by `recon_terms`. Its units are cycles per physical-length unit
+  used by `grid.x`, `grid.y`, and `grid.z`.
+* `arrayType::Type{<:AbstractArray}`    - Storage and execution backend; use
+  `Array` for CPU execution or `CuArray` for CUDA execution.
+* `gpus::Vector{Int}`                   - Zero-based CUDA device IDs. The first
+  entry is the primary GPU that owns the returned operator. Additional GPUs
+  can participate in distributed rSVD setup and normal-operator evaluation.
+* `L_rank::Int`                         - rSVD truncation rank used independently
+  for each dynamic; this is not the final shared rank printed during setup.
+* `rsvd_seed::Int`                      - Base random seed. Dynamic `d` uses
   `rsvd_seed + d - 1`, making repeated setups reproducible for a fixed
   configuration.
-* `rsvd_chunk`: Voxel chunk size used by the `:chunked` rSVD backend. It
-  limits temporary memory but does not change the mathematical
+* `rsvd_chunk::Int`                     - Voxel chunk size for the `:chunked`
+  rSVD backend. It limits temporary memory without changing the mathematical
   approximation.
-* `rsvd_oversample`: Randomized-SVD oversampling parameter. The sketch width
-  is `L_rank + rsvd_oversample`, which must not exceed
+* `rsvd_oversample::Int`                - rSVD oversampling parameter. The
+  sketch width is `L_rank + rsvd_oversample` and must not exceed
   `min(nSam, nVox)`.
-* `rsvd_finalize`: Finalization algorithm. `:svd` performs the conventional
-  tall-skinny SVD; `:gram` diagonalizes the small Gram matrix and substantially
-  lowers peak memory for large three-dimensional data.
-* `rsvd_backend`: rSVD implementation: `:chunked`, `:kernel`, or `:auto`.
-  `:auto` selects `:chunked` for `Array` and the fused CUDA `:kernel` backend
-  for `CuArray`.
-* `rsvd_distribution`: rSVD setup distribution: `:single`, `:voxel`, or
-  `:auto`. `:voxel` partitions masked voxels across `gpus` and currently
+* `rsvd_finalize::Symbol`               - Finalization algorithm. `:svd`
+  performs the conventional tall-skinny SVD; `:gram` diagonalizes a small
+  Gram matrix and lowers peak memory for large 3D data.
+* `rsvd_backend::Symbol`                - rSVD implementation: `:chunked`,
+  `:kernel`, or `:auto`. `:auto` selects `:chunked` for `Array` and the fused
+  CUDA `:kernel` backend for `CuArray`.
+* `rsvd_distribution::Symbol`           - rSVD setup distribution: `:single`,
+  `:voxel`, or `:auto`. `:voxel` partitions masked voxels across `gpus` and
   requires `arrayType=CuArray`, `rsvd_backend=:kernel`, and
-  `rsvd_finalize=:gram`. `:auto` selects this mode when those requirements
-  are satisfied and more than one GPU is supplied.
-* `shared_rank_max`: Upper bound on the rank of the global spatial basis. The
-  effective bound is clamped to `min(nVox, L_rank * nDyn)`.
-* `shared_basis_tol`: Relative approximation-error tolerance used while
-  merging the per-dynamic spatial bases. The final shared rank is selected
-  adaptively and can be larger than `L_rank`.
-* `normal_distribution`: Distribution of the normal operator used by CG.
-  `:single` uses the primary GPU. `:channel` partitions coil channels across
-  `gpus` and lazily constructs a multi-GPU implementation when
-  `normalOperator(W ∘ op)` is requested; it requires `CuArray` and at least
-  two GPUs.
-* `nfft_center_correction`: Apply the half-voxel NFFT centre correction that
-  aligns AbstractNFFTs' integer-centred grid with `Grid`'s physical voxel
-  centres. Keep this enabled (the default) to match `HighOrderOp_Kernel`.
-  Set it to `false` only to reproduce the legacy NFFT coordinate convention.
-* `verbose`: Print rSVD configuration, shared-basis progress, timing, and
-  resource-release information.
+  `rsvd_finalize=:gram`. `:auto` selects this mode when possible and more than
+  one GPU is supplied.
+* `shared_rank_max::Int`                - Upper bound on the global spatial
+  basis rank, clamped to `min(nVox, L_rank * nDyn)`.
+* `shared_basis_tol::T`                 - Relative approximation-error
+  tolerance used while merging per-dynamic spatial bases. The final shared
+  rank is adaptive and can be larger than `L_rank`.
+* `normal_distribution::Symbol`         - Normal-operator distribution used by
+  CG. `:single` uses the primary GPU; `:channel` partitions coil channels
+  across `gpus` and lazily constructs the multi-GPU backend when
+  `normalOperator(W ∘ op)` is requested.
+* `nfft_center_correction::Bool`        - Apply the parity-aware NFFT centre
+  correction that aligns AbstractNFFTs' integer-centred grid with `Grid`'s
+  physical voxel centres. Even dimensions receive a half-voxel correction;
+  odd dimensions receive none. Keep it enabled to match
+  `HighOrderOp_Kernel`; disable it only for the legacy NFFT convention.
+* `verbose::Bool`                       - Print rSVD configuration,
+  shared-basis progress, timing, and resource-release information.
 
 # Returns
 
@@ -284,6 +284,12 @@ A `HighOrderLowRankOp{Complex{T}}` with size
 `vec(data)`, where `data` has size `(nSam, nDyn, nCha)`.
 
 # Notes
+
+The forward phase convention is `exp(+2πim * phase)`, matching
+`HighOrderOp_Kernel`. Internally, first-order physical coefficients are
+converted to AbstractNFFTs nodes as `-kᵢ * Δᵢ`, independently for each active
+dimension. The operator normalization is `1 / sqrt(nVox)` and is folded into
+`q`. The output ordering is samples first, then dynamics, then channels.
 
 Voxel-distributed rSVD accelerates operator setup; channel-distributed normal
 evaluation accelerates CG iterations. They are independent and are controlled
@@ -310,7 +316,7 @@ function HighOrderLowRankOp(
     fieldmap          :: AbstractArray{T}          = zeros(T, grid.matrixSize...)            , 
     csm               :: AbstractArray{Complex{T}} = ones(Complex{T}, grid.matrixSize..., 1) , 
     mask              :: AbstractArray{Bool}       = trues(grid.matrixSize...)               ,
-    recon_terms       :: String                    = nothing                                 ,
+    recon_terms       :: Union{Nothing,AbstractString} = nothing                            ,
     k_nominal         :: AbstractArray{T, 3}       = kspha[2:4, :, :]                        ,
     
     arrayType         :: Type{<:AbstractArray}     = Array                                   ,
@@ -324,8 +330,8 @@ function HighOrderLowRankOp(
     rsvd_distribution :: Symbol                    = :auto                                   ,
     shared_rank_max   :: Int                       = 128                                     ,
     shared_basis_tol  :: T                         = T(1e-2)                                 , 
-    normal_distribution:: Symbol                   = :single                                ,
-    nfft_center_correction :: Bool                 = true                                   ,
+    normal_distribution:: Symbol                   = :single                                 ,
+    nfft_center_correction :: Bool                 = true                                    ,
     verbose           :: Bool                      = false                                   ,   
     ) where T <: AbstractFloat
 
@@ -585,32 +591,53 @@ function HighOrderLowRankOp(
 
     if nZ == 1
         MatrixSize = (nX, nY)
-        scale = inv(T(min(grid.Δx, grid.Δy)))
         k_range = 2:3
+        voxel_spacing = T[grid.Δx, grid.Δy]
     else
         MatrixSize = (nX, nY, nZ)
-        scale = inv(T(min(grid.Δx, grid.Δy, grid.Δz)))
         k_range = 2:4
+        voxel_spacing = T[grid.Δx, grid.Δy, grid.Δz]
     end
 
-    nfft_traj = Array{T,3}(kspha[k_range, :, :] ./ scale)
+    # AbstractNFFTs evaluates the forward transform with a negative Fourier
+    # exponent on integer grid indices.  The explicit high-order operator uses
+    # exp(+i2π k⋅r), so the physical first-order coefficients must be negated
+    # and normalized independently by each voxel spacing.
+    nfft_traj = -Array{T,3}(kspha[k_range, :, :]) .*
+                reshape(voxel_spacing, :, 1, 1)
     nfft_nodes = reshape(nfft_traj, length(k_range), nSam * nDyn) # dyn1 [all samples]、dyn2 [all samples] ……
     nfftplan = plan_nfft(arrayType, nfft_nodes, MatrixSize; m=3, σ=1.25)
     @assert eltype(nfftplan) == Complex{T} "NFFT plan precision must match the operator precision"
     if verbose @info("Global NFFT plan ready", trajectory_eltype=eltype(nfft_nodes), plan_eltype=eltype(nfftplan), nPoint=nSam * nDyn, nfft_per_forward=shared_rank * nCha, previous_nfft_per_forward=nDyn * L_rank * nCha) end
 
     q_scale = inv(sqrt(T(nVox)))
+    # `kspha` has already been processed by `prep_kspha`. Therefore a leading
+    # zero in `recon_terms` makes this phase identically zero and disables the
+    # zeroth-order correction without requiring a separate branch here.
+    zeroth_phase = vec(Array{T,3}(kspha[1:1, :, :]))
+    zeroth_correction = arrayType(
+        exp.(Complex{T}(0, T(2π)) .* zeroth_phase),
+    )
     if nfft_center_correction
-        # AbstractNFFTs uses uniform indices (-N/2):(N/2-1), whereas Grid's
-        # physical voxel centres are shifted by +1/2 in every active
-        # dimension. Apply the inverse centre-shift phase and operator
-        # normalisation to q once; their conjugates are then automatically
-        # used by ctprod! and the channel-distributed normal path.
-        center_phase = T(-0.5) .* vec(sum(nfft_traj; dims=1))
+        # For an even dimension, AbstractNFFTs' integer-centred indices and
+        # Grid's physical voxel centres differ by +1/2 voxel.  Odd dimensions
+        # already share the same centre and must not receive this correction.
+        # Fold the zeroth-order temporal phase, parity-aware centre phase, and
+        # 1/sqrt(nVox) normalization into q once; ctprod! then uses their
+        # conjugates.
+        center_offsets = T[iseven(n) ? -0.5 : 0.0 for n in MatrixSize]
+        center_phase = vec(sum(
+            nfft_traj .* reshape(center_offsets, :, 1, 1);
+            dims=1,
+        ))
         center_correction = arrayType(exp.(Complex{T}(0, T(2π)) .* center_phase))
-        q .*= q_scale .* reshape(center_correction, :, 1)
+        q .*= q_scale .* reshape(
+            zeroth_correction .* center_correction,
+            :,
+            1,
+        )
     else
-        q .*= q_scale
+        q .*= q_scale .* reshape(zeroth_correction, :, 1)
     end
 
     nGrid = prod(grid.matrixSize)

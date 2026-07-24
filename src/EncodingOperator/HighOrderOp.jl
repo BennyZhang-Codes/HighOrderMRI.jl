@@ -54,7 +54,7 @@ function HighOrderOp(
     fieldmap    :: AbstractArray{T}          = zeros(T, grid.matrixSize...)            , 
     csm         :: AbstractArray{Complex{T}} = ones(Complex{T}, grid.matrixSize..., 1) , 
     mask        :: AbstractArray{Bool}       = trues(grid.matrixSize...)               ,
-    recon_terms :: String                    = nothing                                 ,
+    recon_terms :: Union{Nothing,AbstractString} = nothing                            ,
     k_nominal   :: AbstractArray{T, 2}       = kspha[2:4, :]                           ,
     kspha_dt                                 = nothing                                 ,
     nBlock      :: Int64                     = 50                                      , 
