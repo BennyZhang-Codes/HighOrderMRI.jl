@@ -393,6 +393,20 @@ function HighOrderLowRankOp(
     # -------------------------------------------------------------
     # Host-side data preparation
     # -------------------------------------------------------------
+    # Split first-order NFFT terms and residual low-rank terms
+    if nZ == 1 # kx and ky are handled by the 2D NFFT. kz*z must remain in the explicit residual phase.
+        nfft_term_range = 2:3
+        residual_term_range = 4:nTerm
+        MatrixSize = (nX, nY)
+        voxel_spacing = T[grid.Δx, grid.Δy]
+    else # kx, ky and kz are handled by the 3D NFFT.
+        nfft_term_range = 2:4
+        residual_term_range = 5:nTerm
+        MatrixSize = (nX, nY, nZ)
+        voxel_spacing = T[grid.Δx, grid.Δy, grid.Δz]
+    end
+
+
     mask_host = vec(mask)   # [prod(MatrixSize)]
     kspha = prep_kspha(kspha, k_nominal, nTerm; recon_terms=recon_terms)
     
@@ -403,13 +417,13 @@ function HighOrderLowRankOp(
     mask_idx_host = Int32.(findall(mask_host .!= 0))
     
     if nTerm >= 5
-        kspha_err_host = Array{T,3}(kspha[5:end, :, :])
-        bf_err_host = Matrix{T}(bf_host[:, 5:end])
+        kspha_err_host = Array{T,3}(kspha[residual_term_range, :, :])
+        bf_err_host = Matrix{T}(bf_host[:, residual_term_range])
     else
         kspha_err_host = zeros(T, 1, nSam, nDyn)
         bf_err_host = zeros(T, nVox, 1)
     end
-
+    @assert size(kspha_err_host, 1) == size(bf_err_host, 2)
 
     @info "nSam=$nSam, nVox=$nVox, nDyn=$nDyn, nTerm=$nTerm, nCha=$nCha"
 
@@ -589,23 +603,12 @@ function HighOrderLowRankOp(
     if verbose && use_distributed_rsvd @info("Multi-GPU rSVD workspace released", setup_gpus=gpus, operator_gpu=primary_gpu) end
 
 
-    if nZ == 1
-        MatrixSize = (nX, nY)
-        k_range = 2:3
-        voxel_spacing = T[grid.Δx, grid.Δy]
-    else
-        MatrixSize = (nX, nY, nZ)
-        k_range = 2:4
-        voxel_spacing = T[grid.Δx, grid.Δy, grid.Δz]
-    end
-
     # AbstractNFFTs evaluates the forward transform with a negative Fourier
     # exponent on integer grid indices.  The explicit high-order operator uses
     # exp(+i2π k⋅r), so the physical first-order coefficients must be negated
     # and normalized independently by each voxel spacing.
-    nfft_traj = -Array{T,3}(kspha[k_range, :, :]) .*
-                reshape(voxel_spacing, :, 1, 1)
-    nfft_nodes = reshape(nfft_traj, length(k_range), nSam * nDyn) # dyn1 [all samples]、dyn2 [all samples] ……
+    nfft_traj = -Array{T,3}(kspha[nfft_term_range, :, :]) .* reshape(voxel_spacing, :, 1, 1)
+    nfft_nodes = reshape(nfft_traj, length(nfft_term_range), nSam * nDyn) # dyn1 [all samples]、dyn2 [all samples] ……
     nfftplan = plan_nfft(arrayType, nfft_nodes, MatrixSize; m=3, σ=1.25)
     @assert eltype(nfftplan) == Complex{T} "NFFT plan precision must match the operator precision"
     if verbose @info("Global NFFT plan ready", trajectory_eltype=eltype(nfft_nodes), plan_eltype=eltype(nfftplan), nPoint=nSam * nDyn, nfft_per_forward=shared_rank * nCha, previous_nfft_per_forward=nDyn * L_rank * nCha) end
@@ -615,27 +618,17 @@ function HighOrderLowRankOp(
     # zero in `recon_terms` makes this phase identically zero and disables the
     # zeroth-order correction without requiring a separate branch here.
     zeroth_phase = vec(Array{T,3}(kspha[1:1, :, :]))
-    zeroth_correction = arrayType(
-        exp.(Complex{T}(0, T(2π)) .* zeroth_phase),
-    )
+    zeroth_correction = arrayType(exp.(Complex{T}(0, T(2π)) .* zeroth_phase))
     if nfft_center_correction
         # For an even dimension, AbstractNFFTs' integer-centred indices and
         # Grid's physical voxel centres differ by +1/2 voxel.  Odd dimensions
         # already share the same centre and must not receive this correction.
         # Fold the zeroth-order temporal phase, parity-aware centre phase, and
-        # 1/sqrt(nVox) normalization into q once; ctprod! then uses their
-        # conjugates.
+        # 1/sqrt(nVox) normalization into q once; ctprod! then uses their conjugates.
         center_offsets = T[iseven(n) ? -0.5 : 0.0 for n in MatrixSize]
-        center_phase = vec(sum(
-            nfft_traj .* reshape(center_offsets, :, 1, 1);
-            dims=1,
-        ))
+        center_phase = vec(sum(nfft_traj .* reshape(center_offsets, :, 1, 1); dims=1))
         center_correction = arrayType(exp.(Complex{T}(0, T(2π)) .* center_phase))
-        q .*= q_scale .* reshape(
-            zeroth_correction .* center_correction,
-            :,
-            1,
-        )
+        q .*= q_scale .* reshape(zeroth_correction .* center_correction, :, 1)
     else
         q .*= q_scale .* reshape(zeroth_correction, :, 1)
     end
@@ -650,13 +643,7 @@ function HighOrderLowRankOp(
         similar(q, Complex{T}, nVox),
         similar(q, Complex{T}, nVox),
     )
-    normal_backend = HighOrderNormalBackend(
-        normal_distribution,
-        copy(gpus),
-        verbose,
-        nothing,
-        nothing,
-    )
+    normal_backend = HighOrderNormalBackend(normal_distribution, copy(gpus), verbose, nothing, nothing)
 
     Mv = Mtu = arrayType(Vector{Complex{T}}(undef, 0))  
     return HighOrderLowRankOp{T, Nothing, typeof(ctprod!), typeof(nfftplan), typeof(q), typeof(basis), typeof(csm), typeof(workspace), typeof(Mv)}(
