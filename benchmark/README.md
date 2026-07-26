@@ -14,8 +14,8 @@ benchmark/
 ## Current 2D entries
 
 - `run/run_2d_kernel_vs_lowrank.jl`: fixed-configuration Kernel vs LowRank comparison.
-- `run/sweep_2d_lowrank_parameters.jl`: LowRank rank/tolerance/seed/oversampling sweep, using one Kernel reference.
-- `analysis/plot_2d_lowrank_sweep.jl`: plots one completed sweep directory.
+- `run/sweep_2d_lowrank_parameters.jl`: single-shot local-LowRank rank/seed sweep, using one Kernel reference. It fixes `shared_basis_tol=0` and oversampling to `5`.
+- `analysis/plot_2d_lowrank_sweep.jl`: plots rank–error, rank–time, Pareto, and seed-stability figures for one completed local-rank sweep.
 
 Run the fixed comparison from the repository root:
 

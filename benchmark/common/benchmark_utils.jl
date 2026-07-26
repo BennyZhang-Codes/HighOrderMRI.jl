@@ -96,10 +96,23 @@ end
 
 function weighted_residual(op, x, data, weight)
     activate_operator_device!(op)
-    predicted = op * vec(x)
-    measured = vec(data)
-    ncha = div(length(measured), length(weight))
-    weights = repeat(weight, ncha)
+
+    # This is a diagnostic outside the timed region.  Operators may return a
+    # host vector (Kernel) or a CuArray (LowRank), while benchmark data lives
+    # on the primary GPU.  Keep the operator application storage-consistent,
+    # then perform the scalar residual calculation entirely on the host.
+    x_input = vec(x)
+    storage = op isa HighOrderLowRankOp ? op.q :
+              op isa HighOrderOp_Kernel ? op.Mv : nothing
+    if storage isa CuArray && !(x_input isa CuArray)
+        x_input = CuArray(x_input)
+    end
+
+    predicted = Array(op * x_input)
+    measured = Array(vec(data))
+    sample_weight = Array(vec(weight))
+    ncha = div(length(measured), length(sample_weight))
+    weights = repeat(sample_weight, ncha)
     numerator = norm((predicted .- measured) .* weights)
     denominator = max(norm(measured .* weights), eps(Float64))
     return numerator / denominator
