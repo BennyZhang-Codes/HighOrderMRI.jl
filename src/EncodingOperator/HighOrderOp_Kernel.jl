@@ -11,7 +11,7 @@ samples first and then channels.
 - Supports CUDA kernel acceleration and multiple GPUs.
 - Supports multiple receive channels, static off-resonance, and masking.
 """
-mutable struct HighOrderOp_Kernel{T,F1,F2} <: HOOp{T}
+mutable struct HighOrderOp_Kernel{T,F1,F2,S<:AbstractVector{T}} <: HOOp{T}
     nrow       :: Int
     ncol       :: Int
     symmetric  :: Bool
@@ -22,8 +22,8 @@ mutable struct HighOrderOp_Kernel{T,F1,F2} <: HOOp{T}
     nprod      :: Int
     ntprod     :: Int
     nctprod    :: Int
-    Mv         :: Vector{T}
-    Mtu        :: Vector{T}
+    Mv         :: S
+    Mtu        :: S
 end
 LinearOperators.storage_type(op::HighOrderOp_Kernel) = typeof(op.Mv)
 
@@ -63,8 +63,9 @@ Fourier encoding operator.
   derivative of the field-dynamic coefficients.
 * `nBlock::Int64`                       - Number of trajectory blocks used by
   the derivative path to limit temporary memory.
-* `use_gpu::Bool`                       - Use CUDA execution; default is
-  `true`.
+* `arrayType::Type{<:AbstractArray}`     - Storage backend. The kernel
+  implementation requires `CuArray` (the default), which also makes its
+  LinearOperator storage GPU-resident.
 * `gpus::Vector{Int}`                   - Zero-based CUDA device IDs.
 * `verbose::Bool`                       - Print progress information; default
   is `false`.
@@ -80,10 +81,12 @@ function HighOrderOp_Kernel(
     k_nominal   :: AbstractArray{T, 2}       = kspha[2:4, :]                           ,
     kspha_dt                                 = nothing                                 ,
     nBlock      :: Int64                     = 50                                      , 
-    use_gpu     :: Bool                      = true                                    , 
+    arrayType   :: Type{<:AbstractArray}     = CuArray                                 ,
     gpus        :: Vector{Int}               = [0]                                     ,
     verbose     :: Bool                      = false                                   , 
     ) where {T<:AbstractFloat}
+
+    arrayType <: CuArray || throw(ArgumentError("HighOrderOp_Kernel requires arrayType=CuArray"))
 
     nX, nY, nZ = grid.nX, grid.nY, grid.nZ
     nTerm, nSam = size(kspha)
@@ -123,50 +126,49 @@ function HighOrderOp_Kernel(
     # compute basis functions (spherical harmonics)
     bf = basisfunc_spha(grid.x[mask.!=0], grid.y[mask.!=0], grid.z[mask.!=0], collect(1:nTerm))
 
-    # if use_gpu, move all the variables to GPU
-    if use_gpu
-        kspha       = kspha       |> gpu
-        kspha_dt    = kspha_dt    |> gpu
-        bf          = bf          |> gpu
-        times       = times       |> gpu
-        fieldmap    = fieldmap    |> gpu
-        csm         = csm         |> gpu
-    end
+    bf_d       = Dict{Int, CuArray{T, 2}}()
+    kspha_d    = Dict{Int, CuArray{T, 2}}()
+    times_d    = Dict{Int, CuArray{T, 1}}()
+    fieldmap_d = Dict{Int, CuArray{T, 1}}()
+    csm_d      = Dict{Int, CuArray{Complex{T}, 2}}()
 
-    if use_gpu
-        bf_d       = Dict{Int, CuArray{T, 2}}()
-        kspha_d    = Dict{Int, CuArray{T, 2}}()
-        times_d    = Dict{Int, CuArray{T, 1}}()
-        fieldmap_d = Dict{Int, CuArray{T, 1}}()
-        csm_d      = Dict{Int, CuArray{Complex{T}, 2}}()
-
-        for gpu_id in gpus
-            CUDA.device!(gpu_id)
-            bf_d[gpu_id]       = bf       |> gpu
-            kspha_d[gpu_id]    = kspha    |> gpu
-            times_d[gpu_id]    = times    |> gpu
-            fieldmap_d[gpu_id] = fieldmap |> gpu
-            csm_d[gpu_id]      = csm      |> gpu
-        end
+    for gpu_id in gpus
+        CUDA.device!(gpu_id)
+        bf_d[gpu_id]       = CuArray(bf)
+        kspha_d[gpu_id]    = CuArray(kspha)
+        times_d[gpu_id]    = CuArray(times)
+        fieldmap_d[gpu_id] = CuArray(fieldmap)
+        csm_d[gpu_id]      = CuArray(csm)
     end
 
     if isnothing(kspha_dt)
-        func_prod = (res,xm)->(res .= prod_HighOrderOp_Kernel(xm, mask, csm_d, times_d, fieldmap_d, bf_d, kspha_d, nSam, nCha, nTerm, nVox; 
-                                            gpus=gpus, verbose=verbose))
+        func_prod = (res,xm)->begin
+            values = prod_HighOrderOp_Kernel(xm, mask, csm_d, times_d, fieldmap_d, bf_d, kspha_d, nSam, nCha, nTerm, nVox; gpus=gpus, verbose=verbose)
+            copyto!(res, CuArray(values))
+            res
+        end
     else # for calculation of Bx (2023, https://doi.org/10.1002/mrm.29460)
         @assert size(kspha_dt) == size(kspha) "kspha_dt must have same size as kspha"
-        func_prod = (res,xm)->(res .= prod_dt_HighOrderOp(xm, mask, bf, nVox, nSam, nCha, kspha, kspha_dt, times, fieldmap, csm; 
-                                            nBlock=nBlock, parts=parts, use_gpu=use_gpu, verbose=verbose))
+        func_prod = (res,xm)->begin
+            values = prod_dt_HighOrderOp(xm, mask, bf, nVox, nSam, nCha, kspha, kspha_dt, times, fieldmap, csm; nBlock=nBlock, parts=parts, use_gpu=false, verbose=verbose)
+            copyto!(res, CuArray(values))
+            res
+        end
     end
-    func_ctprod = (res,ym)->(res .= ctprod_HighOrderOp_Kernel(ym, mask, csm_d, times_d, fieldmap_d, bf_d, kspha_d, nSam, nCha, nTerm, nVox; 
-                                            gpus=gpus, verbose=verbose))
+    func_ctprod = (res,ym)->begin
+        values = ctprod_HighOrderOp_Kernel(ym, mask, csm_d, times_d, fieldmap_d, bf_d, kspha_d, nSam, nCha, nTerm, nVox; gpus=gpus, verbose=verbose)
+        copyto!(res, CuArray(values))
+        res
+    end
+
+    Mv = Mtu = CuArray(Vector{Complex{T}}(undef, 0))
     
-    return HighOrderOp_Kernel{Complex{T},Nothing,Function}(
+    return HighOrderOp_Kernel{Complex{T},Nothing,Function,typeof(Mv)}(
                         nRow, nCol, 
                         false, false,
                         func_prod, nothing, func_ctprod,
                         0, 0, 0, 
-                        Complex{T}[], Complex{T}[])
+                        Mv, Mtu)
 end
 
 

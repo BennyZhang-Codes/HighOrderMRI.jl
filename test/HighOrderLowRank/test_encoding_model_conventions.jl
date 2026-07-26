@@ -252,7 +252,8 @@ end
                 data.mask,
                 data.x,
             )
-            y_explicit = op * data.x
+            x_gpu = CuArray(data.x)
+            y_explicit = Array(op * x_gpu)
             raw_complex_error =
                 norm(y_explicit - y_reference) /
                 max(norm(y_reference), eps(T))
@@ -262,8 +263,9 @@ end
                 collect(range(T(-0.5), T(0.5); length=length(y_reference))),
                 collect(range(T(0.2), T(-0.2); length=length(y_reference))),
             )
+            y_probe_gpu = CuArray(y_probe)
             lhs = dot(y_explicit, y_probe)
-            rhs = dot(data.x, adjoint(op) * y_probe)
+            rhs = dot(data.x, Array(adjoint(op) * y_probe_gpu))
             adjoint_error =
                 abs(lhs - rhs) / max(abs(lhs), abs(rhs), eps(T))
             @test adjoint_error < T(1e-4)

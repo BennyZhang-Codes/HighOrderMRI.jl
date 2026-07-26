@@ -8,7 +8,7 @@ export HighOrderOp
 - support off-resonance correction.
 - support masking of target reconstruction region.
 """
-mutable struct HighOrderOp{T,F1,F2} <: HOOp{T}
+mutable struct HighOrderOp{T,F1,F2,S<:AbstractVector{T}} <: HOOp{T}
     nrow       :: Int
     ncol       :: Int
     symmetric  :: Bool
@@ -19,8 +19,8 @@ mutable struct HighOrderOp{T,F1,F2} <: HOOp{T}
     nprod      :: Int
     ntprod     :: Int
     nctprod    :: Int
-    Mv         :: Vector{T}
-    Mtu        :: Vector{T}
+    Mv         :: S
+    Mtu        :: S
 end
 LinearOperators.storage_type(op::HighOrderOp) = typeof(op.Mv)
 
@@ -44,7 +44,8 @@ LinearOperators.storage_type(op::HighOrderOp) = typeof(op.Mv)
 * `k_nominal::AbstractArray{T, 2}`  - [nSam, 3], nominal kspace trajectory.
 * `kspha_dt`                        - [nSam, nTerm], time-derivative of the coefficients of field dynamics.
 * `nBlock::Int64`                   - split trajectory into `nBlock` blocks to avoid memory overflow.
-* `use_gpu::Bool`                   - use GPU for HighOrder encoding/decoding(default: `true`).
+* `arrayType::Type{<:AbstractArray}` - Operator storage and execution backend:
+  `CuArray` (default) or `Array`.
 * `verbose::Bool`                   - print progress information(default: `false`).
 """
 function HighOrderOp(
@@ -58,9 +59,12 @@ function HighOrderOp(
     k_nominal   :: AbstractArray{T, 2}       = kspha[2:4, :]                           ,
     kspha_dt                                 = nothing                                 ,
     nBlock      :: Int64                     = 50                                      , 
-    use_gpu     :: Bool                      = true                                    , 
+    arrayType   :: Type{<:AbstractArray}     = CuArray                                 ,
     verbose     :: Bool                      = false                                   , 
     ) where {T<:AbstractFloat}
+
+    is_gpu = arrayType <: CuArray
+    (is_gpu || arrayType <: Array) || throw(ArgumentError("HighOrderOp supports arrayType=Array or CuArray"))
 
     nX, nY, nZ = grid.nX, grid.nY, grid.nZ
     nTerm, nSam = size(kspha)
@@ -73,7 +77,7 @@ function HighOrderOp(
     csm      = ndims(csm) == 3      ? reshape(csm, nX, nY, 1, nCha) : csm
     mask     = ndims(mask) == 2     ? reshape(mask, nX, nY, 1) : mask
 
-    @info "HighOrderOp nRow=$nRow [nSam*nCha=$nSam*$nCha], nCol=$nCol [prod(matrixSize=$((nX,nY,nZ))], nVox in mask=$nVox, nBlock=$nBlock, use_gpu=$use_gpu"
+    @info "HighOrderOp nRow=$nRow [nSam*nCha=$nSam*$nCha], nCol=$nCol [prod(matrixSize=$((nX,nY,nZ))], nVox in mask=$nVox, nBlock=$nBlock, arrayType=$arrayType"
 
     @assert nTerm              in [9, 16]       "kspha must have 9 or 16 terms (row) for up to 2nd or 3rd order terms"
     @assert size(k_nominal, 1) == 3             "k_nominal must have 3 terms (row) for kx, ky, kz"
@@ -100,34 +104,46 @@ function HighOrderOp(
     # compute basis functions (spherical harmonics)
     bf = basisfunc_spha(grid.x[mask.!=0], grid.y[mask.!=0], grid.z[mask.!=0], collect(1:nTerm))
 
-    # if use_gpu, move all the variables to GPU
-    if use_gpu
-        kspha       = kspha       |> gpu
-        kspha_dt    = kspha_dt    |> gpu
-        bf          = bf          |> gpu
-        times       = times       |> gpu
-        fieldmap    = fieldmap    |> gpu
-        csm         = csm         |> gpu
+    if is_gpu
+        kspha    = arrayType(kspha)
+        bf       = arrayType(bf)
+        times    = arrayType(times)
+        fieldmap = arrayType(fieldmap)
+        csm      = arrayType(csm)
+        if !isnothing(kspha_dt)
+            kspha_dt = arrayType(kspha_dt)
+        end
     end
 
 
     if isnothing(kspha_dt)
-        func_prod = (res,xm)->(res .= prod_HighOrderOp(xm, mask, bf, nVox, nSam, nCha, kspha, times, fieldmap, csm; 
-                                            nBlock=nBlock, parts=parts, use_gpu=use_gpu, verbose=verbose))
+        func_prod = (res,xm)->begin
+            values = prod_HighOrderOp(xm, mask, bf, nVox, nSam, nCha, kspha, times, fieldmap, csm; nBlock=nBlock, parts=parts, use_gpu=is_gpu, verbose=verbose)
+            copyto!(res, arrayType(values))
+            res
+        end
     else # for calculation of Bx (2023, https://doi.org/10.1002/mrm.29460)
         @assert size(kspha_dt) == size(kspha) "kspha_dt must have same size as kspha"
-        func_prod = (res,xm)->(res .= prod_dt_HighOrderOp(xm, mask, bf, nVox, nSam, nCha, kspha, kspha_dt, times, fieldmap, csm; 
-                                            nBlock=nBlock, parts=parts, use_gpu=use_gpu, verbose=verbose))
+        func_prod = (res,xm)->begin
+            values = prod_dt_HighOrderOp(xm, mask, bf, nVox, nSam, nCha, kspha, kspha_dt, times, fieldmap, csm; nBlock=nBlock, parts=parts, use_gpu=is_gpu, verbose=verbose)
+            copyto!(res, arrayType(values))
+            res
+        end
     end
-    func_ctprod = (res,ym)->(res .= ctprod_HighOrderOp(ym, mask, bf, nVox, nSam, nCha, kspha, times, fieldmap, csm; 
-                                            nBlock=nBlock, parts=parts, use_gpu=use_gpu, verbose=verbose))
+    func_ctprod = (res,ym)->begin
+        values = ctprod_HighOrderOp(ym, mask, bf, nVox, nSam, nCha, kspha, times, fieldmap, csm; nBlock=nBlock, parts=parts, use_gpu=is_gpu, verbose=verbose)
+        copyto!(res, arrayType(values))
+        res
+    end
+
+    Mv = Mtu = arrayType(Vector{Complex{T}}(undef, 0))
     
-    return HighOrderOp{Complex{T},Nothing,Function}(
+    return HighOrderOp{Complex{T},Nothing,Function,typeof(Mv)}(
                         nRow, nCol, 
                         false, false,
                         func_prod, nothing, func_ctprod,
                         0, 0, 0, 
-                        Complex{T}[], Complex{T}[])
+                        Mv, Mtu)
 end
 
 """

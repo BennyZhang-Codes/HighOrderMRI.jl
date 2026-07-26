@@ -103,7 +103,7 @@ function FindDelay_multishot(
         datatime_recon = reshape(permutedims(datatime, [2, 1]), :);
         weight = SampleDensity(kspha_τ_r[2:3,:], (gridding.nX, gridding.nY));
         HOOp    = HighOrderOp(gridding, kspha_τ_r, datatime_recon; recon_terms=recon_terms, 
-                    nBlock=nBlock, csm=csm, fieldmap=fieldmap, use_gpu=use_gpu, verbose=verbose);
+                    nBlock=nBlock, csm=csm, fieldmap=fieldmap, arrayType=(use_gpu ? CuArray : Array), verbose=verbose);
         # Update image
         x = recon_HOOp(HOOp, data, weight, recParams)
         if verbose
@@ -115,9 +115,9 @@ function FindDelay_multishot(
         y2 = zeros(Complex{T}, nSamplePerInterleave, nShot, nCha);
         for ishot = 1:nShot
             HOOp_τ    = HighOrderOp(gridding, Matrix(kspha_τ[:,ishot,:]'), datatime_recon; recon_terms=recon_terms, 
-                    nBlock=nBlock, csm=csm, fieldmap=fieldmap, use_gpu=use_gpu, verbose=verbose);
+                    nBlock=nBlock, csm=csm, fieldmap=fieldmap, arrayType=(use_gpu ? CuArray : Array), verbose=verbose);
             HOOp_dt_τ = HighOrderOp(gridding, Matrix(kspha_τ[:,ishot,:]'), datatime_recon; recon_terms=recon_terms,
-                    nBlock=nBlock, csm=csm, fieldmap=fieldmap, use_gpu=use_gpu, verbose=verbose,
+                    nBlock=nBlock, csm=csm, fieldmap=fieldmap, arrayType=(use_gpu ? CuArray : Array), verbose=verbose,
                     kspha_dt=Matrix(kspha_dt_τ[:,ishot,:]'));
             # Update delay
             y1_τ = vec(kdata[:,ishot,:]) - HOOp_τ * vec(x); # Y - Aₚxₚ
