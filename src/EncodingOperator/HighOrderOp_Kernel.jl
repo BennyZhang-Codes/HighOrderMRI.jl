@@ -87,6 +87,8 @@ function HighOrderOp_Kernel(
     ) where {T<:AbstractFloat}
 
     arrayType <: CuArray || throw(ArgumentError("HighOrderOp_Kernel requires arrayType=CuArray"))
+    isempty(gpus) && throw(ArgumentError("gpus must contain at least one CUDA device id"))
+    length(unique(gpus)) == length(gpus) || throw(ArgumentError("gpus contains duplicate device ids: $gpus"))
 
     nX, nY, nZ = grid.nX, grid.nY, grid.nZ
     nTerm, nSam = size(kspha)
@@ -161,6 +163,9 @@ function HighOrderOp_Kernel(
         res
     end
 
+    # Match the LinearOperator storage with the primary GPU expected by
+    # callers and by GPU-resident weighting/data vectors.
+    CUDA.device!(first(gpus))
     Mv = Mtu = CuArray(Vector{Complex{T}}(undef, 0))
     
     return HighOrderOp_Kernel{Complex{T},Nothing,Function,typeof(Mv)}(
