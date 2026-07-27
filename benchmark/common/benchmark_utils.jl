@@ -61,26 +61,6 @@ function gpu_free_memory_mib(gpu_ids::AbstractVector{<:Integer})
     return join(snapshot, ";")
 end
 
-"""Least-squares complex scale mapping `x` onto `reference`."""
-function alignment_scale(x, reference)
-    values = vec(Array(x))
-    target = vec(Array(reference))
-    energy = max(real(dot(values, values)), eps(real(eltype(values))))
-    return dot(values, target) / energy
-end
-
-function aligned_relative_error(x, reference; scale=alignment_scale(x, reference))
-    values = vec(Array(x))
-    target = vec(Array(reference))
-    return norm(scale .* values .- target) / max(norm(target), eps(real(eltype(target))))
-end
-
-function magnitude_nrmse(x, reference; scale=alignment_scale(x, reference))
-    values = abs.(scale .* vec(Array(x)))
-    target = abs.(vec(Array(reference)))
-    return norm(values .- target) / max(norm(target), eps(eltype(target)))
-end
-
 """Restore the CUDA device owning persistent arrays before applying `op`."""
 function activate_operator_device!(op)
     storage = if op isa HighOrderLowRankOp

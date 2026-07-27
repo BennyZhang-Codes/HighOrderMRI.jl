@@ -205,6 +205,7 @@ function benchmark_lowrank_configuration(
     self_residual = missing
     complex_error = missing
     magnitude_error = missing
+    magnitude_ssim_value = missing
     scale_real = missing
     scale_imag = missing
     free_before = gpu_free_memory_mib(GPU_IDS)
@@ -247,11 +248,12 @@ function benchmark_lowrank_configuration(
         shared_rank = size(op.basis, 2)
         x_host = Array(x)
 
-        scale = alignment_scale(x_host, x_reference)
+        scale = complex_alignment_scale(x_host, x_reference)
         scale_real = real(scale)
         scale_imag = imag(scale)
-        complex_error = aligned_relative_error(x_host, x_reference; scale=scale)
-        magnitude_error = magnitude_nrmse(x_host, x_reference; scale=scale)
+        complex_error = raw_complex_nrmse(x_host, x_reference)
+        magnitude_error = magnitude_nrmse(x_host, x_reference)
+        magnitude_ssim_value = magnitude_ssim(x_host, x_reference)
     catch err
         status = "error"
         error_message = error_string(err, catch_backtrace())
@@ -286,6 +288,7 @@ function benchmark_lowrank_configuration(
         total_s=total_s,
         complex_error_vs_kernel=complex_error,
         magnitude_nrmse_vs_kernel=magnitude_error,
+        magnitude_ssim_vs_kernel=magnitude_ssim_value,
         alignment_scale_real=scale_real,
         alignment_scale_imag=scale_imag,
         lowrank_self_residual=self_residual,
@@ -344,6 +347,7 @@ function summarize_parameter_groups(rows::AbstractVector{<:NamedTuple})
         shared_rank = successful_values(group, :shared_rank)
         complex_error = successful_values(group, :complex_error_vs_kernel)
         magnitude_error = successful_values(group, :magnitude_nrmse_vs_kernel)
+        magnitude_ssim_values = successful_values(group, :magnitude_ssim_vs_kernel)
         self_residual = successful_values(group, :lowrank_self_residual)
         kernel_residual = successful_values(group, :kernel_model_residual)
         kernel_residual_aligned = successful_values(group, :kernel_model_residual_aligned)
@@ -386,6 +390,11 @@ function summarize_parameter_groups(rows::AbstractVector{<:NamedTuple})
             magnitude_nrmse_median=safe_median(magnitude_error),
             magnitude_nrmse_min=safe_minimum(magnitude_error),
             magnitude_nrmse_max=safe_maximum(magnitude_error),
+            magnitude_ssim_mean=safe_mean(magnitude_ssim_values),
+            magnitude_ssim_std=safe_std(magnitude_ssim_values),
+            magnitude_ssim_median=safe_median(magnitude_ssim_values),
+            magnitude_ssim_min=safe_minimum(magnitude_ssim_values),
+            magnitude_ssim_max=safe_maximum(magnitude_ssim_values),
             lowrank_self_residual_mean=safe_mean(self_residual),
             lowrank_self_residual_std=safe_std(self_residual),
             kernel_model_residual_mean=safe_mean(kernel_residual),

@@ -6,8 +6,9 @@ five. Figures therefore compare local rank and rSVD seed only.
 
 The rank-summary figure contains:
 
-1. magnitude NRMSE and complex relative error versus local rank;
-2. setup, CG reconstruction, and total runtime versus local rank.
+1. magnitude NRMSE and raw complex NRMSE versus local rank;
+2. magnitude SSIM versus local rank;
+3. setup, CG reconstruction, and total runtime versus local rank.
 
 Usage:
 
@@ -26,7 +27,7 @@ using PyPlot
 # Leave empty to automatically use the newest sweep directory under
 # `SWEEP_RESULTS_ROOT`. A command-line path overrides this value.
 const SWEEP_RUN_DIR = ""
-const SWEEP_RUN_DIR = raw"/home/jyzhang/Desktop/Julia_pkg/HighOrderMRI-benchmark/benchmark/results/2d_local_lowrank_rank_sweep_7T_2D_EPI_1p0_200_r4_2026-07-26_234223"
+const SWEEP_RUN_DIR = raw"/home/jyzhang/Desktop/Julia_pkg/HighOrderMRI-benchmark/benchmark/results/2d_local_lowrank_rank_sweep_7T_2D_Spiral_1p0_200_r4_2026-07-27_135909"
 
 const SWEEP_RESULTS_ROOT = normpath(joinpath(@__DIR__, "..", "results"))
 const FIG_DPI = 900
@@ -35,7 +36,7 @@ const FONT_FAMILY = get(ENV, "HIGHORDER_SWEEP_FONT_FAMILY", "Arial")
 
 FIG_DPI > 0 || throw(ArgumentError("FIG_DPI must be positive"))
 
-const figure_width_summary = 15 / 2.53999863
+const figure_width_summary = 22.5 / 2.53999863
 const figure_height_summary = 7 / 2.53999863
 const figure_width_seed = 10 / 2.53999863
 const figure_height_seed = 7 / 2.53999863
@@ -97,7 +98,7 @@ end
 
 function successful_rank_rows(summaries)
     rows = [row for row in summaries if all(name -> valid_number(getproperty(row, name)), (
-        :magnitude_nrmse_mean, :complex_error_mean, :setup_mean_s, :recon_mean_s, :total_mean_s,
+        :magnitude_nrmse_mean, :complex_error_mean, :magnitude_ssim_mean, :setup_mean_s, :recon_mean_s, :total_mean_s,
     ))]
     sort!(rows; by=row -> row.L_rank)
     return rows
@@ -160,7 +161,7 @@ plot_errorbar!(ax, x, y, yerr; color, marker, label) = ax.errorbar(
 
 function save_rank_summary_figure(outpath::AbstractString, summaries)
     rows = successful_rank_rows(summaries)
-    fig, axs = plt.subplots(nrows=1, ncols=2, figsize=(figure_width_summary, figure_height_summary), facecolor=color_facecolor, squeeze=false)
+    fig, axs = plt.subplots(nrows=1, ncols=3, figsize=(figure_width_summary, figure_height_summary), facecolor=color_facecolor, squeeze=false)
     foreach(style_axis!, axs)
 
     if isempty(rows)
@@ -174,13 +175,14 @@ function save_rank_summary_figure(outpath::AbstractString, summaries)
     ranks = Int[row.L_rank for row in rows]
     nrmse = float_values(rows, :magnitude_nrmse_mean)
     complex_error = float_values(rows, :complex_error_mean)
+    ssim = float_values(rows, :magnitude_ssim_mean)
     setup = float_values(rows, :setup_mean_s)
     recon = float_values(rows, :recon_mean_s)
     total = float_values(rows, :total_mean_s)
 
     ax = axs[1, 1]
     plot_errorbar!(ax, ranks, nrmse, float_stds(rows, :magnitude_nrmse_std); color=color_1, marker="o", label="Magnitude NRMSE")
-    plot_errorbar!(ax, ranks, complex_error, float_stds(rows, :complex_error_std); color=color_2, marker="s", label="Complex relative error")
+    plot_errorbar!(ax, ranks, complex_error, float_stds(rows, :complex_error_std); color=color_2, marker="s", label="Raw complex NRMSE")
     add_nrmse_reference_lines!(ax, ranks)
     ax.set_yscale("log")
     ax.set_xticks(ranks)
@@ -189,6 +191,14 @@ function save_rank_summary_figure(outpath::AbstractString, summaries)
     ax.legend(loc="center left", bbox_to_anchor=(-0.05, 1.08), fontsize=fontsize_legend, labelcolor=color_label, ncols=2, frameon=false, handlelength=1, handletextpad=0.3, columnspacing=0.7, labelspacing=0.2)
 
     ax = axs[1, 2]
+    plot_errorbar!(ax, ranks, ssim, float_stds(rows, :magnitude_ssim_std); color=color_3, marker="^", label="Magnitude SSIM")
+    ax.set_xticks(ranks)
+    ax.set_ylim(0, 1.01)
+    ax.set_xlabel(L"L_{rank}", fontsize=fontsize_label, color=color_label, labelpad=pad_label)
+    ax.set_ylabel("SSIM vs. Kernel", fontsize=fontsize_label, color=color_label, labelpad=pad_label)
+    ax.legend(loc="center left", bbox_to_anchor=(-0.05, 1.08), fontsize=fontsize_legend, labelcolor=color_label, ncols=1, frameon=false, handlelength=1, handletextpad=0.3, columnspacing=0.7, labelspacing=0.2)
+
+    ax = axs[1, 3]
     plot_errorbar!(ax, ranks, setup, float_stds(rows, :setup_std_s); color=color_1, marker="o", label="Setup")
     plot_errorbar!(ax, ranks, recon, float_stds(rows, :recon_std_s); color=color_2, marker="s", label="CG reconstruction")
     plot_errorbar!(ax, ranks, total, float_stds(rows, :total_std_s); color=color_3, marker="^", label="Total")
@@ -200,7 +210,8 @@ function save_rank_summary_figure(outpath::AbstractString, summaries)
     fig.align_ylabels()
     fig.tight_layout(pad=0, h_pad=0, w_pad=0.8)
     fig.text(0.00, 1.00, "(a)", ha="left", va="top", fontsize=fontsize_subfigure, color=color_label)
-    fig.text(0.50, 1.00, "(b)", ha="left", va="top", fontsize=fontsize_subfigure, color=color_label)
+    fig.text(0.33, 1.00, "(b)", ha="left", va="top", fontsize=fontsize_subfigure, color=color_label)
+    fig.text(0.67, 1.00, "(c)", ha="left", va="top", fontsize=fontsize_subfigure, color=color_label)
     return save_figure(fig, outpath, "rank_summary")
 end
 

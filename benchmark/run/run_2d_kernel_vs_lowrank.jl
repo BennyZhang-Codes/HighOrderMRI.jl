@@ -15,7 +15,7 @@ Run from the repository root, for example:
 
 Configuration can be overridden with environment variables, for example:
 
-    HIGHORDER_BENCHMARK_GPUS=4,5 HIGHORDER_BENCHMARK_RANK=10 \
+    HIGHORDER_BENCHMARK_GPUS=4,5 HIGHORDER_BENCHMARK_RANK=15 \
     HIGHORDER_BENCHMARK_REPEATS=5 julia --project=. --threads=4 \
     benchmark/run/run_2d_kernel_vs_lowrank.jl
 
@@ -45,8 +45,8 @@ const T = Float32
 const DATA_FILE = get(
     ENV,
     "HIGHORDER_BENCHMARK_DATA",
-    # "/home/jyzhang/Desktop/HighOrderLowRankOp/2D/7T_2D_Spiral_1p0_200_r4.mat",
-    "/home/jyzhang/Desktop/Julia_pkg/HighOrderMRI-benchmark/demo/7T_2D_EPI_1p0_200_r4.mat",
+    "/home/jyzhang/Desktop/Julia_pkg/HighOrderMRI-benchmark/demo/7T_2D_Spiral_1p0_200_r4.mat",
+    # "/home/jyzhang/Desktop/Julia_pkg/HighOrderMRI-benchmark/demo/7T_2D_EPI_1p0_200_r4.mat",
 )
 const OUTPUT_DIR = normpath(joinpath(@__DIR__, "..", "results"))
 
@@ -60,7 +60,7 @@ N_REPEATS >= 1 || throw(ArgumentError("N_REPEATS must be at least one to compute
 
 const RECON_TERMS = "0111"
 const KERNEL_NBLOCK = Int64(50)
-const LOWRANK_RANK = parse_env_int("HIGHORDER_BENCHMARK_RANK", 10)
+const LOWRANK_RANK = parse_env_int("HIGHORDER_BENCHMARK_RANK", 15)
 const RSVD_SEED = parse_env_int("HIGHORDER_BENCHMARK_RSVD_SEED", 1234)
 const RSVD_CHUNK = parse_env_int("HIGHORDER_BENCHMARK_RSVD_CHUNK", 4096)
 const RSVD_OVERSAMPLE = parse_env_int("HIGHORDER_BENCHMARK_RSVD_OVERSAMPLE", 5)
@@ -130,7 +130,7 @@ function save_magnitude_difference_png(
 end
 
 
-function summarize(method::String, runs, shared_rank, complex_error, mag_error,
+function summarize(method::String, runs, shared_rank, complex_error, mag_error, mag_ssim,
                    kernel_residual, kernel_residual_aligned, self_residual)
     setup = getproperty.(runs, :setup_s)
     recon = getproperty.(runs, :recon_s)
@@ -159,6 +159,7 @@ function summarize(method::String, runs, shared_rank, complex_error, mag_error,
         julia_version=string(VERSION),
         complex_error_vs_kernel=complex_error,
         magnitude_nrmse_vs_kernel=mag_error,
+        magnitude_ssim_vs_kernel=mag_ssim,
         kernel_model_residual=kernel_residual,
         kernel_model_residual_aligned=kernel_residual_aligned,
         self_model_residual=self_residual,
@@ -402,20 +403,21 @@ function run_benchmark!()
     quality_kernel = build_kernel_operator()
     kernel_reference_residual = weighted_residual(quality_kernel, x_reference, data, weight)
     kernel_model_residual_lr = weighted_residual(quality_kernel, x_lowrank, data, weight)
-    scale_lr_to_kernel = alignment_scale(x_lowrank, x_reference)
+    scale_lr_to_kernel = complex_alignment_scale(x_lowrank, x_reference)
     kernel_model_residual_lr_aligned = weighted_residual(quality_kernel, scale_lr_to_kernel .* x_lowrank, data, weight)
     quality_kernel = nothing
     GC.gc(true)
 
-    complex_error = aligned_relative_error(x_lowrank, x_reference; scale=scale_lr_to_kernel)
-    mag_error = magnitude_nrmse(x_lowrank, x_reference; scale=scale_lr_to_kernel)
+    complex_error = raw_complex_nrmse(x_lowrank, x_reference)
+    mag_error = magnitude_nrmse(x_lowrank, x_reference)
+    mag_ssim = magnitude_ssim(x_lowrank, x_reference)
     lowrank_self_residual = lowrank_runs[end].self_residual
     summary_rows = [
-        summarize("HighOrderOp_Kernel", kernel_runs, missing, 0.0, 0.0,
+        summarize("HighOrderOp_Kernel", kernel_runs, missing, 0.0, 0.0, 1.0,
  kernel_reference_residual, kernel_reference_residual,
                   kernel_runs[end].self_residual),
         summarize("HighOrderLowRankOp", lowrank_runs,
-                  lowrank_runs[end].shared_rank, complex_error, mag_error,
+                  lowrank_runs[end].shared_rank, complex_error, mag_error, mag_ssim,
                   kernel_model_residual_lr, kernel_model_residual_lr_aligned,
                   lowrank_self_residual),
     ]
@@ -479,8 +481,8 @@ function run_benchmark!()
         @printf("%s: setup median = %.3f s, recon median = %.3f s, total median = %.3f s\n",
                 row.method, row.setup_median_s, row.recon_median_s, row.total_median_s)
     end
-    @printf("LowRank complex error vs Kernel: %.3e\n", complex_error)
-    @printf("LowRank magnitude NRMSE vs Kernel: %.3e\n", mag_error)
+    @printf("LowRank raw complex NRMSE vs Kernel: %.3e\n", complex_error)
+    @printf("LowRank magnitude NRMSE / SSIM vs Kernel: %.3e / %.5f\n", mag_error, mag_ssim)
     @printf("LowRank Kernel-model residual (raw / aligned): %.3e / %.3e\n",
             kernel_model_residual_lr, kernel_model_residual_lr_aligned)
     return (runs_path=runs_path, summary_path=summary_path, image_paths=image_paths, summary=summary_rows)

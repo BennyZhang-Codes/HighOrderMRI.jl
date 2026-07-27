@@ -1,12 +1,11 @@
 """
 Plot the output of `run_2d_kernel_vs_lowrank_gpus.jl`.
 
-The 2 × 2 summary figure contains:
+The 1 × 3 summary figure contains:
 
-1. Kernel and LowRank CG reconstruction time versus GPU count;
-2. Kernel and LowRank total time versus GPU count;
-3. multi-GPU reconstruction speedup versus the baseline GPU count;
-4. LowRank speedup over Kernel for setup, reconstruction, and total time.
+1. Kernel and LowRank total time versus GPU count;
+2. multi-GPU reconstruction speedup versus the baseline GPU count;
+3. LowRank speedup over Kernel for setup, reconstruction, and total time.
 
 Usage:
 
@@ -34,8 +33,8 @@ const FONT_FAMILY = get(ENV, "HIGHORDER_SWEEP_FONT_FAMILY", "Arial")
 
 FIG_DPI > 0 || throw(ArgumentError("FIG_DPI must be positive"))
 
-const figure_width = 15 / 2.53999863
-const figure_height = 10 / 2.53999863
+const figure_width = 18 / 2.53999863
+const figure_height = 6 / 2.53999863
 
 const linewidth = 0.5
 const linewidth_plot = 0.6
@@ -166,24 +165,17 @@ function save_gpu_summary_figure(outpath::AbstractString, summary, comparison)
     kernel_label = "Kernel"
     lowrank_label = "LowRank (L = $lowrank_rank)"
 
-    fig, axs = plt.subplots(nrows=2, ncols=2, figsize=(figure_width, figure_height), facecolor=color_facecolor, squeeze=false)
+    fig, axs = plt.subplots(nrows=1, ncols=3, figsize=(figure_width, figure_height), facecolor=color_facecolor, squeeze=false)
     foreach(ax -> style_axis!(ax, gpu_counts), axs)
 
     ax = axs[1, 1]
-    plot_errorbar!(ax, gpu_counts, float_values(kernel, :recon_mean_s), float_stds(kernel, :recon_std_s); color=color_1, marker="o", label=kernel_label)
-    plot_errorbar!(ax, gpu_counts, float_values(lowrank, :recon_mean_s), float_stds(lowrank, :recon_std_s); color=color_2, marker="s", label=lowrank_label)
-    ax.set_xlabel("Number of GPUs", fontsize=fontsize_label, color=color_label, labelpad=pad_label)
-    ax.set_ylabel("CG reconstruction time [s]", fontsize=fontsize_label, color=color_label, labelpad=pad_label)
-    add_legend!(ax; ncols=2)
-
-    ax = axs[1, 2]
     plot_errorbar!(ax, gpu_counts, float_values(kernel, :total_mean_s), float_stds(kernel, :total_std_s); color=color_1, marker="o", label=kernel_label)
     plot_errorbar!(ax, gpu_counts, float_values(lowrank, :total_mean_s), float_stds(lowrank, :total_std_s); color=color_2, marker="s", label=lowrank_label)
     ax.set_xlabel("Number of GPUs", fontsize=fontsize_label, color=color_label, labelpad=pad_label)
     ax.set_ylabel("Total time [s]", fontsize=fontsize_label, color=color_label, labelpad=pad_label)
     add_legend!(ax; ncols=2)
 
-    ax = axs[2, 1]
+    ax = axs[1, 2]
     plot_line!(ax, gpu_counts, float_values(kernel, :recon_speedup_vs_baseline); color=color_1, marker="o", label=kernel_label)
     plot_line!(ax, gpu_counts, float_values(lowrank, :recon_speedup_vs_baseline); color=color_2, marker="s", label=lowrank_label)
     baseline_gpu_count = Int(first(kernel).baseline_gpu_count)
@@ -192,7 +184,7 @@ function save_gpu_summary_figure(outpath::AbstractString, summary, comparison)
     ax.set_ylabel("Reconstruction speedup", fontsize=fontsize_label, color=color_label, labelpad=pad_label)
     add_legend!(ax; ncols=3)
 
-    ax = axs[2, 2]
+    ax = axs[1, 3]
     plot_line!(ax, gpu_counts, float_values(comparison, :lowrank_speedup_vs_kernel_setup); color=color_1, marker="o", label="Setup")
     plot_line!(ax, gpu_counts, float_values(comparison, :lowrank_speedup_vs_kernel_recon); color=color_2, marker="s", label="CG reconstruction")
     plot_line!(ax, gpu_counts, float_values(comparison, :lowrank_speedup_vs_kernel_total); color=color_3, marker="^", label="Total")
@@ -202,11 +194,10 @@ function save_gpu_summary_figure(outpath::AbstractString, summary, comparison)
     add_legend!(ax; ncols=3)
 
     fig.align_ylabels()
-    fig.tight_layout(pad=0, h_pad=1.8, w_pad=0.8)
-    fig.text(0.00, 1.00, "(a)", ha="left", va="top", fontsize=fontsize_subfigure, color=color_label)
-    fig.text(0.50, 1.00, "(b)", ha="left", va="top", fontsize=fontsize_subfigure, color=color_label)
-    fig.text(0.00, 0.50, "(c)", ha="left", va="top", fontsize=fontsize_subfigure, color=color_label)
-    fig.text(0.50, 0.50, "(d)", ha="left", va="top", fontsize=fontsize_subfigure, color=color_label)
+    fig.tight_layout(pad=0, h_pad=0, w_pad=0.8)
+    fig.text(0.00-0.01, 1.00, "(a)", ha="left", va="top", fontsize=fontsize_subfigure, color=color_label)
+    fig.text(0.33-0.01, 1.00, "(b)", ha="left", va="top", fontsize=fontsize_subfigure, color=color_label)
+    fig.text(0.67-0.01, 1.00, "(c)", ha="left", va="top", fontsize=fontsize_subfigure, color=color_label)
     return save_figure(fig, outpath, "gpus_summary")
 end
 

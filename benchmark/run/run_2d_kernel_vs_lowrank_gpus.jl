@@ -68,8 +68,8 @@ const T = Float32
 const DATA_FILE = get(
     ENV,
     "HIGHORDER_BENCHMARK_DATA",
-    # "/home/jyzhang/Desktop/Julia_pkg/HighOrderMRI-benchmark/demo/7T_2D_Spiral_1p0_200_r4.mat",
-    "/home/jyzhang/Desktop/Julia_pkg/HighOrderMRI-benchmark/demo/7T_2D_EPI_1p0_200_r4.mat",
+    "/home/jyzhang/Desktop/Julia_pkg/HighOrderMRI-benchmark/demo/7T_2D_Spiral_1p0_200_r4.mat",
+    # "/home/jyzhang/Desktop/Julia_pkg/HighOrderMRI-benchmark/demo/7T_2D_EPI_1p0_200_r4.mat",
 )
 const OUTPUT_ROOT = normpath(joinpath(@__DIR__, "..", "results"))
 
@@ -519,31 +519,27 @@ function compute_quality_rows(final_reconstructions, summary_rows)
 
         lr_complex_error = missing
         lr_magnitude_error = missing
+        lr_magnitude_ssim = missing
         lr_scale_real = missing
         lr_scale_imag = missing
         kernel_complex_error = missing
         kernel_magnitude_error = missing
+        kernel_magnitude_ssim = missing
 
         if x_kernel !== nothing && x_lowrank !== nothing
-            scale = alignment_scale(x_lowrank, x_kernel)
+            scale = complex_alignment_scale(x_lowrank, x_kernel)
             lr_scale_real = real(scale)
             lr_scale_imag = imag(scale)
-            lr_complex_error = aligned_relative_error(x_lowrank, x_kernel; scale=scale)
-            lr_magnitude_error = magnitude_nrmse(x_lowrank, x_kernel; scale=scale)
+            lr_complex_error = raw_complex_nrmse(x_lowrank, x_kernel)
+            lr_magnitude_error = magnitude_nrmse(x_lowrank, x_kernel)
+            lr_magnitude_ssim = magnitude_ssim(x_lowrank, x_kernel)
         end
 
         if baseline_kernel !== nothing && x_kernel !== nothing
-            scale = alignment_scale(x_kernel, baseline_kernel)
-            kernel_complex_error = aligned_relative_error(
-                x_kernel,
-                baseline_kernel;
-                scale=scale,
-            )
-            kernel_magnitude_error = magnitude_nrmse(
-                x_kernel,
-                baseline_kernel;
-                scale=scale,
-            )
+            scale = complex_alignment_scale(x_kernel, baseline_kernel)
+            kernel_complex_error = raw_complex_nrmse(x_kernel, baseline_kernel)
+            kernel_magnitude_error = magnitude_nrmse(x_kernel, baseline_kernel)
+            kernel_magnitude_ssim = magnitude_ssim(x_kernel, baseline_kernel)
         end
 
         kernel_summary = find_summary(summary_rows, kernel_name, gpu_count)
@@ -554,10 +550,12 @@ function compute_quality_rows(final_reconstructions, summary_rows)
             gpu_ids=join(gpu_ids_for_count(gpu_count), ','),
             lowrank_complex_error_vs_same_gpu_kernel=lr_complex_error,
             lowrank_magnitude_nrmse_vs_same_gpu_kernel=lr_magnitude_error,
+            lowrank_magnitude_ssim_vs_same_gpu_kernel=lr_magnitude_ssim,
             lowrank_alignment_scale_real=lr_scale_real,
             lowrank_alignment_scale_imag=lr_scale_imag,
             kernel_complex_error_vs_baseline_gpu=kernel_complex_error,
             kernel_magnitude_nrmse_vs_baseline_gpu=kernel_magnitude_error,
+            kernel_magnitude_ssim_vs_baseline_gpu=kernel_magnitude_ssim,
             lowrank_shared_rank_mean=lowrank_summary.shared_rank_mean,
             kernel_successful_repeats=kernel_summary.successful_repeats,
             lowrank_successful_repeats=lowrank_summary.successful_repeats,
@@ -610,8 +608,10 @@ function build_comparison_rows(summary_rows, quality_rows)
             lowrank_shared_rank_mean=quality.lowrank_shared_rank_mean,
             lowrank_complex_error_vs_kernel=quality.lowrank_complex_error_vs_same_gpu_kernel,
             lowrank_magnitude_nrmse_vs_kernel=quality.lowrank_magnitude_nrmse_vs_same_gpu_kernel,
+            lowrank_magnitude_ssim_vs_kernel=quality.lowrank_magnitude_ssim_vs_same_gpu_kernel,
             kernel_complex_error_vs_baseline_gpu=quality.kernel_complex_error_vs_baseline_gpu,
             kernel_magnitude_nrmse_vs_baseline_gpu=quality.kernel_magnitude_nrmse_vs_baseline_gpu,
+            kernel_magnitude_ssim_vs_baseline_gpu=quality.kernel_magnitude_ssim_vs_baseline_gpu,
         ))
     end
 
@@ -704,12 +704,13 @@ function run_gpus_benchmark!()
     println("LowRank rank: $LOWRANK_RANK")
     println()
     @printf(
-        "%-6s %-14s %-14s %-14s %-14s\n",
+        "%-6s %-14s %-14s %-14s %-14s %-10s\n",
         "GPUs",
         "Kernel recon",
         "LowRank recon",
         "LR/K speedup",
         "LR NRMSE",
+        "LR SSIM",
     )
     for row in comparison_rows
         metrics = (
@@ -717,6 +718,7 @@ function run_gpus_benchmark!()
             row.lowrank_recon_median_s,
             row.lowrank_speedup_vs_kernel_recon,
             row.lowrank_magnitude_nrmse_vs_kernel,
+            row.lowrank_magnitude_ssim_vs_kernel,
         )
         if any(ismissing, metrics)
             println(
@@ -725,15 +727,17 @@ function run_gpus_benchmark!()
                 rpad(string(row.lowrank_recon_median_s), 14),
                 rpad(string(row.lowrank_speedup_vs_kernel_recon), 14),
                 string(row.lowrank_magnitude_nrmse_vs_kernel),
+                string(row.lowrank_magnitude_ssim_vs_kernel),
             )
         else
             @printf(
-                "%-6d %-14.3f %-14.3f %-14.3f %-14.3e\n",
+                "%-6d %-14.3f %-14.3f %-14.3f %-14.3e %-10.5f\n",
                 row.gpu_count,
                 row.kernel_recon_median_s,
                 row.lowrank_recon_median_s,
                 row.lowrank_speedup_vs_kernel_recon,
                 row.lowrank_magnitude_nrmse_vs_kernel,
+                row.lowrank_magnitude_ssim_vs_kernel,
             )
         end
     end
