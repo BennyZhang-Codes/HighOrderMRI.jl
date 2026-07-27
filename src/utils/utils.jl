@@ -4,8 +4,10 @@ include("ImageProcess.jl")
 export normalization, standardization
 export get_center_range, get_center_crop
 
-# include("ImageMetrics.jl")
-# export HO_img_scale, HO_MSE, HO_RMSE, HO_NRMSE, HO_SSIM
+include("ImageMetrics.jl")
+export complex_alignment_scale, raw_complex_nrmse, aligned_complex_nrmse
+export magnitude_nrmse, magnitude_ssim
+export HO_img_scale, HO_MSE, HO_RMSE, HO_NRMSE, HO_SSIM
 
 include("ImageResize.jl")
 export imresize_real, imresize_complex
