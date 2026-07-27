@@ -2,8 +2,12 @@
 Visualize a 2D single-shot local-low-rank sweep.
 
 The corresponding run fixes `shared_basis_tol = 0` and rSVD oversampling to
-five. Figures therefore compare local rank and rSVD seed only; they intentionally
-contain no shared-basis tolerance heatmaps.
+five. Figures therefore compare local rank and rSVD seed only.
+
+The rank-summary figure contains:
+
+1. magnitude NRMSE and complex relative error versus local rank;
+2. setup, CG reconstruction, and total runtime versus local rank.
 
 Usage:
 
@@ -13,40 +17,77 @@ Usage:
 
 using CSV
 using PyPlot
-using Printf
-using Statistics
 
-parse_env_bool(name::AbstractString, default::Bool) = begin
-    raw = lowercase(strip(get(ENV, name, string(default))))
-    raw in ("true", "1", "yes", "on") && return true
-    raw in ("false", "0", "no", "off") && return false
-    throw(ArgumentError("$name must be true/false; got $raw"))
-end
 
-const FIG_DPI = parse(Int, get(ENV, "HIGHORDER_SWEEP_FIG_DPI", "300"))
-const SHOW_FIGURES = parse_env_bool("HIGHORDER_SWEEP_SHOW_FIGURES", false)
-const DEFAULT_RESULTS_ROOT = get(
-    ENV,
-    "HIGHORDER_SWEEP_RESULTS_ROOT",
-    normpath(joinpath(@__DIR__, "..", "results")),
-)
+# -----------------------------------------------------------------------------
+# Configuration
+# -----------------------------------------------------------------------------
+
+# Leave empty to automatically use the newest sweep directory under
+# `SWEEP_RESULTS_ROOT`. A command-line path overrides this value.
+const SWEEP_RUN_DIR = ""
+const SWEEP_RUN_DIR = raw"/home/jyzhang/Desktop/Julia_pkg/HighOrderMRI-benchmark/benchmark/results/2d_local_lowrank_rank_sweep_7T_2D_EPI_1p0_200_r4_2026-07-26_234223"
+
+const SWEEP_RESULTS_ROOT = normpath(joinpath(@__DIR__, "..", "results"))
+const FIG_DPI = 900
+const SHOW_FIGURES = false
+const FONT_FAMILY = get(ENV, "HIGHORDER_SWEEP_FONT_FAMILY", "Arial")
+
+FIG_DPI > 0 || throw(ArgumentError("FIG_DPI must be positive"))
+
+const figure_width_summary = 15 / 2.53999863
+const figure_height_summary = 7 / 2.53999863
+const figure_width_seed = 10 / 2.53999863
+const figure_height_seed = 7 / 2.53999863
+
+const linewidth = 0.5
+const linewidth_plot = 0.6
+const linewidth_errorbar = 0.4
+const ticklength = 1.5
+
+const fontsize_subfigure = 9
+const fontsize_label = 8
+const fontsize_legend = 7
+const fontsize_ticklabel = 7
+
+const pad_labeltick = 2
+const pad_label = 2
+const markersize_plot = 2.5
+const capsize_errorbar = 1.5
+
+const color_facecolor = "#FFFFFF"
+const color_label = "#000000"
+const color_reference = "#777777"
+const color_1 = "#3E9DDE"
+const color_2 = "#FF9F47"
+const color_3 = "#30AE30"
+const color_4 = "#E46A6A"
+const color_5 = "#9467BD"
+const color_6 = "#17BECF"
+const color_7 = "#BCBD22"
+const color_8 = "#E377C2"
+const color_seed = (color_1, color_2, color_3, color_4, color_5, color_6, color_7, color_8)
+
+
+# -----------------------------------------------------------------------------
+# Data utilities
+# -----------------------------------------------------------------------------
 
 valid_number(x) = !ismissing(x) && x isa Number && isfinite(Float64(x))
+float_values(rows, name::Symbol) = Float64[getproperty(row, name) for row in rows]
+float_stds(rows, name::Symbol) = Float64[valid_number(getproperty(row, name)) ? getproperty(row, name) : 0.0 for row in rows]
 
 function newest_sweep_directory(root::AbstractString)
     isdir(root) || throw(ArgumentError("Sweep results root does not exist: $root"))
-    candidates = filter(readdir(root; join=true)) do path
-        isdir(path) && startswith(basename(path), "2d_local_lowrank_rank_sweep_")
-    end
+    candidates = filter(path -> isdir(path) && startswith(basename(path), "2d_local_lowrank_rank_sweep_"), readdir(root; join=true))
     isempty(candidates) && throw(ArgumentError("No local-low-rank sweep directory found under $root"))
     return candidates[argmax(mtime.(candidates))]
 end
 
 function resolve_run_directory()
     !isempty(ARGS) && return abspath(ARGS[1])
-    from_env = strip(get(ENV, "HIGHORDER_SWEEP_RUN_DIR", ""))
-    !isempty(from_env) && return abspath(from_env)
-    return newest_sweep_directory(DEFAULT_RESULTS_ROOT)
+    !isempty(strip(SWEEP_RUN_DIR)) && return abspath(strip(SWEEP_RUN_DIR))
+    return newest_sweep_directory(SWEEP_RESULTS_ROOT)
 end
 
 function read_csv_rows(path::AbstractString)
@@ -54,165 +95,167 @@ function read_csv_rows(path::AbstractString)
     return collect(CSV.File(path; missingstring=["missing", ""]))
 end
 
-function save_figure(fig, basepath::AbstractString)
-    paths = (basepath * ".png", basepath * ".pdf")
-    for path in paths
-        fig.savefig(path; dpi=FIG_DPI, bbox_inches="tight", pad_inches=0.04, transparent=false)
-    end
-    SHOW_FIGURES || close(fig)
-    return paths
-end
-
-function configure_pyplot!()
-    rc = PyPlot.matplotlib["rcParams"]
-    rc["font.size"] = 10
-    rc["axes.titlesize"] = 11
-    rc["axes.labelsize"] = 10
-    rc["legend.fontsize"] = 8
-    rc["figure.dpi"] = 120
-    rc["savefig.dpi"] = FIG_DPI
-    rc["axes.spines.top"] = false
-    rc["axes.spines.right"] = false
-    return nothing
-end
-
-function pareto_frontier_indices(times::AbstractVector, errors::AbstractVector)
-    order = sortperm(times)
-    frontier = Int[]
-    best_error = Inf
-    for index in order
-        if isfinite(times[index]) && isfinite(errors[index]) && errors[index] < best_error
-            push!(frontier, index)
-            best_error = errors[index]
-        end
-    end
-    return frontier
-end
-
 function successful_rank_rows(summaries)
-    rows = [row for row in summaries if
-        valid_number(row.magnitude_nrmse_mean) && valid_number(row.total_mean_s)]
+    rows = [row for row in summaries if all(name -> valid_number(getproperty(row, name)), (
+        :magnitude_nrmse_mean, :complex_error_mean, :setup_mean_s, :recon_mean_s, :total_mean_s,
+    ))]
     sort!(rows; by=row -> row.L_rank)
     return rows
 end
 
-function save_rank_summary_figure(run_dir::AbstractString, summaries)
+
+# -----------------------------------------------------------------------------
+# Plot helpers
+# -----------------------------------------------------------------------------
+
+function configure_pyplot!()
+    matplotlib.rc("mathtext", default="regular")
+    matplotlib.rc("figure", dpi=200)
+    matplotlib.rc("font", family=FONT_FAMILY)
+    matplotlib.rcParams["font.family"] = FONT_FAMILY
+    matplotlib.rcParams["mathtext.default"] = "regular"
+    matplotlib.rcParams["pdf.fonttype"] = 42
+    matplotlib.rcParams["ps.fonttype"] = 42
+    @info "PyPlot style configured" font=FONT_FAMILY dpi=FIG_DPI
+    return nothing
+end
+
+function style_axis!(ax)
+    ax.tick_params(axis="both", length=ticklength, width=linewidth, pad=pad_labeltick, color=color_label, labelcolor=color_label, labelsize=fontsize_ticklabel)
+    for spine in ax.spines
+        ax.spines[spine].set_color(color_label)
+        ax.spines[spine].set_visible(false)
+    end
+    ax.set_facecolor(color_facecolor)
+    return ax
+end
+
+function save_figure(fig, outpath::AbstractString, name::AbstractString)
+    mkpath(outpath)
+    paths = [joinpath(outpath, "$name.$ext") for ext in ("png", "svg")]
+    foreach(path -> fig.savefig(path; dpi=FIG_DPI, transparent=false, bbox_inches="tight", pad_inches=0.05), paths)
+    SHOW_FIGURES || close(fig)
+    return Tuple(paths)
+end
+
+function add_nrmse_reference_lines!(ax, ranks)
+    isempty(ranks) && return nothing
+    for (level, label) in ((0.01, "1%"), (0.02, "2%"))
+        ax.axhline(level; color=color_reference, linestyle="--", linewidth=linewidth, zorder=0)
+        ax.annotate(label, (minimum(ranks), level); xytext=(5, 2), textcoords="offset points", ha="right", va="bottom", fontsize=fontsize_ticklabel, color=color_reference)
+    end
+    return nothing
+end
+
+plot_errorbar!(ax, x, y, yerr; color, marker, label) = ax.errorbar(
+    x, y; yerr=yerr, color=color, marker=marker, markersize=markersize_plot,
+    linewidth=linewidth_plot, capsize=capsize_errorbar, elinewidth=linewidth_errorbar,
+    capthick=linewidth_errorbar, label=label,
+)
+
+
+# -----------------------------------------------------------------------------
+# Rank summary figure
+# -----------------------------------------------------------------------------
+
+function save_rank_summary_figure(outpath::AbstractString, summaries)
     rows = successful_rank_rows(summaries)
-    fig, axes = subplots(2, 2; figsize=(12, 8.5), constrained_layout=true)
+    fig, axs = plt.subplots(nrows=1, ncols=2, figsize=(figure_width_summary, figure_height_summary), facecolor=color_facecolor, squeeze=false)
+    foreach(style_axis!, axs)
 
     if isempty(rows)
-        for ax in axes
-            ax.text(0.5, 0.5, "No successful configurations", ha="center", va="center")
+        for ax in axs
+            ax.text(0.5, 0.5, "No successful configurations", ha="center", va="center", fontsize=fontsize_label, color=color_label)
             ax.set_axis_off()
         end
-        return save_figure(fig, joinpath(run_dir, "rank_summary"))
+        return save_figure(fig, outpath, "rank_summary")
     end
 
     ranks = Int[row.L_rank for row in rows]
-    nrmse = Float64[row.magnitude_nrmse_mean for row in rows]
-    nrmse_std = Float64[valid_number(row.magnitude_nrmse_std) ? row.magnitude_nrmse_std : 0.0 for row in rows]
-    complex_error = Float64[row.complex_error_mean for row in rows]
-    complex_std = Float64[valid_number(row.complex_error_std) ? row.complex_error_std : 0.0 for row in rows]
-    setup = Float64[row.setup_mean_s for row in rows]
-    recon = Float64[row.recon_mean_s for row in rows]
-    total = Float64[row.total_mean_s for row in rows]
-    total_std = Float64[valid_number(row.total_std_s) ? row.total_std_s : 0.0 for row in rows]
-    actual_rank = Float64[row.shared_rank_mean for row in rows]
+    nrmse = float_values(rows, :magnitude_nrmse_mean)
+    complex_error = float_values(rows, :complex_error_mean)
+    setup = float_values(rows, :setup_mean_s)
+    recon = float_values(rows, :recon_mean_s)
+    total = float_values(rows, :total_mean_s)
 
-    ax = axes[1, 1]
-    ax.errorbar(ranks, nrmse; yerr=nrmse_std, marker="o", capsize=3, label="Magnitude NRMSE")
-    ax.errorbar(ranks, complex_error; yerr=complex_std, marker="s", capsize=3, label="Complex relative error")
+    ax = axs[1, 1]
+    plot_errorbar!(ax, ranks, nrmse, float_stds(rows, :magnitude_nrmse_std); color=color_1, marker="o", label="Magnitude NRMSE")
+    plot_errorbar!(ax, ranks, complex_error, float_stds(rows, :complex_error_std); color=color_2, marker="s", label="Complex relative error")
+    add_nrmse_reference_lines!(ax, ranks)
     ax.set_yscale("log")
     ax.set_xticks(ranks)
-    ax.set_xlabel(L"L_{rank}")
-    ax.set_ylabel("Error vs Kernel")
-    ax.set_title("A  Local low-rank approximation error")
-    ax.grid(true; which="both", alpha=0.25)
-    ax.legend(loc="best")
+    ax.set_xlabel(L"L_{rank}", fontsize=fontsize_label, color=color_label, labelpad=pad_label)
+    ax.set_ylabel("Error vs. Kernel", fontsize=fontsize_label, color=color_label, labelpad=pad_label)
+    ax.legend(loc="center left", bbox_to_anchor=(-0.05, 1.08), fontsize=fontsize_legend, labelcolor=color_label, ncols=2, frameon=false, handlelength=1, handletextpad=0.3, columnspacing=0.7, labelspacing=0.2)
 
-    ax = axes[1, 2]
-    ax.plot(ranks, setup; marker="o", label="Setup")
-    ax.plot(ranks, recon; marker="s", label="CG reconstruction")
-    ax.errorbar(ranks, total; yerr=total_std, marker="^", capsize=3, label="Total")
+    ax = axs[1, 2]
+    plot_errorbar!(ax, ranks, setup, float_stds(rows, :setup_std_s); color=color_1, marker="o", label="Setup")
+    plot_errorbar!(ax, ranks, recon, float_stds(rows, :recon_std_s); color=color_2, marker="s", label="CG reconstruction")
+    plot_errorbar!(ax, ranks, total, float_stds(rows, :total_std_s); color=color_3, marker="^", label="Total")
     ax.set_xticks(ranks)
-    ax.set_xlabel(L"L_{rank}")
-    ax.set_ylabel("Time (s)")
-    ax.set_title("B  End-to-end runtime")
-    ax.grid(true; alpha=0.25)
-    ax.legend(loc="best")
+    ax.set_xlabel(L"L_{rank}", fontsize=fontsize_label, color=color_label, labelpad=pad_label)
+    ax.set_ylabel("Time [s]", fontsize=fontsize_label, color=color_label, labelpad=pad_label)
+    ax.legend(loc="center left", bbox_to_anchor=(-0.05, 1.08), fontsize=fontsize_legend, labelcolor=color_label, ncols=3, frameon=false, handlelength=1, handletextpad=0.3, columnspacing=0.6, labelspacing=0.2)
 
-    ax = axes[2, 1]
-    ax.plot(ranks, actual_rank; marker="o", label="Observed basis rank")
-    ax.plot(ranks, ranks; linestyle="--", color="black", label="Requested local rank")
-    ax.set_xticks(ranks)
-    ax.set_xlabel(L"L_{rank}")
-    ax.set_ylabel("Rank")
-    ax.set_title("C  Rank retained with shared_basis_tol = 0")
-    ax.grid(true; alpha=0.25)
-    ax.legend(loc="best")
-
-    ax = axes[2, 2]
-    scatter = ax.scatter(total, nrmse; c=ranks, cmap="viridis", s=62, edgecolors="none")
-    frontier = pareto_frontier_indices(total, nrmse)
-    !isempty(frontier) && ax.plot(total[frontier], nrmse[frontier]; linestyle="--", marker="o", label="Pareto frontier")
-    for index in eachindex(ranks)
-        ax.annotate("L=$(ranks[index])", (total[index], nrmse[index]); xytext=(4, 4), textcoords="offset points", fontsize=8)
-    end
-    ax.set_yscale("log")
-    ax.set_xlabel("Mean total time (s)")
-    ax.set_ylabel("Mean magnitude NRMSE")
-    ax.set_title("D  Accuracy–time trade-off")
-    ax.grid(true; which="both", alpha=0.25)
-    ax.legend(loc="best")
-    colorbar = fig.colorbar(scatter, ax=ax, fraction=0.046, pad=0.04)
-    colorbar.set_label(L"L_{rank}")
-
-    fig.suptitle("2D single-shot local LowRank sweep (five rSVD seeds, oversampling = 5)", fontsize=13)
-    return save_figure(fig, joinpath(run_dir, "rank_summary"))
+    fig.align_ylabels()
+    fig.tight_layout(pad=0, h_pad=0, w_pad=0.8)
+    fig.text(0.00, 1.00, "(a)", ha="left", va="top", fontsize=fontsize_subfigure, color=color_label)
+    fig.text(0.50, 1.00, "(b)", ha="left", va="top", fontsize=fontsize_subfigure, color=color_label)
+    return save_figure(fig, outpath, "rank_summary")
 end
 
-function save_seed_stability_figure(run_dir::AbstractString, runs)
+
+# -----------------------------------------------------------------------------
+# Seed stability figure
+# -----------------------------------------------------------------------------
+
+function save_seed_stability_figure(outpath::AbstractString, runs)
     rows = [row for row in runs if row.status == "ok" && valid_number(row.magnitude_nrmse_vs_kernel)]
-    sort!(rows; by=row -> (row.L_rank, row.rsvd_seed))
-    fig, ax = subplots(; figsize=(9, 5.8), constrained_layout=true)
+    sort!(rows; by=row -> (row.rsvd_seed, row.L_rank))
+
+    fig, axs = plt.subplots(nrows=1, ncols=1, figsize=(figure_width_seed, figure_height_seed), facecolor=color_facecolor, squeeze=false)
+    ax = style_axis!(axs[1])
 
     if isempty(rows)
-        ax.text(0.5, 0.5, "No successful seed runs", ha="center", va="center")
+        ax.text(0.5, 0.5, "No successful seed runs", ha="center", va="center", fontsize=fontsize_label, color=color_label)
         ax.set_axis_off()
     else
         ranks = sort(unique(Int[row.L_rank for row in rows]))
         seeds = sort(unique(Int[row.rsvd_seed for row in rows]))
+
         for (seed_index, seed) in enumerate(seeds)
-            group = [row for row in rows if row.rsvd_seed == seed]
-            ax.plot(
-                Int[row.L_rank for row in group],
-                Float64[row.magnitude_nrmse_vs_kernel for row in group];
-                marker="o", markersize=4, linewidth=1.1, alpha=0.8, label="seed=$seed",
-            )
+            group = sort([row for row in rows if row.rsvd_seed == seed]; by=row -> row.L_rank)
+            ax.plot(Int[row.L_rank for row in group], float_values(group, :magnitude_nrmse_vs_kernel); color=color_seed[mod1(seed_index, length(color_seed))], marker="o", markersize=markersize_plot, linewidth=linewidth_plot, label="seed = $seed")
         end
+
+        add_nrmse_reference_lines!(ax, ranks)
         ax.set_yscale("log")
         ax.set_xticks(ranks)
-        ax.set_xlabel(L"L_{rank}")
-        ax.set_ylabel("Magnitude NRMSE vs Kernel")
-        ax.set_title("rSVD seed stability")
-        ax.grid(true; which="both", alpha=0.25)
-        ax.legend(ncol=2, loc="best")
+        ax.set_xlabel(L"L_{rank}", fontsize=fontsize_label, color=color_label, labelpad=pad_label)
+        ax.set_ylabel("Magnitude NRMSE vs. Kernel", fontsize=fontsize_label, color=color_label, labelpad=pad_label)
+        ax.legend(loc="center left", bbox_to_anchor=(-0.05, 1.08), fontsize=fontsize_legend, labelcolor=color_label, ncols=min(length(seeds), 3), frameon=false, handlelength=1, handletextpad=0.3, columnspacing=0.7, labelspacing=0.2)
     end
 
-    return save_figure(fig, joinpath(run_dir, "seed_stability"))
+    fig.tight_layout(pad=0, h_pad=0, w_pad=0)
+    return save_figure(fig, outpath, "seed_stability")
 end
+
+
+# -----------------------------------------------------------------------------
+# Main entry point
+# -----------------------------------------------------------------------------
 
 function visualize_sweep!(run_dir::AbstractString=resolve_run_directory())
     configure_pyplot!()
-    summaries = read_csv_rows(joinpath(run_dir, "summary_by_rank.csv"))
-    runs = read_csv_rows(joinpath(run_dir, "runs.csv"))
-    paths = vcat(save_rank_summary_figure(run_dir, summaries), save_seed_stability_figure(run_dir, runs))
+    outpath = joinpath(run_dir, "figure")
+    paths = vcat(
+        save_rank_summary_figure(outpath, read_csv_rows(joinpath(run_dir, "summary_by_rank.csv"))),
+        save_seed_stability_figure(outpath, read_csv_rows(joinpath(run_dir, "runs.csv"))),
+    )
     println("\nSaved local-low-rank sweep figures:")
     foreach(path -> println("  $path"), paths)
     SHOW_FIGURES && show()
     return paths
 end
 
-if abspath(PROGRAM_FILE) == abspath(@__FILE__)
-    visualize_sweep!()
-end
+abspath(PROGRAM_FILE) == abspath(@__FILE__) && visualize_sweep!()

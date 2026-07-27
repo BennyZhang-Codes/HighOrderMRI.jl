@@ -62,7 +62,7 @@ const SWEEP_RANDOMIZE_ORDER = parse_env_bool("HIGHORDER_SWEEP_RANDOMIZE_ORDER", 
 const SWEEP_ORDER_SEED = parse_env_int("HIGHORDER_SWEEP_ORDER_SEED", 2026)
 const SWEEP_CONTINUE_ON_ERROR = parse_env_bool("HIGHORDER_SWEEP_CONTINUE_ON_ERROR", true)
 const SWEEP_CHECKPOINT_EVERY = parse_env_int("HIGHORDER_SWEEP_CHECKPOINT_EVERY", 1)
-const SWEEP_SAVE_BEST_IMAGES = parse_env_bool("HIGHORDER_SWEEP_SAVE_BEST_IMAGES", true)
+const SWEEP_SAVE_RANK_IMAGES = parse_env_bool("HIGHORDER_SWEEP_SAVE_RANK_IMAGES", true)
 const SWEEP_SHARED_RANK_MAX = parse_env_int(
     "HIGHORDER_SWEEP_SHARED_RANK_MAX",
     maximum(SWEEP_RANKS),
@@ -533,46 +533,54 @@ function run_parameter_sweep!()
     end
 
     image_paths = String[]
-    if SWEEP_SAVE_BEST_IMAGES && best_index !== nothing
+    if SWEEP_SAVE_RANK_IMAGES && !isempty(successful_indices)
         try
-            best_row = rows[best_index]
-            best_x = reconstructions[best_index]
-            best_scale = ComplexF64(
-                best_row.alignment_scale_real,
-                best_row.alignment_scale_imag,
-            )
-
             kernel_image = joinpath(run_dir, "kernel_reference.png")
-            best_image = joinpath(
-                run_dir,
-                @sprintf(
-                    "best_local_lowrank_L%d_seed%d_os%d.png",
-                    best_row.L_rank,
-                    best_row.rsvd_seed,
-                    best_row.oversampling,
-                ),
-            )
-            difference_image = joinpath(run_dir, "best_lowrank_magnitude_difference.png")
-
+            kernel_magnitude = abs.(display_reconstruction(x_reference))
+            reference_vmax = quantile(vec(kernel_magnitude), IMAGE_VMAX_PERCENTILE / 100)
             save_reconstruction_png(
                 kernel_image,
                 x_reference;
-                vmaxp=IMAGE_VMAX_PERCENTILE,
+                vmax=reference_vmax,
             )
-            save_reconstruction_png(
-                best_image,
-                best_scale .* best_x;
-                vmaxp=IMAGE_VMAX_PERCENTILE,
-            )
-            save_reconstruction_png(
-                difference_image,
-                abs.(best_scale .* best_x) .- abs.(x_reference);
-                vmaxp=IMAGE_VMAX_PERCENTILE,
-            )
-            append!(image_paths, (kernel_image, best_image, difference_image))
+            push!(image_paths, kernel_image)
+
+            for L_rank in sort(unique(rows[i].L_rank for i in successful_indices))
+                rank_indices = [
+                    i for i in successful_indices if rows[i].L_rank == L_rank
+                ]
+                # Save the median-error seed rather than a best-case seed.
+                sort!(rank_indices; by=i -> rows[i].magnitude_nrmse_vs_kernel)
+                representative = rank_indices[cld(length(rank_indices), 2)]
+                row = rows[representative]
+                x = reconstructions[representative]
+                scale = ComplexF64(row.alignment_scale_real, row.alignment_scale_imag)
+
+                image_path = joinpath(
+                    run_dir,
+                    @sprintf("local_lowrank_L%d_seed%d.png", row.L_rank, row.rsvd_seed),
+                )
+                difference_path = joinpath(
+                    run_dir,
+                    @sprintf(
+                        "local_lowrank_L%d_seed%d_magnitude_difference_x%.0f.png",
+                        row.L_rank,
+                        row.rsvd_seed,
+                        DIFFERENCE_DISPLAY_SCALE,
+                    ),
+                )
+                save_reconstruction_png(image_path, scale .* x; vmax=reference_vmax)
+                save_magnitude_difference_png(
+                    difference_path,
+                    scale .* x,
+                    x_reference;
+                    reference_vmax=reference_vmax,
+                )
+                append!(image_paths, (image_path, difference_path))
+            end
         catch err
             @warn(
-                "Could not save sweep images; CSV results are complete",
+                "Could not save local-rank sweep images; CSV results are complete",
                 exception=(err, catch_backtrace()),
             )
         end

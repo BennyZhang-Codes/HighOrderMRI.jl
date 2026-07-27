@@ -45,7 +45,8 @@ const T = Float32
 const DATA_FILE = get(
     ENV,
     "HIGHORDER_BENCHMARK_DATA",
-    "/home/jyzhang/Desktop/HighOrderLowRankOp/2D/7T_2D_Spiral_1p0_200_r4.mat",
+    # "/home/jyzhang/Desktop/HighOrderLowRankOp/2D/7T_2D_Spiral_1p0_200_r4.mat",
+    "/home/jyzhang/Desktop/Julia_pkg/HighOrderMRI-benchmark/demo/7T_2D_EPI_1p0_200_r4.mat",
 )
 const OUTPUT_DIR = normpath(joinpath(@__DIR__, "..", "results"))
 
@@ -73,6 +74,11 @@ const IMAGE_VMAX_PERCENTILE = parse(
     Float64,
     get(ENV, "HIGHORDER_BENCHMARK_IMAGE_VMAX_PERCENTILE", "99.9"),
 )
+const DIFFERENCE_DISPLAY_SCALE = parse(
+    Float64,
+    get(ENV, "HIGHORDER_BENCHMARK_DIFFERENCE_SCALE", "10"),
+)
+DIFFERENCE_DISPLAY_SCALE > 0 || throw(ArgumentError("HIGHORDER_BENCHMARK_DIFFERENCE_SCALE must be positive"))
 
 
 """Rotate a reconstructed 2D image into the display orientation used by the reconstruction scripts."""
@@ -102,6 +108,23 @@ function save_reconstruction_png(
     else
         plt_image(image; vmin=0, vmax=vmax, width=10)
     end
+    fig.savefig(path; dpi=300, transparent=false, bbox_inches="tight", pad_inches=0.0)
+    return path
+end
+
+
+"""Save `scale * abs(abs(x) - abs(reference))` using the reference image scale."""
+function save_magnitude_difference_png(
+    path::AbstractString,
+    x,
+    reference;
+    scale::Real=DIFFERENCE_DISPLAY_SCALE,
+    reference_vmax::Real,
+)
+    difference = scale .* abs.(
+        abs.(display_reconstruction(x)) .- abs.(display_reconstruction(reference)),
+    )
+    fig = plt_image(difference; vmin=0, vmax=reference_vmax, width=10)
     fig.savefig(path; dpi=300, transparent=false, bbox_inches="tight", pad_inches=0.0)
     return path
 end
@@ -432,10 +455,11 @@ function run_benchmark!()
             scale_lr_to_kernel .* x_lowrank;
             vmax=common_vmax,
         )
-        save_reconstruction_png(
+        save_magnitude_difference_png(
             difference_image_path,
-            abs.(scale_lr_to_kernel .* x_lowrank) .- abs.(x_reference);
-            vmax=common_vmax,
+            scale_lr_to_kernel .* x_lowrank,
+            x_reference;
+            reference_vmax=common_vmax,
         )
 
         append!(
