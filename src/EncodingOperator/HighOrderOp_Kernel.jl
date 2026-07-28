@@ -27,6 +27,46 @@ mutable struct HighOrderOp_Kernel{T,F1,F2,S<:AbstractVector{T}} <: HOOp{T}
 end
 LinearOperators.storage_type(op::HighOrderOp_Kernel) = typeof(op.Mv)
 
+mutable struct HighOrderKernelGPUWorkspace{T<:AbstractFloat}
+    gpu_id   :: Int
+    voxels   :: UnitRange{Int}
+    x        :: CuVector{Complex{T}}
+    csm      :: CuMatrix{Complex{T}}
+    fieldmap :: CuVector{T}
+    bf       :: CuMatrix{T}
+    times    :: CuVector{T}
+    kspha    :: CuMatrix{T}
+    signal   :: CuMatrix{Complex{T}}
+    image    :: CuVector{Complex{T}}
+end
+
+function split_highorder_voxel_ranges(nVox::Int, nGPU::Int)
+    nGPU <= nVox || throw(ArgumentError("number of GPUs must not exceed number of masked voxels"))
+    nBase, nExtra = divrem(nVox, nGPU)
+    ranges = Vector{UnitRange{Int}}(undef, nGPU)
+    first_voxel = 1
+    for i = 1:nGPU
+        nLocal = nBase + (i <= nExtra)
+        ranges[i] = first_voxel:first_voxel + nLocal - 1
+        first_voxel += nLocal
+    end
+    return ranges
+end
+
+function HighOrderKernelGPUWorkspace(gpu_id::Int, voxels::UnitRange{Int}, ::Type{T}, nSam::Int, nCha::Int, nChaPad::Int, times, kspha, fieldmap, bf, csm) where {T<:AbstractFloat}
+    CUDA.device!(gpu_id)
+    nLocal = length(voxels)
+    csm_local = zeros(Complex{T}, nLocal, nChaPad)
+    @views csm_local[:, 1:nCha] .= csm[voxels, :]
+    return HighOrderKernelGPUWorkspace{T}(gpu_id, voxels, CUDA.zeros(Complex{T}, nLocal), CuArray(csm_local), CuArray(fieldmap[voxels]), CuArray(bf[voxels, :]), CuArray(times), CuArray(kspha), CUDA.zeros(Complex{T}, nSam, nChaPad), CUDA.zeros(Complex{T}, nLocal))
+end
+
+function run_highorder_gpu_tasks!(f, workspaces)
+    tasks = [Threads.@spawn begin CUDA.device!(workspace.gpu_id); f(workspace) end for workspace in workspaces]
+    foreach(fetch, tasks)
+    return nothing
+end
+
 
 """
     HighOrderOp_Kernel(grid::Grid{T}, kspha::AbstractArray{T, 2}, times::AbstractVector{T}; kwargs...)
@@ -63,9 +103,9 @@ Fourier encoding operator.
   derivative of the field-dynamic coefficients.
 * `nBlock::Int64`                       - Number of trajectory blocks used by
   the derivative path to limit temporary memory.
-* `arrayType::Type{<:AbstractArray}`     - Storage backend. The kernel
-  implementation requires `CuArray` (the default), which also makes its
-  LinearOperator storage GPU-resident.
+* `arrayType::Type{<:AbstractArray}`     - Compute backend. The kernel
+  implementation requires `CuArray` (the default); solver vectors stay on the
+  CPU while persistent workspaces execute on the selected GPUs.
 * `gpus::Vector{Int}`                   - Zero-based CUDA device IDs.
 * `verbose::Bool`                       - Print progress information; default
   is `false`.
@@ -128,45 +168,35 @@ function HighOrderOp_Kernel(
     # compute basis functions (spherical harmonics)
     bf = basisfunc_spha(grid.x[mask.!=0], grid.y[mask.!=0], grid.z[mask.!=0], collect(1:nTerm))
 
-    bf_d       = Dict{Int, CuArray{T, 2}}()
-    kspha_d    = Dict{Int, CuArray{T, 2}}()
-    times_d    = Dict{Int, CuArray{T, 1}}()
-    fieldmap_d = Dict{Int, CuArray{T, 1}}()
-    csm_d      = Dict{Int, CuArray{Complex{T}, 2}}()
-
-    for gpu_id in gpus
-        CUDA.device!(gpu_id)
-        bf_d[gpu_id]       = CuArray(bf)
-        kspha_d[gpu_id]    = CuArray(kspha)
-        times_d[gpu_id]    = CuArray(times)
-        fieldmap_d[gpu_id] = CuArray(fieldmap)
-        csm_d[gpu_id]      = CuArray(csm)
-    end
+    nVox > 0 || throw(ArgumentError("mask must contain at least one voxel"))
+    nChaPad = 32 * cld(nCha, 32)
+    ranges = split_highorder_voxel_ranges(nVox, length(gpus))
+    warn_if_insufficient_gpu_worker_threads(length(gpus); operation=:explicit_highorder_kernel)
+    workspace_tasks = [Threads.@spawn HighOrderKernelGPUWorkspace(gpus[i], ranges[i], T, nSam, nCha, nChaPad, times, kspha, fieldmap, bf, csm) for i in eachindex(gpus)]
+    workspaces = HighOrderKernelGPUWorkspace{T}[fetch(task) for task in workspace_tasks]
+    forward_partial = zeros(Complex{T}, nSam, nCha)
 
     if isnothing(kspha_dt)
         func_prod = (res,xm)->begin
-            values = prod_HighOrderOp_Kernel(xm, mask, csm_d, times_d, fieldmap_d, bf_d, kspha_d, nSam, nCha, nTerm, nVox; gpus=gpus, verbose=verbose)
-            copyto!(res, CuArray(values))
+            values = prod_HighOrderOp_Kernel(xm, mask, workspaces, forward_partial, nSam, nCha, nTerm, nVox; verbose=verbose)
+            copyto!(res, values)
             res
         end
     else # for calculation of Bx (2023, https://doi.org/10.1002/mrm.29460)
         @assert size(kspha_dt) == size(kspha) "kspha_dt must have same size as kspha"
         func_prod = (res,xm)->begin
             values = prod_dt_HighOrderOp(xm, mask, bf, nVox, nSam, nCha, kspha, kspha_dt, times, fieldmap, csm; nBlock=nBlock, parts=parts, use_gpu=false, verbose=verbose)
-            copyto!(res, CuArray(values))
+            copyto!(res, values)
             res
         end
     end
     func_ctprod = (res,ym)->begin
-        values = ctprod_HighOrderOp_Kernel(ym, mask, csm_d, times_d, fieldmap_d, bf_d, kspha_d, nSam, nCha, nTerm, nVox; gpus=gpus, verbose=verbose)
-        copyto!(res, CuArray(values))
+        values = ctprod_HighOrderOp_Kernel(ym, mask, workspaces, nSam, nCha, nTerm, nVox; verbose=verbose)
+        copyto!(res, values)
         res
     end
 
-    # Match the LinearOperator storage with the primary GPU expected by
-    # callers and by GPU-resident weighting/data vectors.
-    CUDA.device!(first(gpus))
-    Mv = Mtu = CuArray(Vector{Complex{T}}(undef, 0))
+    Mv = Mtu = Vector{Complex{T}}(undef, 0)
     
     return HighOrderOp_Kernel{Complex{T},Nothing,Function,typeof(Mv)}(
                         nRow, nCol, 
@@ -181,65 +211,33 @@ end
     Forward operator for HighOrderOp_Kernel
 """
 function prod_HighOrderOp_Kernel(
-    x         :: AbstractVector{T}                         ,   # [prod(MatrixSize)] 
-    mask      :: AbstractVector{Bool}                      ,   # [prod(MatrixSize)]
-    csm       :: Dict{Int, <:AbstractArray{Complex{D}, 2}} ,   # [nVox, nCha]
-    times     :: Dict{Int, <:AbstractVector{D}}            ,   # [nSam] 
-    fieldmap  :: Dict{Int, <:AbstractVector{D}}            ,   # [nVox]
-    bf        :: Dict{Int, <:AbstractArray{D, 2}}          ,   # [nVox, nTerm]
-    kspha     :: Dict{Int, <:AbstractArray{D, 2}}          ,   # [nTerm, nSam] 
-    nSam      :: Int64                                     , 
-    nCha      :: Int64                                     ,
-    nTerm     :: Int64                                     ,
-    nVox      :: Int64                                     ;
-    gpus      :: Vector{Int} = [0]                         ,
-    verbose   :: Bool = false                              ,
+    x               :: AbstractVector{T},
+    mask            :: AbstractVector{Bool},
+    workspaces      :: AbstractVector{<:HighOrderKernelGPUWorkspace{D}},
+    forward_partial :: Matrix{Complex{D}},
+    nSam            :: Int64,
+    nCha            :: Int64,
+    nTerm           :: Int64,
+    nVox            :: Int64;
+    verbose         :: Bool = false,
     ) where {D<:AbstractFloat, T<:Union{Real,Complex}}
-    if verbose
-        @info "HighOrderOp: Kernel-based prod"
-    end
+    if verbose @info "HighOrderOp: Kernel-based prod" end
     t_total = @elapsed begin
-        x = Vector(x)[mask.!=0]
-
+        x_masked = Vector(x)[mask]
         out = zeros(Complex{D}, nSam, nCha)
-        nGPU = length(gpus)
-        nSamplePerGPU = cld(nSam, nGPU)
-        tasks = []
-
-        for (i, gpu_id) in enumerate(gpus)
-            i_s = (i-1)*nSamplePerGPU + 1
-            i_e = min(i*nSamplePerGPU, nSam)
-            if i_s > nSam
-                continue
-            end
-
-            push!(tasks, Threads.@spawn begin
-                CUDA.device!(gpu_id)
-                
-                x_i        = x |> gpu
-                csm_i      = csm[gpu_id] 
-                times_i    = @view times[gpu_id][i_s:i_e] 
-                fieldmap_i = fieldmap[gpu_id]
-                bf_i       = bf[gpu_id]
-                kspha_i    = @view kspha[gpu_id][:, i_s:i_e]
-                out_i      = CUDA.zeros(Complex{D}, i_e-i_s+1, nCha)
-
-                CUDA.@sync out_i = HighOrderMRI.run_kernel_prod!(
-                    out_i, x_i, csm_i, times_i, fieldmap_i, bf_i, kspha_i,
-                    i_e-i_s+1, nCha, nTerm, nVox)
-                out[i_s:i_e, :] .= Array(out_i)
-            end)
+        run_highorder_gpu_tasks!(workspaces) do workspace
+            copyto!(workspace.x, 1, x_masked, first(workspace.voxels), length(workspace.voxels))
+            run_kernel_prod_workspace!(workspace.signal, workspace.x, workspace.csm, workspace.times, workspace.fieldmap, workspace.bf, workspace.kspha, nSam, nCha, nTerm, length(workspace.voxels))
+            CUDA.device_synchronize(; blocking=true)
         end
-
-        for t in tasks
-            fetch(t)
+        for workspace in workspaces
+            CUDA.device!(workspace.gpu_id)
+            copyto!(forward_partial, 1, workspace.signal, 1, length(forward_partial))
+            out .+= forward_partial
         end
-
         out ./= sqrt(nVox)
     end
-    if verbose
-        println("runtime: $(round(t_total, digits=5)) [s]")
-    end
+    if verbose println("runtime: $(round(t_total, digits=5)) [s]") end
     return vec(out)
 end
 
@@ -248,69 +246,31 @@ end
     Adjoint of prod_HighOrderOp_Kernel
 """
 function ctprod_HighOrderOp_Kernel(
-    y         :: AbstractVector{T}                         ,   # [nSam, nCha] 
-    mask      :: AbstractVector{Bool}                      ,   # [prod(MatrixSize)]
-    csm       :: Dict{Int, <:AbstractArray{Complex{D}, 2}} ,   # [nVox, nCha] 
-    times     :: Dict{Int, <:AbstractVector{D}}            ,   # [nSam] 
-    fieldmap  :: Dict{Int, <:AbstractVector{D}}            ,   # [nVox]
-    bf        :: Dict{Int, <:AbstractArray{D, 2}}          ,   # [nVox, nTerm]
-    kspha     :: Dict{Int, <:AbstractArray{D, 2}}          ,   # [nTerm, nSam] 
-    nSam      :: Int64                                     , 
-    nCha      :: Int64                                     ,
-    nTerm     :: Int64                                     ,
-    nVox      :: Int64                                     ;
-    gpus      :: Vector{Int} = [0]                         ,
-    verbose   :: Bool = false                              ,
+    y          :: AbstractVector{T},
+    mask       :: AbstractVector{Bool},
+    workspaces :: AbstractVector{<:HighOrderKernelGPUWorkspace{D}},
+    nSam       :: Int64,
+    nCha       :: Int64,
+    nTerm      :: Int64,
+    nVox       :: Int64;
+    verbose    :: Bool = false,
     ) where {D<:AbstractFloat, T<:Union{Real,Complex}}
-    if verbose
-        @info "HighOrderOp: Kernel-based ctprod"
-    end
+    if verbose @info "HighOrderOp: Kernel-based ctprod" end
     t_total = @elapsed begin
-        csmC = conj.(Array(csm[first(keys(csm))]))
-        y    = reshape(y, nSam, nCha)
-
-        out = zeros(Complex{D}, nVox, nCha)
-        nGPU = length(gpus)
-        nVoxPerGPU = cld(nVox, nGPU)
-        tasks = []
-
-        for (i, gpu_id) in enumerate(gpus)
-            i_s = (i-1)*nVoxPerGPU + 1
-            i_e = min(i*nVoxPerGPU, nVox)
-            if i_s > nVox
-                continue
-            end
-
-            push!(tasks, Threads.@spawn begin
-                CUDA.device!(gpu_id)
-                
-                y_i        = y |> gpu
-                csm_i      = @view csm[gpu_id][i_s:i_e, :]
-                times_i    = times[gpu_id]
-                fieldmap_i = @view fieldmap[gpu_id][i_s:i_e]
-                bf_i       = @view bf[gpu_id][i_s:i_e, :]
-                kspha_i    = kspha[gpu_id]
-                out_i      = CUDA.zeros(Complex{D}, i_e-i_s+1, nCha)
-
-                CUDA.@sync out_i = run_kernel_ctprod!(
-                    out_i, y_i, csm_i, times_i, fieldmap_i, bf_i, kspha_i,
-                    nSam, nCha, nTerm, i_e-i_s+1)
-                out[i_s:i_e, :] .= Array(out_i)
-            end)
+        y_matrix = reshape(y, nSam, nCha)
+        x_masked = zeros(Complex{D}, nVox)
+        run_highorder_gpu_tasks!(workspaces) do workspace
+            fill!(workspace.signal, zero(Complex{D}))
+            copyto!(workspace.signal, 1, y_matrix, 1, length(y_matrix))
+            run_kernel_ctprod!(workspace.image, workspace.signal, workspace.csm, workspace.times, workspace.fieldmap, workspace.bf, workspace.kspha, nSam, nCha, nTerm, length(workspace.voxels))
+            CUDA.device_synchronize(; blocking=true)
+            copyto!(x_masked, first(workspace.voxels), workspace.image, 1, length(workspace.voxels))
         end
-
-        for t in tasks
-            fetch(t)
-        end
-
-        out = out ./ sqrt(nVox)
-        out = out .* csmC
+        x_masked ./= sqrt(nVox)
     end
-    if verbose
-        println("runtime: $(round(t_total, digits=5)) [s]")
-    end
+    if verbose println("runtime: $(round(t_total, digits=5)) [s]") end
     x = zeros(Complex{D}, size(mask))
-    x[mask] .= vec(sum(out, dims=2))
+    x[mask] .= x_masked
     return x
 end
 

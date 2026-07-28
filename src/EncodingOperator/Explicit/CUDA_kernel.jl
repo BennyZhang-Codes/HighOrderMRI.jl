@@ -38,46 +38,36 @@ function run_kernel_prod!(
     return out[:, 1:nCha-nCha_pad]
 end
 
+function run_kernel_prod_workspace!(out, x, csm, times, fieldmap, bf, kspha, nSam::D, nCha::D, nTerm::D, nVox::D) where {D<:Integer}
+    threads = 256
+    blocks = nSam
+    shmem_bytes = nTerm * sizeof(eltype(fieldmap)) + 32 * cld(threads, 32) * sizeof(eltype(fieldmap)) * 2
+    for i = 1:cld(nCha, 32)
+        channels = (i - 1) * 32 + 1:i * 32
+        @cuda threads=threads blocks=blocks shmem=shmem_bytes CUDA_kernel_prod_HighOrderOp!(@view(out[:, channels]), x, @view(csm[:, channels]), times, fieldmap, bf, kspha, Int32(nSam), Int32(32), Int32(nTerm), Int32(nVox))
+    end
+    return out
+end
+
 function run_kernel_ctprod!(
-    out      ::CuMatrix{Complex{T}}      ,   # [nVox, nCha]
+    out      ::CuVector{Complex{T}}      ,   # [nVox]
     y        ::CuMatrix{Complex{T}}      ,   # [nSam, nCha]  
-    csm      ::AbstractMatrix{Complex{T}},   # [nVox, nCha]
+    csm      ::CuMatrix{Complex{T}}      ,   # [nVox, nCha]
     times    ::CuVector{T}               ,   # [nSam]
-    fieldmap ::AbstractVector{T}         ,   # [nVox]
-    bf       ::AbstractMatrix{T}         ,   # [nVox, nTerm]
+    fieldmap ::CuVector{T}               ,   # [nVox]
+    bf       ::CuMatrix{T}               ,   # [nVox, nTerm]
     kspha    ::CuMatrix{T}               ,   # [nTerm, nSam]
     nSam::D, nCha::D, nTerm::D, nVox::D,
     ) where {T<:AbstractFloat, D<:Integer}
-    threads = (512) 
-    blocks = (cld(nVox, 1))
-    shmem_bytes = nTerm * sizeof(T) + 32 * cld(threads[1],32) * sizeof(T) * 2
-
-    nCha_pad = 0
-    nBatch = 1
-    if nCha % 32  == 0
-        nBatch = nCha ÷ 32
-    else
-        nBatch = nCha ÷ 32 + 1
-        nCha_pad = nBatch * 32 - nCha
-        nCha = nBatch * 32
+    threads = 512
+    blocks = nVox
+    shmem_bytes = nTerm * sizeof(T) + 32 * cld(threads, 32) * sizeof(T) * 2
+    fill!(out, zero(Complex{T}))
+    for i = 1:cld(nCha, 32)
+        channels = (i - 1) * 32 + 1:i * 32
+        @cuda threads=threads blocks=blocks shmem=shmem_bytes CUDA_kernel_ctprod_HighOrderOp!(out, @view(y[:, channels]), @view(csm[:, channels]), times, fieldmap, bf, kspha, Int32(nSam), Int32(32), Int32(nTerm), Int32(nVox))
     end
-
-    if nCha_pad > 0
-        out = cat(out, zeros(Complex{T}, size(out, 1), nCha_pad); dims=2)
-          y = cat(  y, zeros(Complex{T}, size(  y, 1), nCha_pad); dims=2)
-        # csm = cat(csm, zeros(Complex{T}, size(csm, 1), nCha_pad); dims=2)
-    end
-
-    for i = 1:nBatch
-        ch_start = (i-1) * 32 + 1
-        ch_end   = i * 32
-        @cuda threads=threads blocks=blocks shmem=shmem_bytes CUDA_kernel_ctprod_HighOrderOp!(
-            @view(out[:, ch_start:ch_end]), @view(y[:, ch_start:ch_end]), csm, times, fieldmap, bf, kspha, 
-            Int32(nSam), Int32(32), Int32(nTerm), Int32(nVox));
-    end
-
-    return out[:, 1:nCha-nCha_pad]
-    # @cuda threads=threads blocks=blocks shmem=shmem_bytes CUDA_kernel_ctprod_HighOrderOp!(out, y, csm, times, fieldmap, bf, kspha, Int32(nSam), Int32(nCha), Int32(nTerm), Int32(nVox));
+    return out
 end
 
 
@@ -387,9 +377,9 @@ end
 
 
 function CUDA_kernel_ctprod_HighOrderOp!(
-    out      ::CuDeviceMatrix{Complex{T}},   # [nVox, nCha]
+    out      ::CuDeviceVector{Complex{T}},   # [nVox]
     y        ::CuDeviceMatrix{Complex{T}},   # [nSam, nCha]
-    csm      ::AbstractMatrix{Complex{T}},   # [nVox, nCha]
+    csm      ::CuDeviceMatrix{Complex{T}},   # [nVox, nCha]
     times    ::CuDeviceVector{T}         ,   # [nSam]
     fieldmap ::AbstractVector{T}         ,   # [nVox]
     bf       ::AbstractMatrix{T}         ,   # [nVox, nTerm]
@@ -653,16 +643,28 @@ function CUDA_kernel_ctprod_HighOrderOp!(
     
         sync_threads()
 
-        icha = tid
-        while icha <= nCha
+        weighted_r = zero(T)
+        weighted_i = zero(T)
+        if tid <= nCha
             out_r = zero(T)
             out_i = zero(T)
-            for iwarp = 0:nWarp-1
-                @inbounds out_r += s_r[iwarp*nCha + icha]
-                @inbounds out_i += s_i[iwarp*nCha + icha]
+            for jwarp = 0:nWarp-1
+                @inbounds out_r += s_r[jwarp*nCha + tid]
+                @inbounds out_i += s_i[jwarp*nCha + tid]
             end
-            @inbounds out[ivox, icha] = Complex(out_r, out_i)
-            icha += stride
+            @inbounds csm_r, csm_i = reim(csm[ivox, tid])
+            weighted_r = out_r * csm_r + out_i * csm_i
+            weighted_i = out_i * csm_r - out_r * csm_i
+        end
+        if iwarp == 0
+            @inbounds for k = 0:4
+                offset = Int32(1 << k)
+                weighted_r += CUDA.shfl_down_sync(0xffffffff, weighted_r, offset, 32)
+                weighted_i += CUDA.shfl_down_sync(0xffffffff, weighted_i, offset, 32)
+            end
+            if lane == 0
+                @inbounds out[ivox] += Complex(weighted_r, weighted_i)
+            end
         end
     end
     return

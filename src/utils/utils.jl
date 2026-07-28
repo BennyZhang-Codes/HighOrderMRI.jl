@@ -15,6 +15,9 @@ export imresize_real, imresize_complex
 include("conversion.jl")
 export grad2traj, traj2grad
 
+include("io.jl")
+export struct_to_dict
+
 """
     factor_a, factor_b = get_factors(num::Int64)
 

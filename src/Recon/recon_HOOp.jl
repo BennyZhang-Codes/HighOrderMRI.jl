@@ -52,13 +52,7 @@ function recon_HOOp(
         W = WeightingOp(Complex{T}; weights=weight, rep=nCha)
         E = ∘(W, HOOp)
         EᴴE = normalOperator(E)
-        solver = createLinearSolver(
-            recParams[:solver],
-            E;
-            AHA=EᴴE,
-            reg=recParams[:reg],
-            recoParams...,
-        )
+        solver = createLinearSolver(recParams[:solver], E; AHA=EᴴE, reg=recParams[:reg], recoParams...,)
         x = solve!(solver, Data)
         return reshape(x, recParams[:reconSize])
     finally
