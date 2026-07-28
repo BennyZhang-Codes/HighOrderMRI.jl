@@ -77,6 +77,30 @@ function Geometry(
     )
 end
 
+
+function Geometry(
+    d::AbstractDict;
+    T::Type{<:AbstractFloat} = Float64,
+    D::Type{<:Integer} = Int,
+)
+    _scalar = x -> x isa AbstractArray ? only(x) : x
+    
+    Geometry{T,D}(
+        String(_scalar(d["SystemVendor"])),
+        D(_scalar(d["Dimension"])),
+        T.(vec(d["FOV"])),
+        D.(vec(d["MatrixSize"])),
+        String(_scalar(d["PatientPosition"])),
+        T.(vec(d["T_PCS"])),
+        T.(vec(d["T_DCS"])),
+        T.(d["R_RPS_PCS"]),
+        T.(d["R_PCS_DCS"]),
+        T.(d["R_RPS_DCS"]),
+        T.(d["R_Nominal_RPS"]),
+        D(_scalar(d["Idx_Slice"])),
+    )
+end
+
 Base.show(io::IO, geo::Geometry{T, D}) where {T, D} = begin
     println(io, ">>> Geometry{$T, $D} <<<")
     println(io, "SystemVendor    : ", geo.SystemVendor              )

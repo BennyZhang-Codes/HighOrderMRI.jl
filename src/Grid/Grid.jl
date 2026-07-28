@@ -4,14 +4,14 @@ Base.@kwdef struct Grid{T<:AbstractFloat}
     nX::Int64 = 0
     nY::Int64 = 0
     nZ::Int64 = 0
-    Δx::Real = 1.0
-    Δy::Real = 1.0
-    Δz::Real = 1.0
-    x::AbstractVector{T} = [0.]
-    y::AbstractVector{T} = [0.]
-    z::AbstractVector{T} = [0.]
-    matrixSize::Tuple{Int64,Int64,Int64} = (nX, nY, nZ)
-    resolution::Tuple{Real,Real,Real} = (Δx, Δy, Δz)
+    Δx::T = one(T)
+    Δy::T = one(T)
+    Δz::T = one(T)
+    x::AbstractVector{T} = T[0]
+    y::AbstractVector{T} = T[0]
+    z::AbstractVector{T} = T[0]
+    matrixSize::NTuple{3,Int64} = (nX, nY, nZ)
+    resolution::NTuple{3,T} = (Δx, Δy, Δz)
 end
 
 @functor Grid
@@ -57,6 +57,47 @@ function Grid(
     return Grid(nX=nX, nY=nY, nZ=nZ, Δx=Δx, Δy=Δy, Δz=Δz, x=T.(x), y=T.(y), z=T.(z))
 end
 
+struct_to_dict(grid::Grid) = Dict(
+    "schema_version" => 1,
+    "nX" => grid.nX,
+    "nY" => grid.nY,
+    "nZ" => grid.nZ,
+    "delta_x" => grid.Δx,
+    "delta_y" => grid.Δy,
+    "delta_z" => grid.Δz,
+    "x" => Array(grid.x),
+    "y" => Array(grid.y),
+    "z" => Array(grid.z),
+    "matrix_size" => collect(grid.matrixSize),
+    "resolution" => collect(grid.resolution),
+)
 
+function Grid(
+    d::AbstractDict;
+    T::Type{<:AbstractFloat}=Float64,
+)
+    _scalar = x -> x isa AbstractArray ? only(x) : x
+
+    nX = Int64(_scalar(d["nX"]))
+    nY = Int64(_scalar(d["nY"]))
+    nZ = Int64(_scalar(d["nZ"]))
+    Δx = T(_scalar(d["delta_x"]))
+    Δy = T(_scalar(d["delta_y"]))
+    Δz = T(_scalar(d["delta_z"]))
+
+    return Grid{T}(
+        nX=nX,
+        nY=nY,
+        nZ=nZ,
+        Δx=Δx,
+        Δy=Δy,
+        Δz=Δz,
+        x=T.(vec(d["x"])),
+        y=T.(vec(d["y"])),
+        z=T.(vec(d["z"])),
+        matrixSize=(nX, nY, nZ),
+        resolution=(Δx, Δy, Δz),
+    )
+end
 
 
