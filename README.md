@@ -36,10 +36,11 @@ contains:
 
 ## Installation
 
-HighOrderMRI.jl supports Julia 1.10 or later. CI tests both Julia 1.10 LTS and
-the latest stable Julia 1.x release; the documentation is also built with the
-latest stable release. The repository currently carries `MRIGeometry` as a
-local subpackage, so clone the complete repository:
+HighOrderMRI.jl requires Julia 1.12 or later. CI tests both the minimum
+supported Julia 1.12 release and the latest stable Julia 1.x release; the
+documentation is also built with the latest stable release. The repository
+currently carries `MRIGeometry` as a local subpackage, so clone the complete
+repository:
 
 ```bash
 git clone https://github.com/BennyZhang-Codes/HighOrderMRI.jl.git

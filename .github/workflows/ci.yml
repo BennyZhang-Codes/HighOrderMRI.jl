@@ -30,8 +30,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - julia-version: "1.10"
-            label: "1.10 LTS"
+          - julia-version: "1.12"
+            label: "minimum supported"
           - julia-version: "1"
             label: "latest stable"
 
@@ -46,7 +46,6 @@ jobs:
         shell: julia --color=yes --project=. {0}
         run: |
           using Pkg
-          Pkg.develop(PackageSpec(path=joinpath(pwd(), "MRIGeometry")))
           Pkg.instantiate(; allow_autoprecomp=false)
           Pkg.build("Conda")
           ENV["PYTHON"] = ""
