@@ -4,5 +4,6 @@ debug
 results
 
 # Documenter.jl build products and local documentation environments
+/Manifest.toml
 docs/build/
 docs/Manifest.toml

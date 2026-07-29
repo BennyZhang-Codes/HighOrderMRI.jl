@@ -1,5 +1,6 @@
 # HighOrderMRI.jl
 
+[![CI](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/actions/workflows/ci.yml)
 [![Documentation](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/actions/workflows/documentation.yml/badge.svg?branch=main)](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/actions/workflows/documentation.yml)
 [![Dev docs](https://img.shields.io/badge/docs-dev-blue.svg)](https://bennyzhang-codes.github.io/HighOrderMRI.jl/dev/)
 
@@ -35,9 +36,10 @@ contains:
 
 ## Installation
 
-HighOrderMRI.jl requires Julia 1.10 or later and currently carries
-`MRIGeometry` in the same repository. Clone the repository so the local
-subpackage path in the manifest is available:
+HighOrderMRI.jl supports Julia 1.10 or later. CI tests both Julia 1.10 LTS and
+the latest stable Julia 1.x release; the documentation is also built with the
+latest stable release. The repository currently carries `MRIGeometry` as a
+local subpackage, so clone the complete repository:
 
 ```bash
 git clone https://github.com/BennyZhang-Codes/HighOrderMRI.jl.git

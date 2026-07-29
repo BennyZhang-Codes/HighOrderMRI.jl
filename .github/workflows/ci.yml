@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - dev_jinyuan
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  JULIA_NUM_THREADS: auto
+  JULIA_PKG_PRECOMPILE_AUTO: "0"
+
+jobs:
+  test:
+    name: Julia ${{ matrix.label }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - julia-version: "1.10"
+            label: "1.10 LTS"
+          - julia-version: "1"
+            label: "latest stable"
+
+    steps:
+      - uses: actions/checkout@v7
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: ${{ matrix.julia-version }}
+          show-versioninfo: "true"
+      - uses: julia-actions/cache@v3
+      - name: Instantiate test environment
+        shell: julia --color=yes --project=. {0}
+        run: |
+          using Pkg
+          Pkg.develop(PackageSpec(path=joinpath(pwd(), "MRIGeometry")))
+          Pkg.instantiate(; allow_autoprecomp=false)
+          Pkg.build("Conda")
+          ENV["PYTHON"] = ""
+          Pkg.build("PyCall")
+          Pkg.status()
+      - name: Run test suite
+        run: julia --color=yes --project=. -e 'using Pkg; Pkg.test()'
