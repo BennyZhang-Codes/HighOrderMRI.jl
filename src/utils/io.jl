@@ -1,0 +1,1 @@
+struct_to_dict(x) = Dict(string(name) => getfield(x, name) for name in fieldnames(typeof(x)))

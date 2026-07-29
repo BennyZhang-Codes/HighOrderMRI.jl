@@ -198,6 +198,9 @@ function local_highorder_normal!(shard::MultiGPUHighOrderNormalShard{T}) where {
             @views @. workspace.k_channel += workspace.k_signal * shard.q[:, r]
         end
 
+        # q already contains the forward factor 1/sqrt(nVox); using q and
+        # conj(q) in this fused path therefore supplies the normal operator's
+        # combined 1/nVox factor without an additional runtime scale.
         @. workspace.k_channel *= shard.weights2
 
         for r = 1:shared_rank

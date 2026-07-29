@@ -95,9 +95,9 @@ function FindDelay(
         
         weight = SampleDensity(kspha_τ[2:3,:], (gridding.nX, gridding.nY));
         HOOp    = HighOrderOp(gridding, kspha_τ, datatime; recon_terms=recon_terms, 
-                    nBlock=nBlock, csm=csm, fieldmap=fieldmap, use_gpu=use_gpu, verbose=verbose);
+                    nBlock=nBlock, csm=csm, fieldmap=fieldmap, arrayType=(use_gpu ? CuArray : Array), verbose=verbose);
         HOOp_dt = HighOrderOp(gridding, kspha_τ, datatime; recon_terms=recon_terms, kspha_dt=kspha_dt_τ, 
-                    nBlock=nBlock, csm=csm, fieldmap=fieldmap, use_gpu=use_gpu, verbose=verbose);
+                    nBlock=nBlock, csm=csm, fieldmap=fieldmap, arrayType=(use_gpu ? CuArray : Array), verbose=verbose);
         
         # Update image
         x = recon_HOOp(HOOp, data, weight, recParams)
