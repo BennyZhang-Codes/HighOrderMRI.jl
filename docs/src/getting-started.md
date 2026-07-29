@@ -2,7 +2,8 @@
 
 ## Requirements
 
-- Julia 1.10 or later;
+- Julia 1.12 or later (CI tests the minimum supported Julia 1.12 release and
+  the latest stable Julia 1.x release);
 - an NVIDIA GPU and a functional CUDA.jl installation for CUDA paths;
 - enough host and device memory for the selected operator, mask, and coil
   count.

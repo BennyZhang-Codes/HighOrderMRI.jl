@@ -1,51 +1,57 @@
-name: Documentation
+name: CI
 
 on:
   push:
     branches:
       - main
-    tags:
-      - "v*"
+      - dev_jinyuan
   pull_request:
     branches:
       - main
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: docs-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
   JULIA_NUM_THREADS: auto
   JULIA_PKG_PRECOMPILE_AUTO: "0"
-  DOCUMENTER_DEVBRANCH: main
 
 jobs:
-  docs:
-    name: Build and deploy
+  test:
+    name: Julia ${{ matrix.label }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - julia-version: "1.12"
+            label: "minimum supported"
+          - julia-version: "1"
+            label: "latest stable"
+
     steps:
       - uses: actions/checkout@v7
       - uses: julia-actions/setup-julia@v3
         with:
-          version: "1"
+          version: ${{ matrix.julia-version }}
           show-versioninfo: "true"
       - uses: julia-actions/cache@v3
         with:
           delete-old-caches: false
-      - name: Instantiate documentation environment
-        shell: julia --color=yes --project=docs {0}
+      - name: Instantiate test environment
+        shell: julia --color=yes --project=. {0}
         run: |
           using Pkg
           Pkg.instantiate(; allow_autoprecomp=false)
           Pkg.build("Conda")
           ENV["PYTHON"] = ""
           Pkg.build("PyCall")
-      - name: Build documentation
-        run: julia --color=yes --project=docs docs/make.jl
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          Pkg.status()
+      - name: Run test suite
+        run: julia --color=yes --project=. -e 'using Pkg; Pkg.test()'
