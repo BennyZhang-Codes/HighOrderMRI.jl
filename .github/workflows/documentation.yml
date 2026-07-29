@@ -35,6 +35,8 @@ jobs:
           version: "1"
           show-versioninfo: "true"
       - uses: julia-actions/cache@v3
+        with:
+          delete-old-caches: false
       - name: Instantiate documentation environment
         shell: julia --color=yes --project=docs {0}
         run: |

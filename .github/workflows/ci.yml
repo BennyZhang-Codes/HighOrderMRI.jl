@@ -42,6 +42,8 @@ jobs:
           version: ${{ matrix.julia-version }}
           show-versioninfo: "true"
       - uses: julia-actions/cache@v3
+        with:
+          delete-old-caches: false
       - name: Instantiate test environment
         shell: julia --color=yes --project=. {0}
         run: |
