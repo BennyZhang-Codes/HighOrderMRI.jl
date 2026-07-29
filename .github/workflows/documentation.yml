@@ -43,6 +43,8 @@ jobs:
               PackageSpec(path=joinpath(pwd(), "MRIGeometry")),
           ])
           Pkg.instantiate(; allow_autoprecomp=false)
+          Pkg.build("Conda")
+          Pkg.build("PyCall")
       - name: Build documentation
         run: julia --color=yes --project=docs docs/make.jl
         env:
