@@ -44,6 +44,7 @@ jobs:
           ])
           Pkg.instantiate(; allow_autoprecomp=false)
           Pkg.build("Conda")
+          ENV["PYTHON"] = ""
           Pkg.build("PyCall")
       - name: Build documentation
         run: julia --color=yes --project=docs docs/make.jl
