@@ -20,6 +20,7 @@ concurrency:
 
 env:
   JULIA_NUM_THREADS: auto
+  JULIA_PKG_PRECOMPILE_AUTO: "0"
   DOCUMENTER_DEVBRANCH: main
 
 jobs:
@@ -41,7 +42,7 @@ jobs:
               PackageSpec(path=pwd()),
               PackageSpec(path=joinpath(pwd(), "MRIGeometry")),
           ])
-          Pkg.instantiate()
+          Pkg.instantiate(; allow_autoprecomp=false)
       - name: Build documentation
         run: julia --color=yes --project=docs docs/make.jl
         env:
