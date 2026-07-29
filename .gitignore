@@ -2,3 +2,7 @@
 
 debug
 results
+
+# Documenter.jl build products and local documentation environments
+docs/build/
+docs/Manifest.toml

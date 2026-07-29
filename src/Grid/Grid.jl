@@ -1,5 +1,24 @@
 
 export Grid
+
+"""
+    Grid(nX, nY, nZ, Δx, Δy, Δz;
+         exchange_xy=false,
+         reverse_x=false,
+         reverse_y=false,
+         reverse_z=false)
+
+Create the physical Cartesian reconstruction grid used by the high-order
+encoding operators.
+
+Voxel centres along an axis of length `N` and spacing `Δ` follow
+`r[i] = (i - (N + 1) / 2) * Δ`. Odd dimensions therefore contain a voxel at
+zero, while even dimensions are centred on half-voxel coordinates.
+
+`exchange_xy` and the `reverse_*` keywords transform the coordinate vectors
+only. Apply the same transformations to images, masks, field maps, and coil
+sensitivity maps before constructing an encoding operator.
+"""
 Base.@kwdef struct Grid{T<:AbstractFloat}
     nX::Int64 = 0
     nY::Int64 = 0
@@ -99,5 +118,4 @@ function Grid(
         resolution=(Δx, Δy, Δz),
     )
 end
-
 

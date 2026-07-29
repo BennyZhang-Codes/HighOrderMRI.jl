@@ -32,6 +32,15 @@ struct sphericalharmonic
 end
 Base.show(io::IO, s::sphericalharmonic) = print(io, s.name, " [", s.unit, "] = ", s.expression)
 
+"""
+    SphericalHarmonics()
+
+Return metadata for the 16 unnormalized real solid-harmonic basis functions
+used by HighOrderMRI, including their names, instantaneous field units,
+time-integrated coefficient units, expressions, and plotting colours.
+
+The numerical encoding basis is evaluated by [`basisfunc_spha`](@ref).
+"""
 Base.@kwdef struct SphericalHarmonics
     h0  :: sphericalharmonic = sphericalharmonic("h0" ,    "T",    "",                    "1", "#5f4690")
     h1  :: sphericalharmonic = sphericalharmonic("h1" ,  "T/m", "m⁻¹",                    "x", "#1d6996")

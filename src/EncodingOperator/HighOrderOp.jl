@@ -29,20 +29,20 @@ LinearOperators.storage_type(op::HighOrderOp) = typeof(op.Mv)
     HighOrderOp(grid::Grid{T}, kspha::AbstractArray{T, 2}, times::AbstractVector{T}; kwargs...)
 
 # Description
-    generates a `HighOrderOp` which explicitely evaluates the MRI Fourier HighOrder encoding operator.
+    Generates a `HighOrderOp` that explicitly evaluates the MRI high-order encoding operator.
 
 # Arguments:
 * `grid::Grid{T}`                   - grid object.
-* `kspha::AbstractArray{T, 2}`      - [nSam, nTerm], Coefficients of field dynamics.
+* `kspha::AbstractArray{T, 2}`      - [nTerm, nSam], coefficients of field dynamics.
 * `times::AbstractVector{T}`        - [nSam], time points for trajectory.
 
 # Keywords:
-* `fieldmap::Matrix{T}`             - [nX, nY, nZ], fieldmap for off-resonance correction.
-* `csm::Array{Complex{T}, 3}`       - [nX, nY, nZ, nCha], coil sensitivity map.
-* `mask::AbstractArray{Bool, 2}`    - [nX, nY, nZ], mask for target recon region.
+* `fieldmap::AbstractArray{T}`      - [nX, nY, nZ], fieldmap for off-resonance correction.
+* `csm::AbstractArray{Complex{T}}`  - [nX, nY, nZ, nCha], coil sensitivity map.
+* `mask::AbstractArray{Bool}`       - [nX, nY, nZ], mask for target reconstruction region.
 * `recon_terms::String`             - digits flag (e.g. "1111") to indicate terms to be used in the HOOp.
-* `k_nominal::AbstractArray{T, 2}`  - [nSam, 3], nominal kspace trajectory.
-* `kspha_dt`                        - [nSam, nTerm], time-derivative of the coefficients of field dynamics.
+* `k_nominal::AbstractArray{T, 2}`  - [3, nSam], nominal k-space trajectory.
+* `kspha_dt`                        - [nTerm, nSam], time derivative of the field coefficients.
 * `nBlock::Int64`                   - split trajectory into `nBlock` blocks to avoid memory overflow.
 * `arrayType::Type{<:AbstractArray}` - Operator storage and execution backend:
   `CuArray` (default) or `Array`.
