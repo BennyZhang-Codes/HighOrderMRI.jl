@@ -2,6 +2,9 @@
 # get sampling density
 include("SampleDensity/SampleDensity.jl")
 
+# coil compression shared by every encoding operator
+include("CoilCompression.jl")
+
 #
 include("InhomogeneityData.jl")
 

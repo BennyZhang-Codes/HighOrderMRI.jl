@@ -54,7 +54,7 @@ function recon_HOOp(
         EᴴE = normalOperator(E)
         solver = createLinearSolver(recParams[:solver], E; AHA=EᴴE, reg=recParams[:reg], recoParams...,)
         x = solve!(solver, Data)
-        return reshape(x, recParams[:reconSize])
+        return Array(reshape(x, recParams[:reconSize]))
     finally
         if release_backend && HOOp isa HighOrderLowRankOp
             release_highorder_normal_backend!(HOOp)

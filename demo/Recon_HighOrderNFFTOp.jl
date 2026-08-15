@@ -50,8 +50,8 @@ nX, nY, nZ    = matrixSize;
 gridding      = Grid(nX, nY, nZ, Δx, Δy, Δz; exchange_xy=true, reverse_x=false, reverse_y=true)
 
 # 2. sampling density 
-weightMeasured = SampleDensity(ksphaMeasured'[2:3,:], (nX, nY));
-weightNominal  = SampleDensity( ksphaNominal'[2:3,:], (nX, nY));
+weightMeasured = samplingDensity(ksphaMeasured'[2:3,:], (nX, nY));
+weightNominal  = samplingDensity( ksphaNominal'[2:3,:], (nX, nY));
 
 
 ## recon with field dynamics measured by Dynamic Field Camera
