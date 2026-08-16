@@ -65,7 +65,7 @@ end
 function activate_operator_device!(op)
     storage = if op isa HighOrderLowRankOp
         op.q
-    elseif op isa HighOrderOp_Kernel
+    elseif op isa HighOrderKernelOp
         op.Mv
     else
         nothing
@@ -83,7 +83,7 @@ function weighted_residual(op, x, data, weight)
     # then perform the scalar residual calculation entirely on the host.
     x_input = vec(x)
     storage = op isa HighOrderLowRankOp ? op.q :
-              op isa HighOrderOp_Kernel ? op.Mv : nothing
+              op isa HighOrderKernelOp ? op.Mv : nothing
     if storage isa CuArray && !(x_input isa CuArray)
         x_input = CuArray(x_input)
     end

@@ -239,7 +239,7 @@ weight = CuArray(Complex{T}.(weight))
 # -----------------------------------------------------------------------------
 
 function build_kernel_operator()
-    return HighOrderOp_Kernel(
+    return HighOrderKernelOp(
         grid,
         copy(kspha_model),
         T.(datatime);
