@@ -82,29 +82,78 @@ like a physical field transition.
 
 ## Model-based delay estimation
 
-[`FindDelay`](@ref) and [`FindDelay_multishot`](@ref) implement the
-model-based field/data synchronization method of Dubovan and Baron. At each
-iteration the algorithm:
+[`FindDelay`](@ref) implements the model-based field/data synchronization
+method of Dubovan and Baron and returns the estimated scalar delay:
+
+```julia
+delay = FindDelay(
+    grid,
+    data,                # (nSample, nCoil)
+    field_coefficients,  # (nFieldSample, nTerm)
+    adc_times,
+    start_time,
+    field_dt;
+    JumpFact=3,
+    Δτ_min=delay_tolerance,
+    csm,
+    use_gpu=true,
+)
+```
+
+`StartTime`, `dt`, `adc_times`, and `Δτ_min` must use the same time unit.
+At the current delay ``\tau``, the routine interpolates the measured field at
+the ADC sample times using `StartTime + τ`. Keep the sign convention explicit
+when comparing the returned delay with scanner or field-camera logs.
+
+At every outer iteration the implementation:
 
 1. shifts and interpolates the field coefficients;
-2. reconstructs an image with the current encoding;
-3. evaluates the derivative encoding ``B_\tau x_\tau``;
-4. estimates an update from the residual relation
-   ``y-A_\tau x_\tau\approx \Delta\tau B_\tau x_\tau``;
-5. reduces the jump factor after a sign change and stops when the update falls
-   below `Δτ_min`.
+2. reconstructs an image with density-weighted data;
+3. evaluates the derivative forward product ``B_\tau x_\tau``;
+4. estimates a scalar update from
+   ``y-A_\tau x_\tau \approx \Delta\tau B_\tau x_\tau``;
+5. reduces `JumpFact` after an update sign change and stops when the update is
+   no larger than `Δτ_min`.
 
-The delay unit is the same as `dt`, `StartTime`, `datatime`, and `Δτ_min`.
-Keep these quantities in one explicit unit system; the default numerical
-value alone does not establish whether an input is seconds or microseconds.
+The derivative coefficients use the five-point kernel implemented in
+`FindDelay`. The delay update itself is unweighted; density weights are used
+for the image reconstruction step. The current function returns only the
+final delay and does not expose iteration history, a convergence-status
+object, coarse-search initialization, or a maximum outer iteration count.
+
+For multi-shot data, [`FindDelay_multishot`](@ref) accepts coefficients shaped
+`(nShot,nFieldSample,nTerm)`, ADC times shaped
+`(nShot,nSamplePerShot)`, and one `StartTime` value per shot:
+
+```julia
+delay = FindDelay_multishot(
+    grid,
+    data,
+    field_coefficients_by_shot,
+    adc_times_by_shot,
+    start_times,
+    field_dt;
+    Δτ_min=delay_tolerance,
+    csm,
+)
+```
+
+`FindDelay_multishot` estimates one delay shared by all shots while respecting
+their individual start offsets.
+
+Coil compression can reduce the cost of the repeated explicit-operator
+evaluations. Fit one transform and apply it to both `data` and `csm` before
+calling either delay estimator. When noise-only samples are available, use the
+same noise-whitened coil-compression workflow described in
+[Reconstruction workflow](reconstruction.md#coil-compression).
 
 Before using an estimated delay in a final study:
 
 - plot coefficients before and after shifting;
 - confirm no relevant samples fall outside the measured field window;
-- repeat from several initial offsets when possible;
-- store the delay, update history, interpolation method, and field sampling
-  interval with the reconstruction manifest;
+- record the returned delay, `StartTime`, `dt`, `Δτ_min`, `JumpFact`,
+  interpolation mode, solver settings, coil-compression rank, and software
+  version with the reconstruction manifest;
 - compare predicted/measured first-order trajectories against an independent
   reference.
 

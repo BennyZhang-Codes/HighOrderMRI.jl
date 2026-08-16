@@ -40,7 +40,7 @@ The package supports:
 | Operator | Approximation | Backend | Intended use |
 |---|---|---|---|
 | [`HighOrderOp`](@ref) | None | CPU or one CUDA device | Small problems, debugging, derivative operator |
-| [`HighOrderOp_Kernel`](@ref) | None | One or more CUDA devices | Explicit numerical reference and GPU validation |
+| [`HighOrderKernelOp`](@ref) | None | One or more CUDA devices | Explicit numerical reference and GPU validation |
 | [`HighOrderLowRankOp`](@ref) | Local rSVD + shared spatial compression | CPU or CUDA; optional multi-GPU stages | Repeated forward/adjoint evaluations and large reconstruction |
 
 All three implement the same positive-phase signal convention and symmetric

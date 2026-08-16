@@ -5,7 +5,7 @@ include("prep_kspha.jl")
 # the formal version HighOrderOp, the extended signal model with field dynamics and off-resonance
 include("Explicit/CUDA_kernel.jl")   # Kernel functions for CUDA
 include("HighOrderOp.jl")            # Array-based implementation
-include("HighOrderOp_Kernel.jl")     # Kernel-based implementation
+include("HighOrderKernelOp.jl")      # Kernel-based implementation
 
 
 include("LowRankApproximation/CUDA_kernel.jl")   # Kernel functions for CUDA

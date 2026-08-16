@@ -20,7 +20,7 @@ basisfunc_spha
 
 ```@docs
 HighOrderOp
-HighOrderOp_Kernel
+HighOrderKernelOp
 HighOrderLowRankOp
 @rebuild_HOOp
 ```
@@ -28,6 +28,12 @@ HighOrderLowRankOp
 ## Reconstruction
 
 ```@docs
+CoilCompressionTransform
+estimate_noise_covariance
+noise_prewhitening_scale_factor
+fit_coil_compression
+apply_coil_compression
+compress_coils
 recon_HOOp
 samplingDensity
 CoilCombineSOS

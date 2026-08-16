@@ -1,7 +1,7 @@
 # Expanded encoding model
 
 This page defines the mathematical and array conventions implemented by
-`HighOrderOp`, `HighOrderOp_Kernel`, and `HighOrderLowRankOp`. These
+`HighOrderOp`, `HighOrderKernelOp`, and `HighOrderLowRankOp`. These
 conventions are part of the operator definition; changing them changes the
 scientific model.
 
@@ -118,7 +118,7 @@ E = D_0(F\odot H),
 
 where ``\odot`` is the Hadamard product.
 
-`HighOrderOp` and `HighOrderOp_Kernel` evaluate the complete phase directly.
+`HighOrderOp` and `HighOrderKernelOp` evaluate the complete phase directly.
 `HighOrderLowRankOp` evaluates ``F`` with an NFFT and approximates only the
 residual matrix ``H``.
 
