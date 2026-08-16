@@ -2,7 +2,6 @@ using HighOrderMRI
 using RegularizedLeastSquares
 using MAT
 using CUDA
-CUDA.device!(0)
 
 T             = Float32;
 path          = joinpath(@__DIR__, "")
@@ -69,68 +68,3 @@ recParams[:reconSize]      = (nX, nY)
 recParams[:reg]            = L2Regularization(1.e-9)
 recParams[:iterations]     = 20
 recParams[:solver]         = CGNR
-
-
-## recon with field dynamics measured by Dynamic Field Camera
-kdata = data["kdata"];
-kdata = kdata ./ exp.(2π*1im.*k0_ecc)';
-kdata = kdata .* exp.(-2π*1im.*ksphaMeasured[:, 1]);
-
-labelMeasured = [    "Measured"];
-recons        = [        "0111"];
-kdatas        = [         kdata];
-weights       = [weightMeasured]; 
-b0s           = [            b0];
-imgMeasured   = Array{Complex{T},3}(undef, nX, nY, length(labelMeasured));
-idxs           = collect(1:length(labelMeasured));
-for (idx, label, recon, kdata, weight, b0) in zip(idxs, labelMeasured, recons, kdatas, weights, b0s)
-    @info "[$(idx)] $(label) $(recon)"
-    HOOp = HighOrderOp(gridding, T.(ksphaMeasured'), T.(datatime); recon_terms=recon, 
-        nBlock=nBlock, csm=Complex{T}.(csm), fieldmap=T.(b0), arrayType=arrayType, verbose=verbose);
-    @time x = recon_HOOp(HOOp, arrayType(Complex{T}.(kdata)), arrayType(Complex{T}.(weight)), recParams);
-    imgMeasured[:, :, idx] = mapslices(rotl90, x; dims=(1,2));
-    fig = plt_image(abs.(x); title=label, vmaxp=99.9, width=8)
-    # fig.savefig("$(path)/result/$(data_mat[1:end-4])_$(label).png", dpi=300, transparent=false, bbox_inches="tight", pad_inches=0.0)
-end
-
-
-## recon with nominal trajectory
-kdata = data["kdata"];
-
-labelNominal  = [    "Nominal"];
-recons        = [        "010"];
-kdatas        = [        kdata];
-weights       = [weightNominal]; 
-b0s           = [           b0];
-imgNominal    = Array{Complex{T},3}(undef, nX, nY, length(labelNominal));
-idxs           = collect(1:length(labelNominal));
-for (idx, label, recon, kdata, weight, b0) in zip(idxs, labelNominal, recons, kdatas, weights, b0s)
-    @info "[$(idx)] $(label) $(recon)"
-    HOOp = HighOrderOp(gridding, T.(ksphaNominal'), T.(datatime); recon_terms=recon, 
-        nBlock=nBlock, csm=Complex{T}.(csm), fieldmap=T.(b0), arrayType=arrayType, verbose=verbose);
-    @time x = recon_HOOp(HOOp, arrayType(Complex{T}.(kdata)), arrayType(Complex{T}.(weight)), recParams);
-    imgNominal[:, :, idx] = mapslices(rotl90, x; dims=(1,2));
-    fig = plt_image(abs.(x); title=label, vmaxp=99.9, width=8)
-    # fig.savefig("$(path)/result/$(data_mat[1:end-4])_$(label).png", dpi=300, transparent=false, bbox_inches="tight", pad_inches=0.0)
-end
-
-## Coil compression
-kdata = data["kdata"]
-nVirtualCoils = 16
-kdata_cc, csm_cc, coil_transform = compress_coils(Complex{T}.(kdata), Complex{T}.(csm); data_coil_dim=2, csm_coil_dim=3, n_virtual_coils=nVirtualCoils)
-@info "Coil compression" physical_coils=size(coil_transform, 1) virtual_coils=size(coil_transform, 2) retained_energy=coil_transform.retained_energy
-
-kdata_cc = kdata_cc ./ exp.(2π*1im.*k0_ecc)';
-kdata_cc = kdata_cc .* exp.(-2π*1im.*ksphaMeasured[:, 1]);
-
-label  = "Measured_CoilCompressed_$(nVirtualCoils)";
-recon  = "0111";
-weight = weightMeasured; 
-
-@info "$(label) $(recon)"
-HOOp = HighOrderOp(gridding, T.(ksphaMeasured'), T.(datatime); recon_terms=recon, 
-    nBlock=nBlock, csm=Complex{T}.(csm_cc), fieldmap=T.(b0), arrayType=arrayType, verbose=verbose);
-@time x = recon_HOOp(HOOp, arrayType(Complex{T}.(kdata_cc)), arrayType(Complex{T}.(weight)), recParams);
-img = mapslices(rotl90, x; dims=(1,2));
-fig = plt_image(abs.(img); title=label, vmaxp=99.9, width=8)
-# fig.savefig("$(path)/result/$(data_mat[1:end-4])_$(label).png", dpi=300, transparent=false, bbox_inches="tight", pad_inches=0.0)

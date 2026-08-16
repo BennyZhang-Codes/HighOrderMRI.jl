@@ -271,7 +271,7 @@ plan instead of one NFFT per dynamic and low-rank term.
   correction that aligns AbstractNFFTs' integer-centred grid with `Grid`'s
   physical voxel centres. Even dimensions receive a half-voxel correction;
   odd dimensions receive none. Keep it enabled to match
-  `HighOrderOp_Kernel`; disable it only for the legacy NFFT convention.
+  `HighOrderKernelOp`; disable it only for the legacy NFFT convention.
 * `verbose::Bool`                       - Print rSVD configuration,
   shared-basis progress, timing, and resource-release information.
 
@@ -286,7 +286,7 @@ A `HighOrderLowRankOp{Complex{T}}` with size
 # Notes
 
 The forward phase convention is `exp(+2πim * phase)`, matching
-`HighOrderOp_Kernel`. Internally, first-order physical coefficients are
+`HighOrderKernelOp`. Internally, first-order physical coefficients are
 converted to AbstractNFFTs nodes as `-kᵢ * Δᵢ`, independently for each active
 dimension. The operator normalization is `1 / sqrt(nVox)` and is folded into
 `q`. The output ordering is samples first, then dynamics, then channels.

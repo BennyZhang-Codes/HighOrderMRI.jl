@@ -20,7 +20,7 @@ basisfunc_spha
 
 ```@docs
 HighOrderOp
-HighOrderOp_Kernel
+HighOrderKernelOp
 HighOrderLowRankOp
 @rebuild_HOOp
 ```

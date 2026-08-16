@@ -65,7 +65,7 @@ data_cc, csm_cc, coil_transform = compress_coils(
 ```
 
 Use `data_cc` in [`recon_HOOp`](@ref) and `csm_cc` when constructing
-`HighOrderOp`, `HighOrderOp_Kernel`, or `HighOrderLowRankOp`. The operators
+`HighOrderOp`, `HighOrderKernelOp`, or `HighOrderLowRankOp`. The operators
 need no compression-specific option: their channel count is inferred from the
 compressed CSM.
 

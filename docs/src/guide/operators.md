@@ -6,7 +6,7 @@ size, required reference accuracy, and available hardware.
 
 ## Comparison
 
-| | `HighOrderOp` | `HighOrderOp_Kernel` | `HighOrderLowRankOp` |
+| | `HighOrderOp` | `HighOrderKernelOp` | `HighOrderLowRankOp` |
 |---|---|---|---|
 | Target model | Explicit | Explicit | Approximation of residual phase |
 | Dynamics per object | One | One | One or many |
@@ -50,7 +50,7 @@ op = HighOrderOp(grid, kspha, times; csm=csm_cc, arrayType=Array)
 image = recon_HOOp(op, data_cc, weights, rec_params)
 ```
 
-The same `csm_cc` can instead be supplied to `HighOrderOp_Kernel` or
+The same `csm_cc` can instead be supplied to `HighOrderKernelOp` or
 `HighOrderLowRankOp`. Compression preserves the signal equation because a
 single right-side coil transform is applied to both measured signals and
 sensitivity maps. Do not independently fit or phase-align those two
@@ -108,12 +108,12 @@ forward action.
 
 ## Explicit CUDA kernel
 
-`HighOrderOp_Kernel` requires CUDA:
+`HighOrderKernelOp` requires CUDA:
 
 ```julia
 using CUDA
 
-reference_op = HighOrderOp_Kernel(
+reference_op = HighOrderKernelOp(
     grid,
     kspha,
     times;
@@ -135,7 +135,7 @@ Use this operator as a numerical reference only after checking the same grid,
 mask, field coefficients, coil maps, normalization, and reconstruction
 settings as the candidate operator.
 
-The current `kspha_dt` forward path of `HighOrderOp_Kernel` falls back to the
+The current `kspha_dt` forward path of `HighOrderKernelOp` falls back to the
 array-based CPU derivative implementation. Its adjoint retains the ordinary
 kernel encoding action described above. Use
 `HighOrderOp(...; arrayType=CuArray, kspha_dt=...)` when the derivative forward

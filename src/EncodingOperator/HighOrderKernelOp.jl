@@ -1,4 +1,4 @@
-export HighOrderOp_Kernel
+export HighOrderKernelOp
 
 """
 Kernel-based implementation of the explicit high-order signal encoding model.
@@ -11,7 +11,7 @@ samples first and then channels.
 - Supports CUDA kernel acceleration and multiple GPUs.
 - Supports multiple receive channels, static off-resonance, and masking.
 """
-mutable struct HighOrderOp_Kernel{T,F1,F2,S<:AbstractVector{T}} <: HOOp{T}
+mutable struct HighOrderKernelOp{T,F1,F2,S<:AbstractVector{T}} <: HOOp{T}
     nrow       :: Int
     ncol       :: Int
     symmetric  :: Bool
@@ -22,10 +22,10 @@ mutable struct HighOrderOp_Kernel{T,F1,F2,S<:AbstractVector{T}} <: HOOp{T}
     nprod      :: Int
     ntprod     :: Int
     nctprod    :: Int
-    Mv         :: S
-    Mtu        :: S
+    Mv         :: S         # Dynamically adapted CPU/GPU Vector
+    Mtu        :: S         # Dynamically adapted CPU/GPU Vector
 end
-LinearOperators.storage_type(op::HighOrderOp_Kernel) = typeof(op.Mv)
+LinearOperators.storage_type(op::HighOrderKernelOp) = typeof(op.Mv)
 
 mutable struct HighOrderKernelGPUWorkspace{T<:AbstractFloat}
     gpu_id   :: Int
@@ -69,11 +69,11 @@ end
 
 
 """
-    HighOrderOp_Kernel(grid::Grid{T}, kspha::AbstractArray{T, 2}, times::AbstractVector{T}; kwargs...)
+    HighOrderKernelOp(grid::Grid{T}, kspha::AbstractArray{T, 2}, times::AbstractVector{T}; kwargs...)
 
 # Description
 
-Construct a `HighOrderOp_Kernel` that explicitly evaluates the MRI high-order
+Construct a `HighOrderKernelOp` that explicitly evaluates the MRI high-order
 Fourier encoding operator.
 
 # Arguments
@@ -110,7 +110,7 @@ Fourier encoding operator.
 * `verbose::Bool`                       - Print progress information; default
   is `false`.
 """
-function HighOrderOp_Kernel(
+function HighOrderKernelOp(
     grid        :: Grid{T}                                                             ,
     kspha       :: AbstractArray{T, 2}                                                 , 
     times       :: AbstractVector{T}                                                   ;
@@ -126,7 +126,7 @@ function HighOrderOp_Kernel(
     verbose     :: Bool                      = false                                   , 
     ) where {T<:AbstractFloat}
 
-    arrayType <: CuArray || throw(ArgumentError("HighOrderOp_Kernel requires arrayType=CuArray"))
+    arrayType <: CuArray || throw(ArgumentError("HighOrderKernelOp requires arrayType=CuArray"))
     isempty(gpus) && throw(ArgumentError("gpus must contain at least one CUDA device id"))
     length(unique(gpus)) == length(gpus) || throw(ArgumentError("gpus contains duplicate device ids: $gpus"))
 
@@ -141,7 +141,7 @@ function HighOrderOp_Kernel(
     csm      = ndims(csm) == 3      ? reshape(csm, nX, nY, 1, nCha) : csm
     mask     = ndims(mask) == 2     ? reshape(mask, nX, nY, 1) : mask
 
-    @info "HighOrderOp_Kernel nRow=$nRow [nSam*nCha=$nSam*$nCha], nCol=$nCol [prod(matrixSize=$((nX,nY,nZ))], nVox in mask=$nVox, nBlock=$nBlock, gpus=$gpus"
+    @info "HighOrderKernelOp nRow=$nRow [nSam*nCha=$nSam*$nCha], nCol=$nCol [prod(matrixSize=$((nX,nY,nZ))], nVox in mask=$nVox, gpus=$gpus"
 
     @assert nTerm              in [9, 16]       "kspha must have 9 or 16 terms (row) for up to 2nd or 3rd order terms"
     @assert size(k_nominal, 1) == 3             "k_nominal must have 3 terms (row) for kx, ky, kz"
@@ -178,7 +178,7 @@ function HighOrderOp_Kernel(
 
     if isnothing(kspha_dt)
         func_prod = (res,xm)->begin
-            values = prod_HighOrderOp_Kernel(xm, mask, workspaces, forward_partial, nSam, nCha, nTerm, nVox; verbose=verbose)
+            values = prod_HighOrderKernelOp(xm, mask, workspaces, forward_partial, nSam, nCha, nTerm, nVox; verbose=verbose)
             copyto!(res, values)
             res
         end
@@ -191,14 +191,14 @@ function HighOrderOp_Kernel(
         end
     end
     func_ctprod = (res,ym)->begin
-        values = ctprod_HighOrderOp_Kernel(ym, mask, workspaces, nSam, nCha, nTerm, nVox; verbose=verbose)
+        values = ctprod_HighOrderKernelOp(ym, mask, workspaces, nSam, nCha, nTerm, nVox; verbose=verbose)
         copyto!(res, values)
         res
     end
 
     Mv = Mtu = Vector{Complex{T}}(undef, 0)
     
-    return HighOrderOp_Kernel{Complex{T},Nothing,Function,typeof(Mv)}(
+    return HighOrderKernelOp{Complex{T},Nothing,Function,typeof(Mv)}(
                         nRow, nCol, 
                         false, false,
                         func_prod, nothing, func_ctprod,
@@ -208,9 +208,9 @@ end
 
 
 """
-    Forward operator for HighOrderOp_Kernel
+    Forward operator for HighOrderKernelOp
 """
-function prod_HighOrderOp_Kernel(
+function prod_HighOrderKernelOp(
     x               :: AbstractVector{T},
     mask            :: AbstractVector{Bool},
     workspaces      :: AbstractVector{<:HighOrderKernelGPUWorkspace{D}},
@@ -243,9 +243,9 @@ end
 
 
 """
-    Adjoint of prod_HighOrderOp_Kernel
+    Adjoint of prod_HighOrderKernelOp
 """
-function ctprod_HighOrderOp_Kernel(
+function ctprod_HighOrderKernelOp(
     y          :: AbstractVector{T},
     mask       :: AbstractVector{Bool},
     workspaces :: AbstractVector{<:HighOrderKernelGPUWorkspace{D}},
@@ -275,7 +275,7 @@ function ctprod_HighOrderOp_Kernel(
 end
 
 
-function Base.adjoint(op::HighOrderOp_Kernel{T}) where T
+function Base.adjoint(op::HighOrderKernelOp{T}) where T
   return LinearOperator{T}(
                             op.ncol, 
                             op.nrow, 

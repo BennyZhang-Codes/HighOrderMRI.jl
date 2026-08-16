@@ -35,7 +35,7 @@ collect(CUDA.devices())
 ## Explicit operator
 
 ```julia
-op = HighOrderOp_Kernel(
+op = HighOrderKernelOp(
     grid,
     kspha,
     times;
@@ -144,6 +144,107 @@ therefore make old and new NFFT plans and bases coexist temporarily.
 
 CUDA.jl uses reusable memory pools. Releasing workspaces does not guarantee an
 immediate decrease in the reserved-memory value shown by `nvidia-smi`.
+
+## PyCall finalizer crash after CUDA reconstruction
+
+HighOrderMRI currently loads PyPlot through PyCall. A compatibility failure
+has been observed with Julia 1.12, CUDA.jl 6.2, PyCall 1.96.4, and CPython
+3.13: reconstruction finishes successfully and the Julia prompt returns, but
+the process may terminate with signal 11 several minutes later or during CUDA
+memory-pool cleanup. A representative end of the native stack is:
+
+```text
+CUDACore.pool_cleanup
+  -> CUDA.reclaim
+  -> GC.gc
+  -> PyCall.pydecref
+  -> Python PyObject_Free
+  -> signal 11 (segmentation fault)
+```
+
+This stack does not by itself indicate an error in `HighOrderOp`,
+`HighOrderKernelOp`, coil compression, or the reconstructed result. CUDA
+memory management initiates a Julia garbage collection; that collection then
+runs a PyCall finalizer, and the native failure occurs while CPython releases
+an object.
+
+### Validated workaround
+
+The following combination completed repeated reconstructions, explicit
+garbage collection, and `CUDA.reclaim()` without the delayed process exit:
+
+| Component | Validated version |
+|:--|:--|
+| Julia | 1.12.6 |
+| CUDA.jl / CUDACore | 6.2.1 |
+| PyCall | 1.96.4 |
+| PyPlot | 2.11.6 |
+| Python | 3.10.13 |
+| Matplotlib | 3.10.6 |
+
+The PyCall and PyPlot versions were unchanged from the failing configuration;
+the effective change was from CPython 3.13 to CPython 3.10. This is empirical
+compatibility evidence rather than proof that every Python 3.13 configuration
+will fail. Until the finalizer interaction is resolved upstream, use a Python
+3.10 environment for long-lived CUDA reconstruction sessions that also load
+PyPlot.
+
+Create or select a Python 3.10 environment containing NumPy and Matplotlib,
+then rebuild PyCall against that interpreter:
+
+```bash
+conda create -n highordermri-py310 python=3.10 numpy matplotlib
+conda activate highordermri-py310
+PYTHON="$(command -v python)" julia --project=. -e '
+using Pkg
+Pkg.build("PyCall")'
+```
+
+Restart Julia after rebuilding PyCall and verify the interpreter and shared
+library before reconstruction:
+
+```julia
+using PyCall
+
+PyCall.python
+PyCall.pyversion
+PyCall.libpython
+```
+
+The reported executable and `libpython` must both belong to the intended
+Python 3.10 installation. A basic cleanup check is:
+
+```julia
+using CUDA, PyCall, PyPlot
+
+fig = PyPlot.figure()
+PyPlot.close(fig)
+fig = nothing
+
+buffer = CUDA.zeros(Float32, 1024)
+buffer = nothing
+GC.gc(true)
+CUDA.reclaim()
+GC.gc(true)
+```
+
+The decisive validation is still the real workload: repeat the reconstruction
+several times and leave the interactive Julia process alive after cleanup.
+
+### Reproducibility limits
+
+`Project.toml` compatibility entries can constrain Julia, CUDA.jl, PyCall,
+and PyPlot versions, but neither `Project.toml` nor `Manifest.toml` records the
+external Python executable or `libpython` selected when PyCall is built. The
+selection is stored in the Julia depot and is shared by environments using
+the same installed PyCall source. Rebuilding PyCall in a shared depot can
+therefore change the Python runtime used by more than one Julia project.
+
+Record `PyCall.python`, `PyCall.pyversion`, and `PyCall.libpython` together
+with the Julia and CUDA versions in a reproducibility report. If a different
+Python runtime is required, set `PYTHON` explicitly and rebuild PyCall again;
+do not treat `CUDA.reclaim()` or REPL keep-alive settings as a fix for a native
+finalizer crash.
 
 ## What to report
 

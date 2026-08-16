@@ -141,19 +141,19 @@ end
             data.times;
             arrayType = Array,
         )
-        @test_throws ArgumentError HighOrderOp_Kernel(
+        @test_throws ArgumentError HighOrderKernelOp(
             data.grid,
             data.kspha,
             data.times;
             arrayType = Array,
         )
-        @test_throws ArgumentError HighOrderOp_Kernel(
+        @test_throws ArgumentError HighOrderKernelOp(
             data.grid,
             data.kspha,
             data.times;
             gpus = Int[],
         )
-        @test_throws ArgumentError HighOrderOp_Kernel(
+        @test_throws ArgumentError HighOrderKernelOp(
             data.grid,
             data.kspha,
             data.times;
@@ -174,7 +174,7 @@ end
                 nBlock = 4,
                 arrayType = CuArray,
             )
-            kernel_operator = HighOrderOp_Kernel(
+            kernel_operator = HighOrderKernelOp(
                 data.grid,
                 data.kspha,
                 data.times;
@@ -204,7 +204,7 @@ end
 
             gpu_ids = map(device -> Int(CUDA.deviceid(device)), CUDA.devices())
             if length(gpu_ids) >= 2
-                multi_gpu_operator = HighOrderOp_Kernel(
+                multi_gpu_operator = HighOrderKernelOp(
                     data.grid,
                     data.kspha,
                     data.times;
