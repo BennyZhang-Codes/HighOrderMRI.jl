@@ -1,28 +1,71 @@
+# HighOrderMRI.jl
+
+[![CI](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/actions/workflows/ci.yml)
+[![Documentation](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/actions/workflows/documentation.yml/badge.svg?branch=main)](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/actions/workflows/documentation.yml)
+[![Dev docs](https://img.shields.io/badge/docs-dev-blue.svg)](https://bennyzhang-codes.github.io/HighOrderMRI.jl/dev/)
+
+HighOrderMRI.jl is a Julia toolbox for non-Cartesian MRI reconstruction with
+measured or predicted dynamic higher-order fields. It provides explicit
+encoding operators for numerical reference and a matrix-free shared-subspace
+operator for large 2D and 3D reconstruction.
+
 ## Features
 
-* Supports **2D** and **3D** image reconstruction with **high-order dynamic field changes**.
-* Supports **up to 3rd order** spherical harmonic terms.
-* Implements **parallel imaging** and **off-resonance correction** using the extended signal encoding operators:
-  * `HighOrderOp`: array-based implementation, usable on  **CPU or GPU**.
-  * `HighOrderOp_Kernel`: kernel-based implementation with **multiple GPUs** via [CUDA.jl](https://github.com/JuliaGPU/CUDA.jl), faster and more memory-efficient than `HighOrderOp`.
-  * `fastHighOrderOp`: SVD-based implementation...
+- Expanded signal encoding through third-order real solid-harmonic terms.
+- Parallel imaging, static off-resonance correction, and reconstruction masks.
+- `HighOrderOp`: array-based explicit evaluation on CPU or CUDA.
+- `HighOrderKernelOp`: fused explicit CUDA evaluation on one or more GPUs.
+- `HighOrderLowRankOp`: per-dynamic matrix-free rSVD, adaptive global shared
+  spatial basis, and a global-trajectory NFFT.
+- Optional voxel-distributed multi-GPU rSVD setup and channel-distributed
+  multi-GPU normal operators.
+- GIRF-based field prediction and model-based field/data synchronization
+  ([Dubovan and Baron, 2023](https://doi.org/10.1002/mrm.29460)).
+- Raw complex reconstruction metrics and encoding-convention regression tests.
 
-* Integrates a **model-based synchronization delay estimation algorithm** ([Dubovan PI, Baron CA, 2023](https://doi.org/10.1002/mrm.29460)).
+## Documentation
+
+The [development documentation](https://bennyzhang-codes.github.io/HighOrderMRI.jl/dev/)
+contains:
+
+- installation and a first CPU example;
+- the expanded signal model, units, basis order, and NFFT convention;
+- the randomized SVD and global shared spatial-subspace derivation;
+- operator selection, reconstruction, multi-GPU, and synchronization guides;
+- the frozen reconstruction comparison protocol and generated API reference.
 
 ## Installation
 
-This package relies on and **MRIReco.jl** (version 0.9.0).
+HighOrderMRI.jl requires Julia 1.12 or later. CI tests both the minimum
+supported Julia 1.12 release and the latest stable Julia 1.x release; the
+documentation is also built with the latest stable release. The repository
+currently carries `MRIGeometry` as a local subpackage, so clone the complete
+repository:
+
+```bash
+git clone https://github.com/BennyZhang-Codes/HighOrderMRI.jl.git
+cd HighOrderMRI.jl
+julia --project=. -e 'using Pkg; Pkg.instantiate()'
+```
+
+Then start Julia with the project and load the package:
 
 ```julia
-using Pkg
-Pkg.add(url="https://github.com/BennyZhang-Codes/HighOrderMRI.jl.git")
+using HighOrderMRI
 ```
+
+CUDA execution additionally requires a functional
+[CUDA.jl](https://github.com/JuliaGPU/CUDA.jl) installation. Start Julia with
+`--threads=auto` when multiple GPUs participate.
 
 ## Demo
 
 For MRI reconstruction incorporating measured field dynamics, we first estimate the synchronization delay between the MRI data and the field measurements. The final reconstruction is then performed using the synchronized field dynamics.
 
-This demo includes 2D single-shot spiral (7T, 1 mm in-plane resolution, ~29 ms readout) and 2D single-shot EPI (7T, 1 mm in-plane resolution, ~40 ms readout) imaging data, nominal kspace trajectory (Nominal) and measured field dynamics (using Dynamic Field Camera).
+The demo includes 2D single-shot spiral (7 T, 1 mm in-plane resolution,
+approximately 29 ms readout) and 2D single-shot EPI (7 T, 1 mm in-plane
+resolution, approximately 40 ms readout) data. It compares a nominal
+k-space trajectory with field dynamics measured using a Dynamic Field Camera.
 
 <table>
   <tr>

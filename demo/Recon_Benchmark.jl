@@ -1,169 +1,360 @@
-using HighOrderMRI
-using RegularizedLeastSquares
-using MAT
-using CUDA
-using BenchmarkTools
+include(joinpath(@__DIR__, "DemoCommon.jl"))
 
-T             = Float32;
-path          = joinpath(@__DIR__, "")
-data_mat      = "7T_2D_Spiral_1p0_200_r4.mat" 
-data_file     = joinpath(path, data_mat)
-
-@info "data file: $(data_file)"
-data          = matread(data_file);
-
-csm           = data["gre_csm"];            # coil sensitivity map
-b0            = data["gre_b0"];             # ΔB0 map
-mask          = data["gre_mask"];           # mask
-
-kdata         = data["kdata"];              # spiral k-space data
-datatime      = data["datatime"];           # time stamps of k-space data
-matrixSize    = data["matrixSize"];         # matrix size
-FOV           = data["FOV"];                # field of view
-
-k0_ecc        = data["k0_adc"];             # b0 compensation of scanner from ECC model
-dt_Measured   = data["dt_Measured"];
-ksphaMeasured = data["ksphaMeasured"];     # coefficients of the field dynamics
-startMeasured = data["startMeasured"];     # start time of the field dynamics
-tauMeasured   = data["tauMeasured"];       # synchronization delay between the Measured trajectory and the MRI data
-dt_adc        = data["dt_adc"];
-
-# comparion of the field dynamics with or without synchronization
-# plt_ksphas([InterpTrajTime(ksphaMeasured, dt_Measured, startMeasured, datatime), InterpTrajTime(ksphaMeasured, dt_Measured, startMeasured+tauMeasured*dt_adc, datatime)], dt_adc)
-datatime      = vec(datatime);
-ksphaMeasured = InterpTrajTime(ksphaMeasured, dt_Measured, startMeasured + tauMeasured * dt_adc, datatime);
-
-# prepare some parameters for reconstruction
-# 1. gridding 
-Δx, Δy, Δz    = T.(FOV ./ matrixSize);
-nX, nY, nZ    = matrixSize;
-gridding      = Grid(nX, nY, nZ, Δx, Δy, Δz; exchange_xy=true, reverse_x=false, reverse_y=true)
-
-# 2. sampling density 
-weightMeasured = SampleDensity(ksphaMeasured'[2:3,:], (nX, nY));
-
-###########################################################################
-# recon with field dynamics measured by Dynamic Field Camera
-###########################################################################
-kdata = data["kdata"];
-kdata = kdata ./ exp.(2π*1im.*k0_ecc)';
-kdata = kdata .* exp.(-2π*1im.*ksphaMeasured[:, 1]);
-
-labelMeasured = [    "Measured"];
-recons        = [        "0111"];
-kdatas        = [         kdata];
-weights       = [weightMeasured]; 
-b0s           = [            b0];
-imgMeasured   = Array{Complex{T},3}(undef, nX, nY, length(labelMeasured));
-idxs           = collect(1:length(labelMeasured));
-
-idx = 1; label = labelMeasured[1]; recon = recons[1]; kdata = kdatas[1]; weight = weights[1]; b0 = b0s[1];
-
-@info "[$(idx)] $(label) $(recon)"
-
-use_gpu = true;
-verbose = false;
-
-recParams = Dict{Symbol,Any}()
-recParams[:reconSize]  = (nX, nY)
-recParams[:reg]        = L2Regularization(1.e-9)  
-recParams[:iterations] = 20
-recParams[:solver]     = CGNR
+using LinearAlgebra
+using Printf
+using Statistics
 
 
-###########################################################################
-# Run for precomplie
-###########################################################################
-@info "HighOderOp: Array-based, 1 GPU"
-CUDA.device!(0)
-GC.gc(); CUDA.reclaim();
-Op1 = HighOrderOp(gridding, T.(ksphaMeasured'), T.(datatime); 
-        recon_terms=recon, csm=Complex{T}.(csm), fieldmap=T.(b0), 
-        use_gpu=use_gpu, verbose=verbose, nBlock=100);
-CUDA.@time x1 = recon_HOOp(Op1, Complex{T}.(kdata), Complex{T}.(weight), recParams);
-fig1 = plt_image(abs.(x1); title="HighOderOp: Array-based, 1 GPU", vmaxp=99.9, width=20, height=20)
+# This script benchmarks complete reconstructions after one warm-up run. The
+# operator constructor is timed separately because HighOrderLowRankOp has a
+# non-negligible one-time rSVD setup cost. The first reconstruction is also
+# reported separately because it includes compilation and, for the distributed
+# low-rank operator, construction of the lazy normal-operator backend.
+benchmark_samples = 3
+benchmark_single_gpu = true
+benchmark_multi_gpu = true
+nVirtualCoils = 16
+maximum_benchmark_gpus = 8
 
-@info "HighOderOp: Array-based, 1 GPU, with mask"
-CUDA.device!(0)
-GC.gc(); CUDA.reclaim();
-Op2 = HighOrderOp(gridding, T.(ksphaMeasured'), T.(datatime); 
-        recon_terms=recon, csm=Complex{T}.(csm), fieldmap=T.(b0), mask=mask, 
-        use_gpu=use_gpu, verbose=verbose, nBlock=100);
-CUDA.@time x2 = recon_HOOp(Op2, Complex{T}.(kdata), Complex{T}.(weight), recParams);
-fig2 = plt_image(abs.(x2); title="HighOderOp: Array-based, 1 GPU, with mask", vmaxp=99.9, width=20, height=20)
+benchmark_samples > 0 || throw(ArgumentError("benchmark_samples must be positive"))
+CUDA.functional() || error("CUDA is not functional")
 
-@info "HighOderOp: kernel-based, 1 GPU"
-GC.gc(); CUDA.reclaim();
-Op3 = HighOrderOp_Kernel(gridding, T.(ksphaMeasured'), T.(datatime); 
-        recon_terms=recon, csm=Complex{T}.(csm), fieldmap=T.(b0), 
-        use_gpu=use_gpu, verbose=verbose, gpus=[0]);
-CUDA.@time x3 = recon_HOOp(Op3, Complex{T}.(kdata), Complex{T}.(weight), recParams);
-fig3 = plt_image(abs.(x3); title="HighOderOp: Kernel-based, 1 GPU", vmaxp=99.9, width=20, height=20)
+available_gpu_ids = Int[CUDA.deviceid(device) for device in CUDA.devices()]
+isempty(available_gpu_ids) && error("No CUDA devices are visible")
 
-@info "HighOderOp: kernel-based, 8 GPUs"
-GC.gc(); CUDA.reclaim();
-Op4 = HighOrderOp_Kernel(gridding, T.(ksphaMeasured'), T.(datatime); 
-        recon_terms=recon, csm=Complex{T}.(csm), fieldmap=T.(b0), 
-        use_gpu=use_gpu, verbose=verbose, gpus=[0,1,2,3,4,5,6,7]);
-CUDA.@time x4 = recon_HOOp(Op4, Complex{T}.(kdata), Complex{T}.(weight), recParams);
-fig4 = plt_image(abs.(x4); title="HighOderOp: Kernel-based, 8 GPUs", vmaxp=99.9, width=20, height=20)
+primary_gpu = first(available_gpu_ids)
+multi_gpu_ids = available_gpu_ids[1:min(maximum_benchmark_gpus, length(available_gpu_ids))]
+CUDA.device!(primary_gpu)
 
-@info "HighOderOp: kernel-based, 8 GPUs, with mask"
-GC.gc(); CUDA.reclaim();
-Op5 = HighOrderOp_Kernel(gridding, T.(ksphaMeasured'), T.(datatime); 
-        recon_terms=recon, csm=Complex{T}.(csm), fieldmap=T.(b0), mask=mask,
-        use_gpu=use_gpu, verbose=verbose, gpus=[0,1,2,3,4,5,6,7]);
-CUDA.@time x5 = recon_HOOp(Op5, Complex{T}.(kdata), Complex{T}.(weight), recParams);
-fig5 = plt_image(abs.(x5); title="HighOderOp: Kernel-based, 8 GPUs, with mask", vmaxp=99.9, width=20, height=20)
-
-
-###########################################################################
-# Benckmark test
-###########################################################################
-@info "Benckmark test - HighOderOp: Array-based, 1 GPU"
-CUDA.device!(0)
-test = () -> begin
-    CUDA.@sync recon_HOOp(Op1, Complex{T}.(kdata), Complex{T}.(weight), recParams)
+if benchmark_multi_gpu && length(multi_gpu_ids) < 2
+    @warn "Multi-GPU benchmark cases are disabled because fewer than two GPUs are visible" available_gpu_ids
+    benchmark_multi_gpu = false
 end
-t_array = run(@benchmarkable test() samples=10 evals=1 seconds=3600 setup=(GC.gc(); CUDA.reclaim()))
 
 
-@info "Benckmark test - HighOderOp: Array-based, 1 GPU, mask"
-CUDA.device!(0)
-test = () -> begin
-    CUDA.@sync recon_HOOp(Op2, Complex{T}.(kdata), Complex{T}.(weight), recParams)
+# --------------------------------------------------------------------------
+# Shared measured-data preprocessing
+# --------------------------------------------------------------------------
+recon = "0111"
+kspha_measured = T.(ksphaMeasured')
+times_measured = T.(datatime)
+fieldmap = T.(b0)
+mask_recon = Bool.(mask)
+csm_physical = Complex{T}.(csm)
+weight_host = Complex{T}.(weightMeasured)
+
+kdata_physical = Complex{T}.(data["kdata"])
+kdata_physical ./= exp.(Complex{T}(0, T(2π)) .* T.(k0_ecc))'
+kdata_physical .*= exp.(Complex{T}(0, T(-2π)) .* T.(ksphaMeasured[:, 1]))
+
+kdata_compressed, csm_compressed, coil_transform = compress_coils(
+    kdata_physical,
+    csm_physical;
+    data_coil_dim=2,
+    csm_coil_dim=3,
+    n_virtual_coils=nVirtualCoils,
+)
+
+@info(
+    "Coil compression",
+    physical_coils=size(coil_transform, 1),
+    virtual_coils=size(coil_transform, 2),
+    retained_energy=coil_transform.retained_energy,
+)
+
+# HighOrderOp and HighOrderLowRankOp advertise CuArray solver storage, whereas
+# HighOrderKernelOp intentionally uses CPU solver vectors around its GPU
+# workspaces. Convert inputs once, outside every timed reconstruction.
+kdata_physical_gpu = CuArray(kdata_physical)
+kdata_compressed_gpu = CuArray(kdata_compressed)
+weight_gpu = CuArray(weight_host)
+
+
+function synchronize_devices!(gpu_ids::AbstractVector{Int})
+    for gpu_id in gpu_ids
+        CUDA.device!(gpu_id)
+        CUDA.device_synchronize(; blocking=true)
+    end
+    CUDA.device!(first(gpu_ids))
+    return nothing
 end
-t_array_mask = run(@benchmarkable test() samples=10 evals=1 seconds=3600 setup=(GC.gc(); CUDA.reclaim()))
 
 
-@info "Benckmark test - HighOderOp: kernel-based, 1 GPU"
-test = () -> begin
-    CUDA.@sync recon_HOOp(Op3, Complex{T}.(kdata), Complex{T}.(weight), recParams)
+function benchmark_reconstruction_case(
+    label::String,
+    variant::Symbol,
+    build_operator,
+    reconstruction_data,
+    reconstruction_weight,
+    gpu_ids::Vector{Int},
+    rec_params::Dict;
+    samples::Int,
+)
+    @info "Benchmark case" label gpu_ids samples
+
+    # Collect objects from the preceding case, but retain CUDA.jl's reusable
+    # memory pools. CUDA.reclaim() is deliberately not part of timed samples.
+    GC.gc(true)
+    CUDA.device!(first(gpu_ids))
+
+    operator = nothing
+    image = nothing
+    result = nothing
+
+    try
+        setup_stats = @timed begin
+            operator = build_operator()
+            synchronize_devices!(gpu_ids)
+        end
+
+        first_reconstruction_stats = @timed begin
+            image = recon_HOOp(
+                operator,
+                reconstruction_data,
+                reconstruction_weight,
+                rec_params;
+                release_backend=false,
+            )
+            synchronize_devices!(gpu_ids)
+        end
+
+        elapsed = Vector{Float64}(undef, samples)
+        allocated = Vector{Int}(undef, samples)
+        gc_time = Vector{Float64}(undef, samples)
+
+        for sample = 1:samples
+            GC.gc(true)
+            stats = @timed begin
+                image = recon_HOOp(
+                    operator,
+                    reconstruction_data,
+                    reconstruction_weight,
+                    rec_params;
+                    release_backend=false,
+                )
+                synchronize_devices!(gpu_ids)
+            end
+            elapsed[sample] = stats.time
+            allocated[sample] = stats.bytes
+            gc_time[sample] = stats.gctime
+        end
+
+        result = (
+            label=label,
+            variant=variant,
+            gpu_ids=copy(gpu_ids),
+            setup_seconds=setup_stats.time,
+            first_reconstruction_seconds=first_reconstruction_stats.time,
+            median_seconds=median(elapsed),
+            minimum_seconds=minimum(elapsed),
+            maximum_seconds=maximum(elapsed),
+            median_cpu_allocated_bytes=median(allocated),
+            median_gc_seconds=median(gc_time),
+            samples=copy(elapsed),
+            image=copy(image),
+        )
+    finally
+        if operator isa HighOrderLowRankOp
+            close(operator)
+        end
+        operator = nothing
+        GC.gc(false)
+        CUDA.device!(primary_gpu)
+    end
+
+    return result
 end
-t_kernel = run(@benchmarkable test() samples=10 evals=1 seconds=3600 setup=(GC.gc(); CUDA.reclaim()))
 
 
-@info "Benckmark test - HighOderOp: kernel-based, 8 GPUs"
-test = () -> begin
-    CUDA.@sync recon_HOOp(Op4, Complex{T}.(kdata), Complex{T}.(weight), recParams)
+# --------------------------------------------------------------------------
+# Benchmark cases
+# --------------------------------------------------------------------------
+function build_highorder_operator(csm_current)
+    return HighOrderOp(
+        gridding,
+        kspha_measured,
+        times_measured;
+        recon_terms=recon,
+        nBlock=nBlock,
+        csm=csm_current,
+        fieldmap=fieldmap,
+        mask=mask_recon,
+        arrayType=CuArray,
+        verbose=verbose,
+    )
 end
-t_kernel_8 = run(@benchmarkable test() samples=10 evals=1 seconds=3600 setup=(GC.gc(); CUDA.reclaim()))
 
 
-@info "Benckmark test - HighOderOp: kernel-based, 8 GPUs, with mask"
-test = () -> begin
-    CUDA.@sync recon_HOOp(Op5, Complex{T}.(kdata), Complex{T}.(weight), recParams)
+function build_kernel_operator(csm_current, gpu_ids)
+    return HighOrderKernelOp(
+        gridding,
+        kspha_measured,
+        times_measured;
+        recon_terms=recon,
+        csm=csm_current,
+        fieldmap=fieldmap,
+        mask=mask_recon,
+        arrayType=CuArray,
+        gpus=gpu_ids,
+        verbose=verbose,
+    )
 end
-t_kernel_8_mask = run(@benchmarkable test() samples=10 evals=1 seconds=3600 setup=(GC.gc(); CUDA.reclaim()))
 
-# Judgement
-m_array         = median(t_array)
-m_array_mask    = median(t_array_mask)
-m_kernel        = median(t_kernel)
-m_kernel_8      = median(t_kernel_8)
-m_kernel_8_mask = median(t_kernel_8_mask)
 
-judgement = judge(m_kernel, m_array)
-judgement = judge(m_kernel_8, m_kernel)
-judgement = judge(m_kernel_8, m_array)
-judgement = judge(m_kernel_8_mask, m_array)
+function build_lowrank_operator(csm_current, gpu_ids; distributed::Bool)
+    return HighOrderLowRankOp(
+        gridding,
+        kspha_measured,
+        times_measured;
+        recon_terms=recon,
+        csm=csm_current,
+        fieldmap=fieldmap,
+        mask=mask_recon,
+        arrayType=CuArray,
+        gpus=gpu_ids,
+        L_rank=25,
+        rsvd_seed=1234,
+        rsvd_chunk=4096,
+        rsvd_oversample=5,
+        rsvd_finalize=:gram,
+        rsvd_backend=:kernel,
+        rsvd_distribution=distributed ? :voxel : :single,
+        shared_rank_max=32,
+        shared_basis_tol=T(1e-2),
+        normal_distribution=distributed ? :channel : :single,
+        verbose=verbose,
+    )
+end
+
+
+datasets = (
+    (
+        label="physical coils",
+        variant=:physical,
+        csm=csm_physical,
+        data_host=kdata_physical,
+        data_gpu=kdata_physical_gpu,
+    ),
+    (
+        label="compressed coils",
+        variant=:compressed,
+        csm=csm_compressed,
+        data_host=kdata_compressed,
+        data_gpu=kdata_compressed_gpu,
+    ),
+)
+
+cases = Any[]
+for dataset in datasets
+    if benchmark_single_gpu
+        single_gpu_ids = [primary_gpu]
+        push!(cases, (
+            label="HighOrderOp / $(dataset.label) / 1 GPU",
+            variant=dataset.variant,
+            gpu_ids=single_gpu_ids,
+            data=dataset.data_gpu,
+            weight=weight_gpu,
+            build=let csm_current=dataset.csm
+                () -> build_highorder_operator(csm_current)
+            end,
+        ))
+        push!(cases, (
+            label="HighOrderKernelOp / $(dataset.label) / 1 GPU",
+            variant=dataset.variant,
+            gpu_ids=single_gpu_ids,
+            data=dataset.data_host,
+            weight=weight_host,
+            build=let csm_current=dataset.csm, gpu_ids=single_gpu_ids
+                () -> build_kernel_operator(csm_current, gpu_ids)
+            end,
+        ))
+        push!(cases, (
+            label="HighOrderLowRankOp / $(dataset.label) / 1 GPU",
+            variant=dataset.variant,
+            gpu_ids=single_gpu_ids,
+            data=dataset.data_gpu,
+            weight=weight_gpu,
+            build=let csm_current=dataset.csm, gpu_ids=single_gpu_ids
+                () -> build_lowrank_operator(csm_current, gpu_ids; distributed=false)
+            end,
+        ))
+    end
+
+    if benchmark_multi_gpu
+        gpu_ids = copy(multi_gpu_ids)
+        push!(cases, (
+            label="HighOrderKernelOp / $(dataset.label) / $(length(gpu_ids)) GPUs",
+            variant=dataset.variant,
+            gpu_ids=gpu_ids,
+            data=dataset.data_host,
+            weight=weight_host,
+            build=let csm_current=dataset.csm, gpu_ids=gpu_ids
+                () -> build_kernel_operator(csm_current, gpu_ids)
+            end,
+        ))
+        push!(cases, (
+            label="HighOrderLowRankOp / $(dataset.label) / $(length(gpu_ids)) GPUs",
+            variant=dataset.variant,
+            gpu_ids=gpu_ids,
+            data=dataset.data_gpu,
+            weight=weight_gpu,
+            build=let csm_current=dataset.csm, gpu_ids=gpu_ids
+                () -> build_lowrank_operator(csm_current, gpu_ids; distributed=true)
+            end,
+        ))
+    end
+end
+
+
+benchmark_results = Any[]
+for case in cases
+    push!(
+        benchmark_results,
+        benchmark_reconstruction_case(
+            case.label,
+            case.variant,
+            case.build,
+            case.data,
+            case.weight,
+            case.gpu_ids,
+            recParams;
+            samples=benchmark_samples,
+        ),
+    )
+end
+
+
+# --------------------------------------------------------------------------
+# Summary
+# --------------------------------------------------------------------------
+reference_images = Dict{Symbol,Array}()
+
+println()
+println("Reconstruction benchmark summary")
+@printf(
+    "%-58s %9s %9s %9s %9s %11s %10s\n",
+    "case",
+    "setup/s",
+    "first/s",
+    "median/s",
+    "min/s",
+    "CPU MiB",
+    "rel.error",
+)
+
+for result in benchmark_results
+    reference = get!(reference_images, result.variant, result.image)
+    relative_error = norm(result.image - reference) / max(norm(reference), eps(T))
+    @printf(
+        "%-58s %9.3f %9.3f %9.3f %9.3f %11.1f %10.3e\n",
+        result.label,
+        result.setup_seconds,
+        result.first_reconstruction_seconds,
+        result.median_seconds,
+        result.minimum_seconds,
+        result.median_cpu_allocated_bytes / 2.0^20,
+        relative_error,
+    )
+end
+
+CUDA.device!(primary_gpu)
