@@ -28,11 +28,10 @@ This implementation utilizes our `HighOrderOp` to realize the expanded encoding 
 - `csm::Array{Complex{T}, 3} [nX, nY, nCha]`: coil sensitivity map
 - `recon_terms:: = "111"`: digits flag (e.g. "111") to indicate terms to be used in the HOOp.
 - `nBlock::Int64 = 50`: number of blocks for parallel processing
-- `use_gpu::Bool = true`: whether to use GPU acceleration
-- `solver::String = "cgnr"`: solver for the inverse problem
-- `reg::String = "L2"`: regularization method
+- `arrayType::Type{<:AbstractArray} = Array`: array type for computation (e.g., `Array` or `CuArray`)
+- `solver::Type{<:AbstractLinearSolver} = CGNR`: solver for the inverse problem
+- `reg::AbstractParameterizedRegularization{T} = L2Regularization(zero(T))`: regularization method
 - `iter_max::Int64 = 10`: maximum number of iterations for the solver
-- `λ::T = 0.`: regularization parameter
 - `verbose::Bool = false`: whether to print verbose output
 
 # Returns
@@ -57,11 +56,10 @@ function FindDelay(
     csm         :: Array{Complex{T}, 3} = ones(Complex{T},(gridding.nX, gridding.nY)..., 1) , 
     recon_terms :: String               ="111"                                              ,
     nBlock      :: Int64                = 50                                                , 
-    use_gpu     :: Bool                 = true                                              , 
-    solver      :: String               = "cgnr"                                            ,
-    reg         :: String               = "L2"                                              ,
+    arrayType   :: Type{<:AbstractArray}= Array                                             ,
+    solver      :: Type{<:AbstractLinearSolver} = CGNR                                      ,
+    reg         :: AbstractParameterizedRegularization = L2Regularization(zero(T))          ,
     iter_max    :: Int64                = 10                                                ,
-    λ           :: T                    = 0.                                                ,
     verbose     :: Bool                 = false                                             , 
     ) ::T where {T<:AbstractFloat}
     @assert size(data,2) == size(csm,3) "data and csm must have the same number of coil channels"
@@ -77,11 +75,10 @@ function FindDelay(
     τ_perIter = Vector{Float64}();
     push!(τ_perIter, τ);
     recParams = Dict{Symbol,Any}()
-    recParams[:reconSize]      = (gridding.nX, gridding.nY)
-    recParams[:regularization] = reg
-    recParams[:λ]              = λ
-    recParams[:iterations]     = iter_max
-    recParams[:solver]         = solver
+    recParams[:reconSize]   = (gridding.nX, gridding.nY)
+    recParams[:reg]         = reg
+    recParams[:iterations]  = iter_max
+    recParams[:solver]      = solver
 
 
     # 2. Compute kspha_dt, which is "dk/dt"
@@ -93,11 +90,11 @@ function FindDelay(
         kspha_τ    = T.(InterpTrajTime(kspha   , dt, τ + StartTime, datatime, intermode=intermode)[1:nSample,:]');
         kspha_dt_τ = T.(InterpTrajTime(kspha_dt, dt, τ + StartTime, datatime, intermode=intermode)[1:nSample,:]');
         
-        weight = SampleDensity(kspha_τ[2:3,:], (gridding.nX, gridding.nY));
+        weight = samplingDensity(kspha_τ[2:3,:], (gridding.nX, gridding.nY));
         HOOp    = HighOrderOp(gridding, kspha_τ, datatime; recon_terms=recon_terms, 
-                    nBlock=nBlock, csm=csm, fieldmap=fieldmap, arrayType=(use_gpu ? CuArray : Array), verbose=verbose);
+                    nBlock=nBlock, csm=csm, fieldmap=fieldmap, arrayType=arrayType, verbose=verbose);
         HOOp_dt = HighOrderOp(gridding, kspha_τ, datatime; recon_terms=recon_terms, kspha_dt=kspha_dt_τ, 
-                    nBlock=nBlock, csm=csm, fieldmap=fieldmap, arrayType=(use_gpu ? CuArray : Array), verbose=verbose);
+                    nBlock=nBlock, csm=csm, fieldmap=fieldmap, arrayType=arrayType, verbose=verbose);
         
         # Update image
         x = recon_HOOp(HOOp, data, weight, recParams)
@@ -135,11 +132,10 @@ function FindDelay(
     csm         :: Array{Complex{T}, 3} = ones(Complex{T},(gridding.nX, gridding.nY)..., 1) , 
     recon_terms :: String               = "111"                                             ,
     nBlock      :: Int64                = 50                                                , 
-    use_gpu     :: Bool                 = true                                              , 
-    solver      :: String               = "cgnr"                                            ,
-    reg         :: String               = "L2"                                              ,
+    arrayType   :: Type{<:AbstractArray}= Array                                             ,
+    solver      :: Type{<:AbstractLinearSolver} = CGNR                                      ,
+    reg         :: AbstractParameterizedRegularization = L2Regularization(zero(T))          ,
     iter_max    :: Int64                = 10                                                ,
-    λ           :: T                    = 0.                                                ,
     verbose     :: Bool                 = false                                             , 
     ) ::T where {T<:AbstractFloat} 
     nSample, nCha = size(data);
@@ -147,6 +143,6 @@ function FindDelay(
     return FindDelay(
         gridding, data, kspha, datatime, StartTime, dt; 
         JumpFact=JumpFact, Δτ_min=Δτ_min, intermode=intermode, 
-        fieldmap=fieldmap, csm=csm, recon_terms=recon_terms, nBlock=nBlock, use_gpu=use_gpu, 
-        solver=solver, reg=reg, iter_max=iter_max, λ=λ, verbose=verbose);
+        fieldmap=fieldmap, csm=csm, recon_terms=recon_terms, nBlock=nBlock, arrayType=arrayType, 
+        solver=solver, reg=reg, iter_max=iter_max, verbose=verbose);
 end
