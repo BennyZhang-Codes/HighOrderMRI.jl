@@ -93,7 +93,7 @@ function run_kernel_rsvd_forward!(
     M_pad = M + (M % 2)
     shmem_bytes = M_pad * sizeof(T) + nWarp * L * sizeof(Complex{T})
 
-    @cuda threads=threads blocks=blocks shmem=shmem_bytes CUDA_kernel_rsvd_forward!(
+    @cuda always_inline=true threads=threads blocks=blocks shmem=shmem_bytes CUDA_kernel_rsvd_forward!(
             W, omega, times, fieldmap, bf, kspha, Int32(nSam), Int32(nVox),
             Val(M), Val(L), Val(kspha_transposed))
 
@@ -135,7 +135,7 @@ function run_kernel_rsvd_adjoint!(
 
     shmem_bytes = warps_per_block * M * sizeof(T)
 
-    @cuda threads=threads blocks=blocks shmem=shmem_bytes CUDA_kernel_rsvd_adjoint!(
+    @cuda always_inline=true threads=threads blocks=blocks shmem=shmem_bytes CUDA_kernel_rsvd_adjoint!(
             B_adj, Q, times, fieldmap, bf, kspha, Int32(nSam), Int32(nVox),
             Val(M), Val(L), Val(kspha_transposed))
 

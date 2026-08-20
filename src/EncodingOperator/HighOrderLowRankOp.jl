@@ -482,7 +482,7 @@ function HighOrderLowRankOp(
                 end
                 profiled_rsvd_time = distributed_rsvd_total_time(rsvd_timing)
                 timing_denominator = max(profiled_rsvd_time, eps(Float64))
-                @info(
+                if verbose @info(
                     "Distributed rSVD phase timing",
                     n_dynamic=rsvd_timing.n_calls,
                     forward_time=rsvd_timing.forward_time,
@@ -497,9 +497,9 @@ function HighOrderLowRankOp(
                     qr_fraction=rsvd_timing.qr_time / timing_denominator,
                     adjoint_gram_fraction=rsvd_timing.adjoint_gram_time / timing_denominator,
                     finalize_fraction=rsvd_timing.finalize_time / timing_denominator,
-                )
-                @info "Distributed setup timing" rsvd_time shared_time total=rsvd_time+shared_time
-        
+                ) end
+                if verbose @info "Distributed setup timing" rsvd_time shared_time total=rsvd_time+shared_time end
+
                 shared_rank_local = distributed_shared.rank
                 errors_local = copy(distributed_shared.errors)
         
@@ -598,9 +598,8 @@ function HighOrderLowRankOp(
     csm = arrayType(csm_host)
     mask_idx = arrayType(mask_idx_host)
     
-    @info("Shared spatial basis complete", rank=shared_rank, max_error=maximum(shared_errors), mean_error=sum(shared_errors) / length(shared_errors))
-    @info("Global temporal basis ready", shared_rank=shared_rank, nPoint=nSam * nDyn, size=size(q))
-    if verbose && use_distributed_rsvd @info("Multi-GPU rSVD workspace released", setup_gpus=gpus, operator_gpu=primary_gpu) end
+    if verbose @info("Shared spatial basis complete", rank=shared_rank, max_error=maximum(shared_errors), mean_error=sum(shared_errors) / length(shared_errors)) end
+    if verbose @info("Global temporal basis ready", shared_rank=shared_rank, nPoint=nSam * nDyn, size=size(q)) end
 
 
     # AbstractNFFTs evaluates the forward transform with a negative Fourier

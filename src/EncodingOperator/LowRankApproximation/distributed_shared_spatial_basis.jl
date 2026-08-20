@@ -163,7 +163,15 @@ function update_distributed_shared_basis!(
             B = @view shared_shard.basis[:, 1:r]
             projection = @view shared_shard.small[1:r, :]
 
-            CUDA.@sync mul!(projection, adjoint(B), rsvd_shard.v_scaled)
+            # CUDA.@sync mul!(projection, adjoint(B), rsvd_shard.v_scaled)
+            CUDA.@sync CUDA.CUBLAS.gemm!(
+                'C', 'N',
+                one(Complex{T}),
+                B,
+                rsvd_shard.v_scaled,
+                zero(Complex{T}),
+                projection,
+            )
 
             Array(projection)
         end
@@ -192,7 +200,15 @@ function update_distributed_shared_basis!(
 
             CUDA.@sync begin
                 mul!(shared_shard.residual, B, small, -one(Complex{T}), one(Complex{T}))
-                mul!(small, adjoint(B), shared_shard.residual)
+                # mul!(small, adjoint(B), shared_shard.residual)
+                CUDA.CUBLAS.gemm!(
+                    'C', 'N',
+                    one(Complex{T}),
+                    B,
+                    shared_shard.residual,
+                    zero(Complex{T}),
+                    small,
+                )
             end
 
             Array(small)
@@ -316,7 +332,15 @@ function update_distributed_shared_basis!(
 
         CUDA.@sync begin
             mul!(B_new, shared_shard.residual, transform)
-            mul!(small_new, adjoint(B_new), rsvd_shard.v_scaled)
+            # mul!(small_new, adjoint(B_new), rsvd_shard.v_scaled)
+            CUDA.CUBLAS.gemm!(
+                'C', 'N',
+                one(Complex{T}),
+                B_new,
+                rsvd_shard.v_scaled,
+                zero(Complex{T}),
+                small_new,
+            )
         end
         Array(small_new)
     end
