@@ -19,10 +19,6 @@ include("geometry/geo.jl")
 include("Grid.jl")
 export gen_RPS_grid, RPS2PCS, PCS2RPS, RPS2DCS, DCS2RPS
 
-# Compatibility alias for the pre-registration standalone repository.
-generate_rps_grid(args...) = gen_RPS_grid(args...)
-export generate_rps_grid
-
 include("GradConversion.jl")
 export grad_Nominal2DCS, grad_DCS2Nominal
 

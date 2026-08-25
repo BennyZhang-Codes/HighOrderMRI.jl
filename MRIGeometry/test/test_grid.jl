@@ -12,7 +12,6 @@
 
     grid_rps = gen_RPS_grid(geo)
     @test size(grid_rps) == (4, 3, 2, 3)
-    @test generate_rps_grid(geo.FOV, geo.MatrixSize) == grid_rps
     @test DCS2RPS(geo, RPS2DCS(geo, grid_rps)) ≈ grid_rps
     @test PCS2RPS(geo, RPS2PCS(geo, grid_rps)) ≈ grid_rps
 end
