@@ -47,7 +47,7 @@ end
 """
     RPS2DCS(geo::Geometry, grid_rps::AbstractArray{T, N}) where {T<:Real, N}
 
-Transforms an array of local RPS (Read, Phase, Slice) coordinates to 
+Transforms an array of local RPS (Read, Phase, Slice) coordinates to
 absolute DCS (Device Coordinate System) physical coordinates using the geometry's spatial mapping.
 
 # Arguments
@@ -65,15 +65,15 @@ function RPS2DCS(geo::Geometry, grid_rps::AbstractArray{T, N}) where {T<:Real, N
     R = Matrix{T}(geo.R_RPS_DCS)
     T_offset = Vector{T}(geo.T_DCS)
 
-    # 2. Flatten the spatial dimensions to shape (K, 3) 
+    # 2. Flatten the spatial dimensions to shape (K, 3)
     # This allows us to leverage highly optimized BLAS matrix multiplications
     grid_flat = reshape(grid_rps, :, 3)
-    
+
     # 3. Batch affine transformation: X_DCS = R * X_RPS + T
     # In matrix form for K points: result = grid_flat * R' .+ T_offset'
     result = grid_flat * transpose(R)
     result .+= T_offset'
-    
+
     # 4. Restore the original array dimensions (e.g., Nx x Ny x Nz x 3)
     return reshape(result, size(grid_rps))
 end
@@ -82,7 +82,7 @@ end
 """
     DCS2RPS(geo::Geometry, grid_dcs::AbstractArray{T, N}) where {T<:Real, N}
 
-Transforms an array of absolute DCS (Device Coordinate System) physical coordinates 
+Transforms an array of absolute DCS (Device Coordinate System) physical coordinates
 back to local RPS (Read, Phase, Slice) coordinates for a given Geometry.
 
 # Arguments
@@ -101,12 +101,12 @@ function DCS2RPS(geo::Geometry, grid_dcs::AbstractArray{T, N}) where {T<:Real, N
 
     # 2. Flatten the spatial dimensions to shape (K, 3)
     grid_flat = reshape(grid_dcs, :, 3)
-    
+
     # 3. Inverse affine transformation: X_RPS = R^-1 * (X_DCS - T)
     # Utilizing the orthogonal matrix property: R^-1 = transpose(R)
     # Batch calculation: Result = (grid_flat .- T_offset') * R
     result = (grid_flat .- T_offset') * R
-    
+
     # 4. Restore the original array dimensions
     return reshape(result, size(grid_dcs))
 end
@@ -115,7 +115,7 @@ end
 """
     RPS2PCS(geo::Geometry, grid_rps::AbstractArray{T, N}) where {T<:Real, N}
 
-Transforms an array of local RPS (Read, Phase, Slice) coordinates to 
+Transforms an array of local RPS (Read, Phase, Slice) coordinates to
 Patient Coordinate System (PCS) anatomical coordinates using the geometry's spatial mapping.
 
 # Arguments
@@ -133,15 +133,15 @@ function RPS2PCS(geo::Geometry, grid_rps::AbstractArray{T, N}) where {T<:Real, N
     R = Matrix{T}(geo.R_RPS_PCS)
     T_offset = Vector{T}(geo.T_PCS)
 
-    # 2. Flatten the spatial dimensions to shape (K, 3) 
+    # 2. Flatten the spatial dimensions to shape (K, 3)
     # This allows us to leverage highly optimized BLAS matrix multiplications
     grid_flat = reshape(grid_rps, :, 3)
-    
+
     # 3. Batch affine transformation: X_PCS = R * X_RPS + T
     # In matrix form for K points: result = grid_flat * R' .+ T_offset'
     result = grid_flat * transpose(R)
     result .+= T_offset'
-    
+
     # 4. Restore the original array dimensions
     return reshape(result, size(grid_rps))
 end
@@ -150,7 +150,7 @@ end
 """
     PCS2RPS(geo::Geometry, grid_pcs::AbstractArray{T, N}) where {T<:Real, N}
 
-Transforms an array of anatomical PCS (Patient Coordinate System) coordinates 
+Transforms an array of anatomical PCS (Patient Coordinate System) coordinates
 back to local RPS (Read, Phase, Slice) coordinates for a given Geometry.
 
 # Arguments
@@ -169,12 +169,12 @@ function PCS2RPS(geo::Geometry, grid_pcs::AbstractArray{T, N}) where {T<:Real, N
 
     # 2. Flatten the spatial dimensions to shape (K, 3)
     grid_flat = reshape(grid_pcs, :, 3)
-    
+
     # 3. Inverse affine transformation: X_RPS = R^-1 * (X_PCS - T)
     # Utilizing the orthogonal matrix property: R^-1 = transpose(R)
     # Batch calculation: Result = (grid_flat .- T_offset') * R
     result = (grid_flat .- T_offset') * R
-    
+
     # 4. Restore the original array dimensions
     return reshape(result, size(grid_pcs))
 end

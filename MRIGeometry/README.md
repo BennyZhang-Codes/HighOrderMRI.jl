@@ -18,7 +18,7 @@ Pkg.add("MRIGeometry")
 ```julia
 using MRIGeometry
 
-grid = gen_RPS_grid([0.2, 0.2], [128, 128])
+grid = gen_RPS_grid([0.2, 0.2, 0.2], [128, 128, 128])
 ```
 
 See the exported API in the source for the currently supported geometry and

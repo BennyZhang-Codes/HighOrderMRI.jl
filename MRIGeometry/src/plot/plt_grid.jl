@@ -1,7 +1,7 @@
 """
     plt_grid(grid::Array{<:Real,4}; step::Int=4, space::Symbol=:DCS, kwargs...)
 
-Visualize a 3D voxel grid with subsampling using PyPlot. The color gradients 
+Visualize a 3D voxel grid with subsampling using PyPlot. The color gradients
 automatically map to the Readout (Red), Phase (Green), and Slice (Blue) logical dimensions.
 
 # Arguments
@@ -19,7 +19,7 @@ automatically map to the Readout (Red), Phase (Green), and Slice (Blue) logical 
 - `elev`: Float. Initial camera elevation angle in degrees (default: 15).
 - `azim`: Float. Initial camera azimuth angle in degrees (default: 135).
 """
-function plt_grid(grid::Array{T,4}; step::Int=4, space::Symbol=:DCS,   
+function plt_grid(grid::Array{T,4}; step::Int=4, space::Symbol=:DCS,
     title              = ""       ,
     width              = 18       ,
     height             = 15       ,
@@ -29,7 +29,7 @@ function plt_grid(grid::Array{T,4}; step::Int=4, space::Symbol=:DCS,
     color_facecolor    = "#1F1F1F",
     color_label        = "#CCCCCC",
     plot_RPS_vectors   = true     ,
-    elev               = 15       ,  
+    elev               = 15       ,
     azim               = 135      ,
     ) where T <: Real
     grid_sub = @views grid[1:step:end, 1:step:end, 1:step:end, :]
@@ -77,7 +77,7 @@ function plt_grid(grid::Array{T,4}; step::Int=4, space::Symbol=:DCS,
 
     # Normalize indices to [0.2, 0.8] linearly — avoid repeating color patterns
     cmin, cmax = 0.2, 0.8
-    
+
     r_color = nx == 1 ? [0.5] : range(cmin, cmax, length=nx)
     p_color = ny == 1 ? [0.5] : range(cmin, cmax, length=ny)
     s_color = nz == 1 ? [0.5] : range(cmin, cmax, length=nz)
@@ -85,7 +85,7 @@ function plt_grid(grid::Array{T,4}; step::Int=4, space::Symbol=:DCS,
     R_grid = [r for r in r_color, p in p_color, s in s_color]
     P_grid = [p for r in r_color, p in p_color, s in s_color]
     S_grid = [s for r in r_color, p in p_color, s in s_color]
-    
+
     colors = hcat(R_grid[:], P_grid[:], S_grid[:])
 
     # norm_range(x) = cmin .+ ((x .- minimum(x)) ./ (maximum(x) - minimum(x) + eps())) .* (cmax - cmin)
@@ -132,7 +132,7 @@ function plt_grid(grid::Array{T,4}; step::Int=4, space::Symbol=:DCS,
     if plot_RPS_vectors
         # ==========================================================
         # 1. Find the "Absolute Physical Origin" of the matrix
-        # Get the absolute physical coordinates of the voxel at index 
+        # Get the absolute physical coordinates of the voxel at index
         # (1, 1, 1) and convert to mm.
         # ==========================================================
         start_pt = grid[1, 1, 1, :] .* 1e3
