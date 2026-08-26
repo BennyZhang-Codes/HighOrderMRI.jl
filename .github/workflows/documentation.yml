@@ -4,11 +4,11 @@ on:
   push:
     branches:
       - main
-    tags:
-      - "v*"
+      - docs-modern-ui
   pull_request:
     branches:
       - main
+      - docs-modern-ui
   workflow_dispatch:
 
 permissions:
@@ -18,34 +18,29 @@ concurrency:
   group: docs-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  JULIA_NUM_THREADS: auto
-  JULIA_PKG_PRECOMPILE_AUTO: "0"
-  DOCUMENTER_DEVBRANCH: main
-
 jobs:
   docs:
-    name: Build and deploy
+    name: Build VitePress documentation
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
-      - uses: julia-actions/setup-julia@v3
+
+      - uses: actions/setup-node@v4
         with:
-          version: "1"
-          show-versioninfo: "true"
-      - uses: julia-actions/cache@v3
+          node-version: '22'
+
+      - name: Install documentation dependencies
+        run: npm install --prefix docs --no-audit --no-fund
+
+      - name: Build VitePress site
+        run: npm run docs:build --prefix docs
+
+      - name: Deploy to gh-pages
+        if: github.event_name != 'pull_request'
+        uses: peaceiris/actions-gh-pages@v4
         with:
-          delete-old-caches: false
-      - name: Instantiate documentation environment
-        shell: julia --color=yes --project=docs {0}
-        run: |
-          using Pkg
-          Pkg.instantiate(; allow_autoprecomp=false)
-          Pkg.build("Conda")
-          ENV["PYTHON"] = ""
-          Pkg.build("PyCall")
-      - name: Build documentation
-        run: julia --color=yes --project=docs docs/make.jl
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: docs/src/.vitepress/dist
+          publish_branch: gh-pages
+          force_orphan: true

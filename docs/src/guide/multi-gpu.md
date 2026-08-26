@@ -1,29 +1,20 @@
 # Multi-GPU execution
 
-HighOrderMRI uses different decompositions for different phases of the
-workload:
+Multi-GPU execution in HighOrderMRI.jl is stage specific. The explicit CUDA operator and distributed low-rank setup partition masked voxels, whereas the optional low-rank normal operator partitions receive channels. These decompositions alter data placement, communication, and summation order but do not define a different physical signal model.
 
-- the explicit CUDA operator shards masked voxels;
-- distributed low-rank setup shards masked voxels;
-- the optional low-rank normal operator shards receive channels.
-
-These choices are complementary. Multi-GPU partitioning changes execution and
-communication, not the intended numerical approximation.
+Symbols and the weighting convention follow [Symbols and notation](/theory/symbols).
 
 ## Runtime requirements
 
-Use zero-based device IDs and start Julia with enough default threads:
+CUDA device IDs are zero based. A multi-GPU Julia process can be started with:
 
 ```bash
 CUDA_VISIBLE_DEVICES=0,1,2,3 julia --threads=auto --project=.
 ```
 
-At least one default Julia thread per GPU worker is needed for effective
-overlap; one additional coordinator thread is recommended. With fewer
-threads, results remain mathematically valid, but kernel submission,
-transfers, and synchronization may occur in waves.
+Effective concurrent submission requires at least one default Julia thread per GPU worker; an additional coordinator thread is useful. With fewer threads, the numerical result is unchanged, but kernel submission, transfers, and synchronization can occur in sequential waves.
 
-Check the visible devices before allocating a large operator:
+Verify the visible devices before constructing a large operator:
 
 ```julia
 using CUDA
@@ -32,7 +23,7 @@ CUDA.functional() || error("CUDA is not functional")
 collect(CUDA.devices())
 ```
 
-## Explicit operator
+## Explicit encoding: voxel decomposition
 
 ```julia
 op = HighOrderKernelOp(
@@ -47,12 +38,11 @@ op = HighOrderKernelOp(
 )
 ```
 
-The operator partitions `nVox` into contiguous ranges. Each device owns its
-field map, basis rows, coil-map rows, and workspaces. Forward partial signals
-are reduced on the host; adjoint voxel results are gathered into their
-original mask positions.
+`HighOrderKernelOp` partitions the masked voxel set into contiguous ranges. Each device stores the corresponding field-map values, spatial basis rows, coil-map rows, and workspaces. During the forward operation, each device evaluates the contribution from its voxel subset and the partial signals are summed on the host. During the adjoint, the disjoint voxel results are gathered into their original masked positions.
 
-## Voxel-distributed rSVD setup
+For the explicit operator, this is a decomposition of the same discrete encoding model. Only data placement and finite-precision reduction order change.
+
+## Low-rank setup: voxel-distributed rSVD
 
 ```julia
 op = HighOrderLowRankOp(
@@ -72,57 +62,86 @@ op = HighOrderLowRankOp(
 )
 ```
 
-For voxel shards ``\mathcal V_g``:
+Let $\mathcal V_g$ denote the masked-voxel subset assigned to GPU $g$. Partitioning $H_d$ by voxel columns and $\Omega_d$ by the corresponding rows gives
 
-```math
+$$
 H_d\Omega_d
 =
-\sum_g H_{d,g}\Omega_{d,g},
-\qquad
-B_d^HB_d
+\sum_g H_{d,g}\Omega_{d,g}.
+$$
+
+Because
+
+$$
+B_d=H_d^H Q_d
+$$
+
+is partitioned by voxel rows, its small Gram matrix is obtained from
+
+$$
+B_d^H B_d
 =
-\sum_g B_{d,g}^HB_{d,g}.
-```
+\sum_g B_{d,g}^H B_{d,g}.
+$$
 
-Only small sketches and Gram contributions are reduced on the host. The
-large spatial factors and the shared basis remain voxel-sharded during setup,
-then the completed shared basis is gathered once to the primary operator
-device.
+Thus, only the sample-domain randomized sketch and the small Gram contributions require reduction across devices. The large spatial factors and the shared spatial basis remain voxel distributed during setup, and the completed shared basis is gathered once to the primary operator device.
 
-Voxel distribution currently requires:
+Voxel-distributed setup currently requires:
 
 - `arrayType=CuArray`;
 - `rsvd_backend=:kernel`;
 - `rsvd_finalize=:gram`;
-- at least two unique GPU IDs;
-- `L_rank + rsvd_oversample <= 32`.
+- at least two distinct GPU IDs;
+- $L+p\leq 32$, where $L$ is `L_rank` and $p$ is `rsvd_oversample`.
 
-With `rsvd_distribution=:auto`, this mode is selected when these conditions
-are satisfied.
+With `rsvd_distribution=:auto`, voxel distribution is selected when these conditions are satisfied.
 
-## Channel-distributed normal operator
+## Iterative reconstruction: channel-distributed normal operator
 
-Set:
+A channel-distributed normal operator is selected with
 
 ```julia
 normal_distribution=:channel
 ```
 
-when constructing a CUDA `HighOrderLowRankOp` with at least two GPUs. The
-normal operator partitions coils and computes local
-``A_g^H W^2 A_g x`` contributions. Those image-space contributions are
-reduced to the primary GPU.
+when constructing a CUDA `HighOrderLowRankOp` with at least two GPUs. Let $W$ denote the diagonal reconstruction weighting operator and let $\mathcal C_g$ contain the receive coils assigned to GPU $g$. The local normal contribution is
 
-The backend is constructed lazily when `normalOperator(W ∘ op)` is first
-requested. Setup distribution and normal distribution are independent; the
-same operator may use voxel shards during rSVD setup and coil shards during
-iterative reconstruction.
+$$
+N_gx
+=
+\sum_{c\in\mathcal C_g}
+A_c^H W^H W A_c x,
+$$
+
+and the complete weighted normal operation is
+
+$$
+A^H W^H W A x
+=
+\sum_g N_gx.
+$$
+
+For the square-root density weights used by `recon_HOOp`, $W$ is diagonal and the current implementation stores `abs2.(weights)` on each channel shard. When the supplied weights are real and non-negative, $W^H W=W^2$.
+
+Channel partitioning is therefore a decomposition of the normal operator associated with the already constructed low-rank encoding operator. It does not add another low-rank approximation.
+
+The distributed normal backend is constructed lazily when `normalOperator(W ∘ op)` is first requested. Setup distribution and normal-operator distribution are independent: the same `HighOrderLowRankOp` can use voxel decomposition during rSVD construction and channel decomposition during iterative reconstruction.
+
+## Communication model
+
+The communication pattern depends on the stage and should be reported separately when evaluating multi-GPU performance:
+
+| Stage | Partitioned dimension | Cross-device / host communication |
+| --- | --- | --- |
+| Explicit `HighOrderKernelOp` | Masked voxels | Host reduction of partial forward signals; adjoint voxel shards are gathered |
+| Distributed low-rank setup | Masked voxels | Reduction of sample-domain sketches and small Gram matrices; completed shared basis gathered once |
+| Low-rank normal operator | Receive channels | Input image distributed to workers; local normal contributions summed on the primary path |
+
+The current explicit implementation is voxel sharded; forward samples are not the partition dimension.
 
 ## Resource lifecycle
 
-`recon_HOOp` releases the distributed normal backend by default. After direct
-normal-operator use, or after reconstruction with `release_backend=false`,
-release resources explicitly:
+`recon_HOOp` releases the distributed normal backend by default. After direct use of the normal operator, or after reconstruction with `release_backend=false`, release the associated resources explicitly:
 
 ```julia
 close(op)
@@ -130,7 +149,7 @@ close(op)
 release_highorder_normal_backend!(op)
 ```
 
-Before replacing a large operator:
+Before constructing a replacement for a large operator, the previous object can be released explicitly:
 
 ```julia
 close(op)
@@ -138,118 +157,14 @@ op = nothing
 GC.gc()
 ```
 
-Julia retains the old right-hand-side value until a replacement assignment
-finishes. Constructing a new operator directly into the same variable can
-therefore make old and new NFFT plans and bases coexist temporarily.
+During an assignment such as `op = HighOrderLowRankOp(...)`, Julia retains the previous right-hand-side value until evaluation of the replacement expression is complete. Constructing the replacement directly into the same binding can therefore make the old and new NFFT plans and spatial bases coexist temporarily.
 
-CUDA.jl uses reusable memory pools. Releasing workspaces does not guarantee an
-immediate decrease in the reserved-memory value shown by `nvidia-smi`.
+CUDA.jl uses reusable memory pools. Releasing explicit workspaces does not necessarily produce an immediate decrease in the reserved device memory reported by `nvidia-smi`.
 
-## PyCall finalizer crash after CUDA reconstruction
+Environment-specific failures, including the observed PyCall/CPython finalizer crash after CUDA reconstruction, are documented in [Troubleshooting](/guide/troubleshooting).
 
-HighOrderMRI currently loads PyPlot through PyCall. A compatibility failure
-has been observed with Julia 1.12, CUDA.jl 6.2, PyCall 1.96.4, and CPython
-3.13: reconstruction finishes successfully and the Julia prompt returns, but
-the process may terminate with signal 11 several minutes later or during CUDA
-memory-pool cleanup. A representative end of the native stack is:
+## Reporting and benchmarking
 
-```text
-CUDACore.pool_cleanup
-  -> CUDA.reclaim
-  -> GC.gc
-  -> PyCall.pydecref
-  -> Python PyObject_Free
-  -> signal 11 (segmentation fault)
-```
+For a multi-GPU experiment, record the device IDs and UUIDs, GPU model, driver, CUDA and Julia versions, Julia thread count, partition mode, primary device, setup and reduction times, steady-state operator time, and peak device memory. Runs affected by competing GPU workloads, device-loss events, or other system-level failures should be identified separately from valid timing measurements.
 
-This stack does not by itself indicate an error in `HighOrderOp`,
-`HighOrderKernelOp`, coil compression, or the reconstructed result. CUDA
-memory management initiates a Julia garbage collection; that collection then
-runs a PyCall finalizer, and the native failure occurs while CPython releases
-an object.
-
-### Validated workaround
-
-The following combination completed repeated reconstructions, explicit
-garbage collection, and `CUDA.reclaim()` without the delayed process exit:
-
-| Component | Validated version |
-|:--|:--|
-| Julia | 1.12.6 |
-| CUDA.jl / CUDACore | 6.2.1 |
-| PyCall | 1.96.4 |
-| PyPlot | 2.11.6 |
-| Python | 3.10.13 |
-| Matplotlib | 3.10.6 |
-
-The PyCall and PyPlot versions were unchanged from the failing configuration;
-the effective change was from CPython 3.13 to CPython 3.10. This is empirical
-compatibility evidence rather than proof that every Python 3.13 configuration
-will fail. Until the finalizer interaction is resolved upstream, use a Python
-3.10 environment for long-lived CUDA reconstruction sessions that also load
-PyPlot.
-
-Create or select a Python 3.10 environment containing NumPy and Matplotlib,
-then rebuild PyCall against that interpreter:
-
-```bash
-conda create -n highordermri-py310 python=3.10 numpy matplotlib
-conda activate highordermri-py310
-PYTHON="$(command -v python)" julia --project=. -e '
-using Pkg
-Pkg.build("PyCall")'
-```
-
-Restart Julia after rebuilding PyCall and verify the interpreter and shared
-library before reconstruction:
-
-```julia
-using PyCall
-
-PyCall.python
-PyCall.pyversion
-PyCall.libpython
-```
-
-The reported executable and `libpython` must both belong to the intended
-Python 3.10 installation. A basic cleanup check is:
-
-```julia
-using CUDA, PyCall, PyPlot
-
-fig = PyPlot.figure()
-PyPlot.close(fig)
-fig = nothing
-
-buffer = CUDA.zeros(Float32, 1024)
-buffer = nothing
-GC.gc(true)
-CUDA.reclaim()
-GC.gc(true)
-```
-
-The decisive validation is still the real workload: repeat the reconstruction
-several times and leave the interactive Julia process alive after cleanup.
-
-### Reproducibility limits
-
-`Project.toml` compatibility entries can constrain Julia, CUDA.jl, PyCall,
-and PyPlot versions, but neither `Project.toml` nor `Manifest.toml` records the
-external Python executable or `libpython` selected when PyCall is built. The
-selection is stored in the Julia depot and is shared by environments using
-the same installed PyCall source. Rebuilding PyCall in a shared depot can
-therefore change the Python runtime used by more than one Julia project.
-
-Record `PyCall.python`, `PyCall.pyversion`, and `PyCall.libpython` together
-with the Julia and CUDA versions in a reproducibility report. If a different
-Python runtime is required, set `PYTHON` explicitly and rebuild PyCall again;
-do not treat `CUDA.reclaim()` or REPL keep-alive settings as a fix for a native
-finalizer crash.
-
-## What to report
-
-Record device IDs and UUIDs, GPU model, driver, CUDA and Julia versions,
-thread count, partition mode, primary device, setup time, reduction time,
-steady-state operator time, peak memory, and failures such as Xid/device-loss
-events. Exclude runs affected by competing GPU processes from a final
-benchmark.
+Runtime measurements should be accompanied by the operator-level numerical checks in [Scientific validation strategy](/guide/validation), with reconstruction conventions fixed according to the [reconstruction protocol](/guide/reconstruction-protocol).

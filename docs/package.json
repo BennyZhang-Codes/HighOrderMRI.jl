@@ -1,0 +1,15 @@
+{
+  "name": "highordermri-docs",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "docs:dev": "vitepress src",
+    "docs:build": "vitepress build src",
+    "docs:preview": "vitepress preview src"
+  },
+  "devDependencies": {
+    "markdown-it-mathjax3": "4.3.2",
+    "mermaid": "11.17.1",
+    "vitepress": "2.0.0-alpha.19"
+  }
+}

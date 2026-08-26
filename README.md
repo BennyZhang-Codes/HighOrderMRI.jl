@@ -2,12 +2,9 @@
 
 [![CI](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/actions/workflows/ci.yml)
 [![Documentation](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/actions/workflows/documentation.yml/badge.svg?branch=main)](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/actions/workflows/documentation.yml)
-[![Dev docs](https://img.shields.io/badge/docs-dev-blue.svg)](https://bennyzhang-codes.github.io/HighOrderMRI.jl/dev/)
+[![Docs](https://img.shields.io/badge/docs-HighOrderMRI.jl-6366f1.svg)](https://bennyzhang-codes.github.io/HighOrderMRI.jl/)
 
-HighOrderMRI.jl is a Julia toolbox for non-Cartesian MRI reconstruction with
-measured or predicted dynamic higher-order fields. It provides explicit
-encoding operators for numerical reference and a matrix-free shared-subspace
-operator for large 2D and 3D reconstruction.
+HighOrderMRI.jl is a Julia toolbox for Cartesian and non-Cartesian MRI reconstruction with measured or predicted dynamic higher-order fields. It provides explicit encoding operators for numerical reference, fused CUDA implementations, and a matrix-free shared-subspace operator for large 2D and 3D reconstruction.
 
 ## Features
 
@@ -15,32 +12,25 @@ operator for large 2D and 3D reconstruction.
 - Parallel imaging, static off-resonance correction, and reconstruction masks.
 - `HighOrderOp`: array-based explicit evaluation on CPU or CUDA.
 - `HighOrderKernelOp`: fused explicit CUDA evaluation on one or more GPUs.
-- `HighOrderLowRankOp`: per-dynamic matrix-free rSVD, adaptive global shared
-  spatial basis, and a global-trajectory NFFT.
-- Optional voxel-distributed multi-GPU rSVD setup and channel-distributed
-  multi-GPU normal operators.
-- GIRF-based field prediction and model-based field/data synchronization
-  ([Dubovan and Baron, 2023](https://doi.org/10.1002/mrm.29460)).
-- Raw complex reconstruction metrics and encoding-convention regression tests.
+- `HighOrderLowRankOp`: per-dynamic matrix-free rSVD, adaptive incremental shared spatial basis, and a global-trajectory NFFT.
+- Optional voxel-distributed multi-GPU rSVD setup and channel-distributed multi-GPU normal operators.
+- GIRF-based field prediction and model-based field/data synchronization ([Dubovan and Baron, 2023](https://doi.org/10.1002/mrm.29460)).
+- Raw complex reconstruction metrics, encoding-convention regression tests, and a documented scientific validation strategy.
 
 ## Documentation
 
-The [development documentation](https://bennyzhang-codes.github.io/HighOrderMRI.jl/dev/)
-contains:
+The [HighOrderMRI.jl documentation](https://bennyzhang-codes.github.io/HighOrderMRI.jl/) contains:
 
 - installation and a first CPU example;
 - the expanded signal model, units, basis order, and NFFT convention;
-- the randomized SVD and global shared spatial-subspace derivation;
+- the randomized SVD and incremental shared spatial-subspace derivation;
 - operator selection, reconstruction, multi-GPU, and synchronization guides;
-- the frozen reconstruction comparison protocol and generated API reference.
+- a scientific validation strategy separating implementation consistency, low-rank approximation, independent numerical validation, and physical validation;
+- the frozen reconstruction comparison protocol, performance reporting guidance, API reference, references, and troubleshooting.
 
 ## Installation
 
-HighOrderMRI.jl requires Julia 1.12 or later. CI tests both the minimum
-supported Julia 1.12 release and the latest stable Julia 1.x release; the
-documentation is also built with the latest stable release. The repository
-currently carries `MRIGeometry` as a local subpackage, so clone the complete
-repository:
+HighOrderMRI.jl requires Julia 1.12 or later. CI tests both the minimum supported Julia 1.12 release and the latest stable Julia 1.x release; the documentation is also built with the latest stable release. The repository currently carries `MRIGeometry` as a local subpackage, so clone the complete repository:
 
 ```bash
 git clone https://github.com/BennyZhang-Codes/HighOrderMRI.jl.git
@@ -54,18 +44,13 @@ Then start Julia with the project and load the package:
 using HighOrderMRI
 ```
 
-CUDA execution additionally requires a functional
-[CUDA.jl](https://github.com/JuliaGPU/CUDA.jl) installation. Start Julia with
-`--threads=auto` when multiple GPUs participate.
+CUDA execution additionally requires a functional [CUDA.jl](https://github.com/JuliaGPU/CUDA.jl) installation. Start Julia with `--threads=auto` when multiple GPUs participate.
 
 ## Demo
 
 For MRI reconstruction incorporating measured field dynamics, we first estimate the synchronization delay between the MRI data and the field measurements. The final reconstruction is then performed using the synchronized field dynamics.
 
-The demo includes 2D single-shot spiral (7 T, 1 mm in-plane resolution,
-approximately 29 ms readout) and 2D single-shot EPI (7 T, 1 mm in-plane
-resolution, approximately 40 ms readout) data. It compares a nominal
-k-space trajectory with field dynamics measured using a Dynamic Field Camera.
+The current demo data include 2D single-shot spiral (7 T, 1 mm in-plane resolution, approximately 29 ms readout) and 2D single-shot EPI (7 T, 1 mm in-plane resolution, approximately 40 ms readout) examples. These datasets demonstrate the workflow but do not define the scope of the reconstruction framework, which supports Cartesian and non-Cartesian 2D/3D encoding models. The demo compares a nominal k-space trajectory with field dynamics measured using a Dynamic Field Camera.
 
 <table>
   <tr>
@@ -78,6 +63,10 @@ k-space trajectory with field dynamics measured using a Dynamic Field Camera.
     <td><img src="demo/result/7T_2D_EPI_1p0_200_r4_Measured.png" width="250"/></td>
   </tr>
 </table>
+
+## Scientific validation
+
+Agreement between `HighOrderOp` and `HighOrderKernelOp` establishes consistency between two implementations of the same explicit model. `HighOrderLowRankOp` should additionally be evaluated against a frozen explicit reference, and absolute encoding claims require an independent numerical or physical reference. See the [scientific validation strategy](https://bennyzhang-codes.github.io/HighOrderMRI.jl/guide/validation) and [reconstruction protocol](https://bennyzhang-codes.github.io/HighOrderMRI.jl/guide/reconstruction-protocol) before reporting accuracy or performance.
 
 ## Copyright & License Notice
 

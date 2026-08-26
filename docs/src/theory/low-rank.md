@@ -1,19 +1,39 @@
 # Low-rank shared subspace
 
-`HighOrderLowRankOp` accelerates repeated applications of the expanded
-encoding model with two compression stages:
+`HighOrderLowRankOp` reduces the cost of repeated applications of the expanded encoding model using two successive approximations: a matrix-free randomized SVD (rSVD) of each dynamic-specific residual encoding matrix, followed by incremental recompression of the retained spatial factors into a basis shared across dynamics. The image, coil sensitivities, and first-order Fourier trajectory are not themselves low-rank approximated.
 
-1. a matrix-free randomized SVD of each dynamic's residual phase matrix;
-2. an adaptive shared spatial basis across the retained local factors.
+Symbols follow [Symbols and notation](/theory/symbols).
 
-It does not approximate the image, coil sensitivities, or first-order Fourier
-trajectory.
+## Method overview
+
+```mermaid
+flowchart TD
+    A["Residual encoding H_d"] --> B["1. Matrix-free rSVD"]
+    B --> C["Temporal factor U_d"]
+    B --> D["Spatial factor Ṽ_d"]
+    D --> E["2. Incremental shared-basis update"]
+    E --> F["Shared basis S_d + coefficients C̄_d"]
+    C --> G["3. Sample-domain factor q̂_d"]
+    F --> G
+    G --> H["Residual model H_d ≈ q̂_d Sᴴ"]
+    F --> H
+```
+
+The three stages are therefore local factorization, incremental spatial recompression, and assembly of the sample-domain coefficients used by the final operator. The shared basis is constructed sequentially. After a dynamic has been processed, its retained spatial factor is not stored for later reprojection. If subsequent dynamics append columns to the shared basis, the coefficient blocks of earlier dynamics are extended with zeros.
+
+## Relation to previous methods
+
+Separable temporal-spatial representations of higher-order MRI encoding have previously been obtained using singular-vector separation, and related decompositions are used in expanded-model reconstruction such as MaxGIRF. [[2]](/references#ref-2 "Wilm BJ, Barmet C, Pruessmann KP. Fast higher-order MR image reconstruction using singular-vector separation. IEEE Trans Med Imaging. 2012;31:1396-1403.") [[3]](/references#ref-3 "Lee NG, Ramasawmy R, Lim Y, Campbell-Washburn AE, Nayak KS. MaxGIRF: Image reconstruction incorporating concomitant field and gradient impulse response function effects. Magn Reson Med. 2022;88:691-710.") The randomized range-finding step used here follows standard rSVD methods. [[4]](/references#ref-4 "Halko N, Martinsson PG, Tropp JA. Finding structure with randomness: Probabilistic algorithms for constructing approximate matrix decompositions. SIAM Rev. 2011;53:217-288.")
+
+HighOrderMRI combines matrix-free per-dynamic factorization with an incrementally constructed shared spatial basis and a global-trajectory NFFT representation. The resulting shared basis is not an exact post-hoc global SVD of all dynamic-specific matrices. Consequently, the Eckart-Young optimality result for a truncated SVD of a fixed matrix does not apply directly to the completed incremental representation. [[5]](/references#ref-5 "Eckart C, Young G. The approximation of one matrix by another of lower rank. Psychometrika. 1936;1:211-218.")
+
+A direct global SVD/rSVD remains a useful approximation-quality reference when memory permits because all dynamics can be considered jointly. The incremental method instead targets memory-bounded construction and scalable execution. These alternatives are distinguished explicitly in [Scientific validation strategy](/guide/validation).
 
 ## Residual encoding matrix
 
-For dynamic ``d``, define
+For dynamic $d$, define
 
-```math
+$$
 H_d(j,v)
 =
 \exp\!\left\{
@@ -24,220 +44,408 @@ k_{\ell,jd}b_{\ell,v}
 \right]\right\},
 \qquad
 H_d\in\mathbb C^{N_s\times N_v}.
-```
+$$
 
-The zeroth-order temporal phase and the first-order Fourier terms are kept
-outside ``H_d``. The explicit operators evaluate this matrix element by
-element. The low-rank operator never materializes it.
+The zeroth-order temporal phase and the first-order Fourier terms are excluded from $H_d$. In 3D, $\mathcal R$ begins with the second-order terms. In 2D, the $z$ first-order term remains in $\mathcal R$ because only the $x$ and $y$ first-order terms are represented by the 2D NFFT. The full matrix $H_d$ is not explicitly materialized during low-rank setup.
 
 ## Per-dynamic randomized SVD
 
-Let ``L`` be `L_rank`, ``p`` be `rsvd_oversample`, and
-``\ell=L+p``. For each dynamic, the setup computes:
+Let $L$ denote `L_rank`, $p$ denote `rsvd_oversample`, and $\ell=L+p$. For each dynamic, a random test matrix
 
-```math
-\begin{aligned}
-\Omega_d &\in \mathbb C^{N_v\times\ell}, \\
-Y_d &= H_d\Omega_d, \\
-Q_d &= \operatorname{orth}(Y_d), \\
-B_d &= H_d^H Q_d.
-\end{aligned}
-```
+$$
+\Omega_d\in\mathbb C^{N_v\times\ell}
+$$
 
-Both multiplications by ``H_d`` and ``H_d^H`` are evaluated matrix-free. The
-seed schedule is deterministic for a fixed configuration:
+is generated, and the randomized range sketch is computed as
 
-```math
-s_d=s_0+d-1.
-```
-
-### SVD finalization
-
-For `rsvd_finalize=:svd`,
-
-```math
-B_d=P_d\Sigma_d Z_d^H,
-```
-
-and the retained factors are
-
-```math
-U_d=Q_d Z_{d,L},
+$$
+Y_d
+=
+H_d\Omega_d,
 \qquad
-\widetilde V_d=P_{d,L}\Sigma_{d,L}.
-```
+Q_d
+=
+\operatorname{orth}(Y_d).
+$$
 
-Thus
+The projected adjoint matrix is then
 
-```math
-H_d\approx U_d\widetilde V_d^H.
-```
+$$
+B_d
+=
+H_d^H Q_d
+\in
+\mathbb C^{N_v\times\ell}.
+$$
 
-The singular values are absorbed into the spatial factor so that the shared
-compression sees the physical energy of each retained mode.
+Products with $H_d$ and $H_d^H$ are evaluated matrix-free from `times`, `fieldmap`, the residual rows of `kspha`, and the corresponding spatial basis functions. For a fixed configuration, dynamic $d$ uses the deterministic seed
+
+$$
+s_d
+=
+s_0+d-1.
+$$
+
+### Direct SVD finalization
+
+For `rsvd_finalize=:svd`, let
+
+$$
+B_d
+=
+P_d\Sigma_d Z_d^H.
+$$
+
+Retaining the first $L$ singular triplets gives
+
+$$
+U_d
+=
+Q_d Z_{d,L},
+\qquad
+\widetilde V_d
+=
+P_{d,L}\Sigma_{d,L},
+$$
+
+and therefore
+
+$$
+H_d
+\approx
+U_d\widetilde V_d^H.
+$$
+
+Because $Q_d$ and $Z_{d,L}$ have orthonormal columns,
+
+$$
+U_d^H U_d
+=
+I_L.
+$$
+
+The singular values are absorbed into the spatial factor $\widetilde V_d$. The retained local energy is therefore
+
+$$
+\eta_d
+=
+\lVert\widetilde V_d\rVert_F^2
+=
+\sum_{l=1}^{L}\sigma_{d,l}^2.
+$$
 
 ### Small-Gram finalization
 
-For `rsvd_finalize=:gram`, the setup diagonalizes the small Hermitian matrix
+For `rsvd_finalize=:gram`, the implementation forms
 
-```math
-G_d=B_d^HB_d\in\mathbb C^{\ell\times\ell}.
-```
+$$
+G_d
+=
+B_d^H B_d
+\in
+\mathbb C^{\ell\times\ell}
+$$
 
-If ``G_d=Z_d\Lambda_d Z_d^H``, then
+and diagonalizes
 
-```math
-U_d=Q_d Z_{d,L},
+$$
+G_d
+=
+Z_d\Lambda_d Z_d^H,
 \qquad
-\widetilde V_d=B_d Z_{d,L}.
-```
+\Lambda_d
+=
+\Sigma_d^2.
+$$
 
-This avoids a direct SVD of the tall ``N_v\times\ell`` matrix and is required
-by the voxel-distributed setup. It also squares the condition number, so the
-implementation checks for non-finite values, significant negative
-eigenvalues, and degeneracy. The single-device path can fall back to the
-conventional SVD when the Gram result is not trustworthy.
+The retained factors are recovered as
 
-## Global shared spatial basis
-
-Independent local factors would require ``N_dL`` spatial modes. Instead,
-HighOrderMRI builds an orthonormal basis
-
-```math
-S\in\mathbb C^{N_v\times R},
+$$
+U_d
+=
+Q_d Z_{d,L},
 \qquad
-S^HS=I,
-```
+\widetilde V_d
+=
+B_d Z_{d,L}.
+$$
 
-such that
+If $B_d=P_d\Sigma_d Z_d^H$, then $B_dZ_{d,L}=P_{d,L}\Sigma_{d,L}$; thus, in exact arithmetic, the Gram and direct-SVD routes produce the same retained factorization. The Gram formulation avoids a direct SVD of the tall $N_v\times\ell$ matrix but squares its condition number. The single-device implementation checks for non-finite values, significant negative eigenvalues, and degeneracy and can fall back to the direct SVD if the Gram result fails these checks.
 
-```math
-\widetilde V_d\approx S C_d,
+## Incremental shared spatial basis
+
+Independent local factorizations would retain up to $N_dL$ spatial columns. HighOrderMRI instead constructs one orthonormal spatial basis sequentially across dynamics.
+
+Before processing dynamic $d$, let
+
+$$
+S_{d-1}
+\in
+\mathbb C^{N_v\times R_{d-1}},
 \qquad
-C_d=S^H\widetilde V_d.
-```
+S_{d-1}^H S_{d-1}
+=
+I.
+$$
 
-For each new dynamic, the algorithm twice reorthogonalizes the unexplained
-residual
+The current spatial factor is first projected onto the existing basis,
 
-```math
-R_d=\widetilde V_d-SC_d
-```
+$$
+C_d^{\mathrm{old}}
+=
+S_{d-1}^H\widetilde V_d,
+$$
 
-and diagonalizes the small residual Gram matrix ``R_d^H R_d``. It appends the
-minimum number of new directions needed to satisfy
+and the residual is
 
-```math
+$$
+R_d
+=
+\widetilde V_d
+-
+S_{d-1}C_d^{\mathrm{old}}.
+$$
+
+A second projection/subtraction is performed in the implementation and the corresponding correction is accumulated in $C_d^{\mathrm{old}}$ to reduce finite-precision loss of orthogonality.
+
+The residual Gram matrix is decomposed as
+
+$$
+R_d^H R_d
+=
+T_d\Lambda_d^{(R)}T_d^H.
+$$
+
+The minimum number $r_d$ of additional basis vectors is selected such that
+
+$$
 \sqrt{
-\frac{\sum_{i=r_d+1}^{L}\lambda^{(R)}_{d,i}}
-     {\lVert\widetilde V_d\rVert_F^2}
-}
-\leq \tau,
-```
+\frac{
+\sum_{i=r_d+1}^{L}\lambda_{d,i}^{(R)}
+}{
+\eta_d
+}}
+\leq
+\tau,
+$$
 
-where ``\tau`` is `shared_basis_tol`. If the tolerance requires more than
-`shared_rank_max` directions, setup fails instead of silently violating the
-requested bound.
+where $\tau$ is `shared_basis_tol`. The denominator $\eta_d$ is the retained energy of the local rank-$L$ factor, not the energy of the untruncated matrix $H_d$.
 
-The local rank ``L`` and shared rank ``R`` answer different questions:
+For the selected positive residual eigenvalues, the appended basis vectors are
 
-- ``L`` controls the approximation of each individual ``H_d``;
-- ``R`` is the joint dimension needed by all retained spatial factors.
+$$
+S_{d,\mathrm{new}}
+=
+R_dT_{d,1:r_d}
+\left[\Lambda_{d,1:r_d}^{(R)}\right]^{-1/2}.
+$$
 
-Consequently, ``R`` may be smaller than, equal to, or larger than ``L``.
+The basis is updated according to
 
-## Final operator
+$$
+S_d
+=
+\begin{bmatrix}
+S_{d-1}&S_{d,\mathrm{new}}
+\end{bmatrix},
+$$
 
-Define
+and the coefficient block for the current dynamic is completed as
 
-```math
-q_d=U_d C_d^H\in\mathbb C^{N_s\times R}.
-```
+$$
+C_d^{\mathrm{new}}
+=
+S_{d,\mathrm{new}}^H\widetilde V_d,
+\qquad
+\bar C_d
+=
+\begin{bmatrix}
+C_d^{\mathrm{old}}\\
+C_d^{\mathrm{new}}
+\end{bmatrix}.
+$$
+
+At the time dynamic $d$ is inserted,
+
+$$
+\widetilde V_d
+\approx
+S_d\bar C_d.
+$$
+
+If the required accumulated rank would exceed `shared_rank_max`, setup terminates with an error rather than relaxing the requested rank bound.
+
+### Streaming coefficient representation
+
+The implementation is memory bounded: after dynamic $d$ has been processed, $\widetilde V_d$ is not retained. When later dynamics append basis columns, earlier coefficient blocks are extended with zeros rather than recomputed.
+
+Let
+
+$$
+S
+\equiv
+S_{N_d}
+\in
+\mathbb C^{N_v\times R}
+$$
+
+be the completed shared basis, and let $\bar C_d\in\mathbb C^{R\times L}$ denote the stored coefficient block for dynamic $d$ after zero-padding to the final rank. The implementation satisfies the approximation
+
+$$
+\widetilde V_d
+\approx
+S\bar C_d.
+$$
+
+For an earlier dynamic, however, the stored coefficient block is generally not the orthogonal projection onto the completed basis:
+
+$$
+\bar C_d
+\neq
+S^H\widetilde V_d.
+$$
+
+Appending basis columns and padding earlier coefficient blocks with zeros leaves the previously stored approximation unchanged. The final coefficients should therefore be interpreted as streaming coefficients associated with the incremental construction, rather than as coefficients from a post-hoc global projection.
+
+## Final residual representation
+
+Define the unscaled sample-domain factor
+
+$$
+\widehat q_d
+=
+U_d\bar C_d^H
+\in
+\mathbb C^{N_s\times R}.
+$$
 
 Then
 
-```math
-H_d\approx q_d S^H.
-```
+$$
+H_d
+\approx
+\widehat q_d S^H.
+$$
 
-All ``q_d`` matrices are concatenated over samples and dynamics. The
-zeroth-order phase, NFFT centre correction, and ``1/\sqrt{N_v}``
-normalization are folded into `q` once during setup.
+All $\widehat q_d$ blocks are concatenated with samples as the fastest-changing index and dynamics as the next index. The stored coefficient matrix additionally incorporates three sample-domain factors:
 
-For shared basis column ``s_r`` and sample-domain coefficient ``q_r``, one
-coil's forward operation has the form
+1. the zeroth-order phase $\exp(i2\pi k_{0,jd})$;
+2. the parity-dependent NFFT centre correction;
+3. the symmetric normalization $1/\sqrt{N_v}$.
 
-```math
+If $d_{0,jd}$ denotes the zeroth-order phase and $c_{\mathrm{ctr},jd}$ the centre correction, the stored rows are
+
+$$
+q_d(j,:)
+=
+\frac{d_{0,jd}\,c_{\mathrm{ctr},jd}}{\sqrt{N_v}}
+\widehat q_d(j,:).
+$$
+
+The first-order Fourier phase remains in the NFFT and is not included in $H_d$ or $\widehat q_d$.
+
+## Forward and adjoint operators
+
+Let $\mathcal F$ denote the global NFFT containing the first-order trajectories of all dynamics, let $s_r$ denote column $r$ of the completed shared basis, and let $q_r$ denote column $r$ of the stored sample-domain coefficient matrix. For receive coil $c$,
+
+$$
 A_c m
 \approx
 \sum_{r=1}^{R}
 \operatorname{diag}(q_r)
 \mathcal F
 \left(m\odot C_c\odot s_r^*\right).
-```
+$$
 
-The implementation uses one global NFFT plan containing the trajectories of
-all dynamics. The transform count per forward or adjoint evaluation is
+The complex conjugation of $s_r$ follows from $H_d\approx\widehat q_dS^H$.
 
-```math
-R N_c,
-```
+The corresponding multi-coil adjoint is
 
-instead of approximately ``N_d L N_c`` for independent per-dynamic factors.
-This is a transform-count statement, not a promise that runtime is independent
-of the number of samples or dynamics.
+$$
+A^Hy
+\approx
+\sum_{r=1}^{R}
+s_r\odot
+\sum_{c=1}^{N_c}
+C_c^*\odot
+\mathcal F^H
+\left(q_r^*\odot y_c\right).
+$$
 
-## Two-stage error budget
+These expressions agree with the implemented conjugation pattern: the forward operator multiplies the image by the conjugated shared-basis vector and coil sensitivity before the NFFT, whereas the adjoint applies the conjugated temporal coefficient, the NFFT adjoint, the conjugated coil sensitivity, and the non-conjugated shared-basis vector.
 
-The approximation is hierarchical:
+The number of NFFT evaluations per forward or adjoint application is
 
-```math
+$$
+N_{\mathrm{NFFT}}
+=
+R N_c.
+$$
+
+For independent per-dynamic spatial factorizations, the corresponding transform count would scale approximately as $N_dLN_c$. This comparison concerns the number of NFFT evaluations and does not imply runtime independence from the number of samples or dynamics.
+
+## Two-stage approximation error
+
+Before applying zeroth-order, centre-correction, and normalization factors, the approximation is
+
+$$
 H_d
 \longrightarrow
 U_d\widetilde V_d^H
 \longrightarrow
-q_dS^H.
-```
+U_d\bar C_d^H S^H
+=
+\widehat q_dS^H.
+$$
 
-A useful bound is
+The triangle inequality gives
 
-```math
-\lVert H_d-q_dS^H\rVert_F
+$$
+\begin{aligned}
+\lVert H_d-\widehat q_dS^H\rVert_F
+&\leq
+\lVert H_d-U_d\widetilde V_d^H\rVert_F\\
+&\quad+
+\lVert U_d(\widetilde V_d-S\bar C_d)^H\rVert_F.
+\end{aligned}
+$$
+
+Since $U_d^HU_d=I_L$,
+
+$$
+\lVert U_d(\widetilde V_d-S\bar C_d)^H\rVert_F
+=
+\lVert\widetilde V_d-S\bar C_d\rVert_F,
+$$
+
+and therefore
+
+$$
+\lVert H_d-\widehat q_dS^H\rVert_F
 \leq
-\underbrace{\lVert H_d-U_d\widetilde V_d^H\rVert_F}_{\text{local rSVD}}
+\lVert H_d-U_d\widetilde V_d^H\rVert_F
 +
-\underbrace{\lVert\widetilde V_d-SC_d\rVert_F}_{\text{shared compression}}.
-```
+\lVert\widetilde V_d-S\bar C_d\rVert_F.
+$$
 
-The incremental shared basis is scalable and memory bounded, but it is not
-claimed to be the globally optimal rank-``R`` basis of all dynamics. Its
-finite-precision result can also depend slightly on dynamic order near the
-tolerance threshold.
+The first term is the local rSVD approximation error and the second term is the incremental shared-basis approximation error. `shared_basis_tol` controls only the second stage relative to the retained local energy $\eta_d$; it does not bound the local rSVD truncation error relative to the full matrix $H_d$.
 
 ## Parameter interpretation
 
-| Parameter | Role | Practical check |
+| Parameter | Role | Recommended check |
 |---|---|---|
 | `L_rank` | Local truncation rank | Sweep against an explicit operator or independent dense reference |
-| `rsvd_oversample` | Extra random sketch directions | Verify `L_rank + rsvd_oversample ≤ min(nSam,nVox)` |
-| `rsvd_seed` | Reproducible sketch schedule | Repeat with several seeds for a final study |
-| `rsvd_finalize` | `:svd` or memory-saving `:gram` | Compare spectra and operator errors on a tractable problem |
-| `shared_basis_tol` | Second-stage relative residual tolerance | Report it together with final `shared_rank` |
-| `shared_rank_max` | Hard cap on shared rank | Treat a cap error as a configuration failure |
-| `rsvd_backend` | `:chunked` or fused CUDA `:kernel` | The fused kernel requires ``L+p\leq32`` |
+| `rsvd_oversample` | Additional random sketch directions | Verify `L_rank + rsvd_oversample ≤ min(nSam,nVox)` |
+| `rsvd_seed` | Reproducible random sketch schedule | Repeat with several seeds in a final sensitivity analysis |
+| `rsvd_finalize` | `:svd` or memory-saving `:gram` | Compare retained spectra and operator errors on a tractable problem |
+| `shared_basis_tol` | Incremental second-stage residual tolerance | Report together with the final `shared_rank` |
+| `shared_rank_max` | Hard cap on accumulated shared rank | Treat an exceeded cap as a configuration failure |
+| `rsvd_backend` | `:chunked` or fused CUDA `:kernel` | The fused kernel requires `L_rank + rsvd_oversample ≤ 32` |
 
-Do not select rank solely from one reconstruction image. At minimum, validate
-forward error, adjointness, normal-operator error, reconstruction error, seed
-sensitivity, and the final solver residual. The [reconstruction
-protocol](../guide/reconstruction-protocol.md) defines the primary metrics and
-timing boundaries.
+The local rank $L$ and final shared rank $R$ describe different approximations. $L$ controls the per-dynamic rSVD truncation, whereas $R$ is the dimension accumulated by the shared spatial representation. Thus, $R$ may be smaller than, equal to, or larger than $L$.
 
-## Evidence boundary
+Rank selection should not be based on a single reconstructed image. At minimum, forward error, adjointness, normal-operator error, reconstruction error, seed sensitivity, shared rank, and final solver residual should be examined. The [Scientific validation strategy](/guide/validation) defines the comparison hierarchy, and the [Reconstruction protocol](/guide/reconstruction-protocol) defines the fixed metrics and timing boundaries.
 
-Current regression tests establish internal agreement of coordinate, phase,
-centering, normalization, masking, data layout, and adjoint conventions on
-small problems. Project research notes also contain large 3D comparisons
-against the explicit CUDA operator. Those comparisons support the engineering
-case for the shared representation, but an explicit operator is not an
-independent physical gold standard. Claims of absolute physical accuracy still
-require independent simulation or measured-reference validation.
+## Validation scope
+
+Regression tests assess consistency of phase sign, coordinate convention, NFFT node mapping, centring, normalization, masking, data layout, and adjointness on tractable problems. These tests establish implementation consistency but do not constitute an independent physical reference. Validation of absolute physical accuracy requires independent simulation or measured reference data.

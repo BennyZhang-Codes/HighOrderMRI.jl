@@ -1,106 +1,43 @@
 # API reference
 
-This page lists the documented public API. HighOrderMRI also re-exports
-MRIGeometry.jl functionality; consult the corresponding source docstrings for
-geometry conversion, resampling, NIfTI export, and plotting details.
+The API reference is organized as a set of short pages, following the same separation used by established Julia MRI documentation: each page focuses on one public type, constructor, or closely related function family. Scientific derivations and validation requirements remain in the [Theory](/theory/encoding-model) and [Guide](/guide/operators) sections.
 
-```@docs
-HighOrderMRI
-```
+## Encoding model and operators
 
-## Grid and field basis
-
-```@docs
-Grid
-SphericalHarmonics
-basisfunc_spha
-```
-
-## Encoding operators
-
-```@docs
-HighOrderOp
-HighOrderKernelOp
-HighOrderLowRankOp
-@rebuild_HOOp
-```
+- [`Grid` and `basisfunc_spha`](/reference/grid-basis): physical reconstruction grid and real solid-harmonic basis evaluation.
+- [`HighOrderOp`](/reference/highorderop): array-based explicit field-aware encoding.
+- [`HighOrderKernelOp`](/reference/highorderkernelop): fused explicit CUDA encoding with optional multi-GPU voxel decomposition.
+- [`HighOrderLowRankOp`](/reference/highorderlowrankop): low-rank residual-phase representation with an incremental shared spatial basis.
 
 ## Reconstruction
 
-```@docs
-CoilCompressionTransform
-estimate_noise_covariance
-noise_prewhitening_scale_factor
-fit_coil_compression
-apply_coil_compression
-compress_coils
-recon_HOOp
-samplingDensity
-CoilCombineSOS
-```
+- [`recon_HOOp`](/reference/recon-hoop): iterative reconstruction wrapper.
+- [`samplingDensity`](/reference/sampling-density): square-root sampling-density weights for non-Cartesian reconstruction.
+
+## Coil compression
+
+- [`CoilCompressionTransform`](/reference/coil-compression-transform): fitted linear receive-coil transform.
+- [`estimate_noise_covariance`](/reference/estimate-noise-covariance): complex receive-noise covariance estimation.
+- [`noise_prewhitening_scale_factor`](/reference/noise-prewhitening-scale): dwell-time / receiver-bandwidth scale factor.
+- [`fit_coil_compression`](/reference/fit-coil-compression): fit global SVD or noise-whitened SVD compression.
+- [`apply_coil_compression`](/reference/apply-coil-compression): apply a fitted transform along a selected coil dimension.
+- [`compress_coils`](/reference/compress-coils): fit one transform and apply it consistently to data and CSM.
 
 ## Field prediction and synchronization
 
-```@docs
-GIRFModel
-apply_girf
-InterpTrajTime
-FindDelay
-FindDelay_multishot
-```
+- [`GIRFModel`](/reference/girf-model): typed frequency-domain GIRF representation.
+- [`apply_girf`](/reference/apply-girf): predict realized field channels from nominal physical gradients.
+- [`InterpTrajTime`](/reference/interp-traj-time): interpolate field/trajectory coefficients to requested ADC times.
+- [`FindDelay`](/reference/find-delay): single-acquisition model-based field/data synchronization.
+- [`FindDelay_multishot`](/reference/find-delay-multishot): shared-delay estimation for multi-shot data.
 
-## Reconstruction metrics
+## Metrics and utilities
 
-```@docs
-complex_alignment_scale
-raw_complex_nrmse
-aligned_complex_nrmse
-magnitude_nrmse
-magnitude_ssim
-```
+- [Reconstruction metrics](/reference/image-metrics): raw and aligned complex NRMSE, magnitude NRMSE, SSIM, and compatibility helpers.
+- [Array and signal utilities](/reference/utilities): CPU/GPU conversion, trajectory-gradient conversion, resizing, cropping, and factor helpers.
+- [Plotting helpers](/reference/plotting): common visualization functions.
+- [Resource lifecycle](/reference/resources): explicit cleanup and safe replacement of large low-rank operators.
 
-The compatibility functions `HO_MSE`, `HO_RMSE`, `HO_NRMSE`, `HO_SSIM`, and
-`HO_img_scale` use reference-first argument order. Prefer the explicitly named
-metric functions above in new code.
-
-## Array and signal utilities
-
-```@docs
-gpu
-cpu
-f32
-f64
-grad2traj
-traj2grad
-imresize_real
-imresize_complex
-get_center_range
-get_center_crop
-get_factors
-```
-
-## Plotting
-
-```@docs
-plt_plot
-plt_scatter
-plt_image
-plt_B0map
-plt_kspha
-plt_ksphas
-plt_bfield
-plt_bfield_com
-plt_grad
-mosaic
-```
-
-## Resource cleanup
-
-A `HighOrderLowRankOp` with `normal_distribution=:channel` owns its
-multi-GPU normal backend. Release it with:
-
-```julia
-close(op)
-# equivalent:
-release_highorder_normal_backend!(op)
-```
+::: tip Reference vs. methods
+Use these pages to check calling conventions and returned objects. Use [Symbols and notation](/theory/symbols), the [expanded encoding model](/theory/encoding-model), [low-rank shared subspace](/theory/low-rank), and the relevant Guide page when interpreting units, phase conventions, approximation parameters, or validation requirements.
+:::

@@ -1,15 +1,12 @@
-# Getting started
+# Getting Started
 
 ## Requirements
 
-- Julia 1.12 or later (CI tests the minimum supported Julia 1.12 release and
-  the latest stable Julia 1.x release);
-- an NVIDIA GPU and a functional CUDA.jl installation for CUDA paths;
-- enough host and device memory for the selected operator, mask, and coil
-  count.
+- Julia 1.12 or later;
+- an NVIDIA GPU and a functional CUDA.jl installation for CUDA execution;
+- sufficient host and device memory for the selected operator, spatial mask, and receive-coil count.
 
-The package currently includes `MRIGeometry` as a package inside the same
-repository. The most reliable installation path is therefore a local clone.
+The current repository resolves `MRIGeometry` from the included local source tree, so installation from a repository clone preserves the tested dependency layout:
 
 ```bash
 git clone https://github.com/BennyZhang-Codes/HighOrderMRI.jl.git
@@ -17,13 +14,13 @@ cd HighOrderMRI.jl
 julia --project=. -e 'using Pkg; Pkg.instantiate()'
 ```
 
-Start Julia in the project:
+Start Julia in the project environment:
 
 ```bash
 julia --project=.
 ```
 
-Then load the package:
+and load the package:
 
 ```julia
 using HighOrderMRI
@@ -31,9 +28,7 @@ using HighOrderMRI
 
 ## First CPU operator
 
-The following example constructs a small 2D, single-coil, second-order model.
-Coordinates use metres, `times` uses seconds, `fieldmap` uses hertz, and every
-entry of `kspha .* basis` contributes phase in cycles.
+The following example constructs a small two-dimensional, single-coil, second-order encoding problem. Spatial coordinates are expressed in metres, `times` in seconds, and `fieldmap` in hertz. Each product of a temporal field coefficient and its corresponding spatial basis function contributes phase in cycles.
 
 ```julia
 using HighOrderMRI
@@ -69,14 +64,13 @@ image = ones(Complex{T}, nX, nY)
 signal = reshape(op * vec(image), nSam, 1)
 ```
 
-The result has samples in the first dimension and channels in the second.
-For dynamic data, [`HighOrderLowRankOp`](@ref) returns a vector compatible
-with `vec(data)` for `data` shaped `(nSam, nDyn, nCha)`.
+The resulting signal uses samples as the first dimension and receive channels as the second. For dynamic data, the vector returned by `HighOrderLowRankOp` follows `vec(data)` for an array shaped `(nSam, nDyn, nCha)`.
 
-## Check CUDA
+The example is intentionally small and explicit. Before using measured or predicted field coefficients, review [Symbols and notation](/theory/symbols) and the [expanded encoding model](/theory/encoding-model) for phase sign, units, solid-harmonic order, NFFT mapping, and two- versus three-dimensional conventions.
 
-CUDA support is loaded by the package, but a CUDA operator should only be
-created when CUDA.jl reports a functional device:
+## CUDA availability
+
+CUDA operators should be constructed only after CUDA.jl reports a functional device:
 
 ```julia
 using CUDA
@@ -85,39 +79,55 @@ CUDA.functional()
 CUDA.devices()
 ```
 
-Use zero-based device identifiers in `gpus`, for example `gpus=[0, 1]`. Start
-Julia with enough default threads when several GPUs participate:
+Device identifiers supplied through `gpus` are zero based, for example `gpus=[0, 1]`. For multi-GPU execution, start Julia with sufficient default threads:
 
 ```bash
 julia --threads=auto --project=.
 ```
 
-See [Multi-GPU execution](guide/multi-gpu.md) before enabling distributed rSVD
-or the channel-distributed normal operator.
+The stage-specific voxel and channel decompositions are described in [Multi-GPU execution](/guide/multi-gpu).
 
 ## Build the documentation locally
 
-From the repository root:
+The documentation site uses VitePress. From the repository root:
 
 ```bash
-julia --project=docs -e '
-using Pkg
-Pkg.develop([
-    PackageSpec(path=pwd()),
-    PackageSpec(path=joinpath(pwd(), "MRIGeometry")),
-])
-Pkg.instantiate()'
-julia --project=docs docs/make.jl
+npm install --prefix docs
+npm run docs:dev --prefix docs
 ```
 
-Open `docs/build/index.html`, or serve `docs/build` with a local HTTP server.
-Generated files are ignored by Git.
+For a production build:
 
-## Next steps
+```bash
+npm run docs:build --prefix docs
+```
 
-- [Expanded encoding model](theory/encoding-model.md): units, signs, basis
-  order, 2D/3D term assignment, and layout.
-- [Low-rank shared subspace](theory/low-rank.md): rSVD, Small-Gram
-  finalization, shared rank, and the two-stage error budget.
-- [Choose an operator](guide/operators.md): constructor shapes and backend
-  trade-offs.
+The generated site is written to `docs/src/.vitepress/dist/`.
+
+## Reading paths
+
+**Method and signal model**
+
+- [Architecture overview](/concepts-overview): relation between MRI measurements, dynamic fields, encoding operators, and iterative reconstruction.
+- [Symbols and notation](/theory/symbols): indices, units, matrices, low-rank factors, and Julia array names.
+- [Expanded encoding model](/theory/encoding-model): continuous signal model, discrete dynamic formulation, matrix factorization, explicit implementation, and low-rank separation.
+- [Low-rank shared subspace](/theory/low-rank): per-dynamic rSVD, incremental shared spatial recompression, streaming coefficients, and two-stage approximation error.
+
+**Reconstruction workflow**
+
+- [Encoding operators](/guide/operators): constructor dimensions, numerical representations, and backend behavior.
+- [Field preprocessing](/guide/field-preprocessing): GIRF prediction, interpolation, and field/data synchronization.
+- [Coil compression](/guide/coil-compression): optional noise-whitened global SVD compression applied consistently to data and CSM.
+- [Reconstruction workflow](/guide/reconstruction): data layout, field preparation, density weighting, solver configuration, reconstruction, and metrics.
+- [Multi-GPU execution](/guide/multi-gpu): voxel- and channel-partitioned execution paths.
+
+**Validation and reporting**
+
+- [Scientific validation strategy](/guide/validation): evidence hierarchy, operator-level checks, low-rank baselines, and physical validation.
+- [Reconstruction protocol](/guide/reconstruction-protocol): fixed conventions for reproducible numerical comparisons.
+- [Performance & benchmarking](/guide/performance): timing, memory, accuracy, and baseline reporting requirements.
+
+**Interface reference**
+
+- [API reference](/api): public constructors, reconstruction functions, preprocessing helpers, metrics, and resource-cleanup interfaces.
+- [Literature references](/references): numbered references cited throughout the scientific documentation, with DOI links to the corresponding publications.
