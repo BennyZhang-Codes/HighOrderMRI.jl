@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/actions/workflows/ci.yml)
 [![Documentation](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/actions/workflows/documentation.yml/badge.svg?branch=main)](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/actions/workflows/documentation.yml)
-[![Docs](https://img.shields.io/badge/docs-HighOrderMRI.jl-6366f1.svg)](https://bennyzhang-codes.github.io/HighOrderMRI.jl/)
+[![Dev documentation](https://img.shields.io/badge/docs-dev-6366f1.svg)](https://bennyzhang-codes.github.io/HighOrderMRI.jl/dev/)
 
 HighOrderMRI.jl is a Julia toolbox for Cartesian and non-Cartesian MRI reconstruction with measured or predicted dynamic higher-order fields. It provides explicit encoding operators for numerical reference, fused CUDA implementations, and a matrix-free shared-subspace operator for large 2D and 3D reconstruction.
 
@@ -19,7 +19,9 @@ HighOrderMRI.jl is a Julia toolbox for Cartesian and non-Cartesian MRI reconstru
 
 ## Documentation
 
-The [HighOrderMRI.jl documentation](https://bennyzhang-codes.github.io/HighOrderMRI.jl/) contains:
+The current development documentation is available at [HighOrderMRI.jl/dev](https://bennyzhang-codes.github.io/HighOrderMRI.jl/dev/). Once a tagged release is published, the latest released documentation will also be available through `/stable/`, with each tagged version retained under its own `/vX.Y.Z/` path.
+
+The documentation contains:
 
 - installation and a first CPU example;
 - the expanded signal model, units, basis order, and NFFT convention;
@@ -66,7 +68,7 @@ The current demo data include 2D single-shot spiral (7 T, 1 mm in-plane resoluti
 
 ## Scientific validation
 
-Agreement between `HighOrderOp` and `HighOrderKernelOp` establishes consistency between two implementations of the same explicit model. `HighOrderLowRankOp` should additionally be evaluated against a frozen explicit reference, and absolute encoding claims require an independent numerical or physical reference. See the [scientific validation strategy](https://bennyzhang-codes.github.io/HighOrderMRI.jl/guide/validation) and [reconstruction protocol](https://bennyzhang-codes.github.io/HighOrderMRI.jl/guide/reconstruction-protocol) before reporting accuracy or performance.
+Agreement between `HighOrderOp` and `HighOrderKernelOp` establishes consistency between two implementations of the same explicit model. `HighOrderLowRankOp` should additionally be evaluated against a frozen explicit reference, and absolute encoding claims require an independent numerical or physical reference. See the [scientific validation strategy](https://bennyzhang-codes.github.io/HighOrderMRI.jl/dev/guide/validation) and [reconstruction protocol](https://bennyzhang-codes.github.io/HighOrderMRI.jl/dev/guide/reconstruction-protocol) before reporting accuracy or performance.
 
 ## Copyright & License Notice
 
