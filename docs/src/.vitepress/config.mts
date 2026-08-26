@@ -1,10 +1,50 @@
 import { defineConfig } from 'vitepress'
 import { mermaidPlugin } from './plugins/vitepress-mermaid'
 
+const siteUrl = 'https://bennyzhang-codes.github.io/HighOrderMRI.jl'
+const docsVersion = process.env.DOCS_VERSION || 'dev'
+const docsBase = process.env.DOCS_BASE || '/HighOrderMRI.jl/dev/'
+const sourceRef = process.env.DOCS_SOURCE_REF || 'docs-modern-ui'
+const stableVersion = process.env.DOCS_STABLE_VERSION || ''
+const releaseVersions = (process.env.DOCS_RELEASE_VERSIONS || '')
+  .split(',')
+  .map((version) => version.trim())
+  .filter(Boolean)
+
+function versionLabel(version: string) {
+  if (version === docsVersion) return `${version} · current`
+  return version
+}
+
+const versionItems = [
+  {
+    text: versionLabel('dev'),
+    link: `${siteUrl}/dev/`,
+  },
+  ...(stableVersion
+    ? [
+        {
+          text: docsVersion === 'stable'
+            ? `stable · ${stableVersion} · current`
+            : `stable · ${stableVersion}`,
+          link: `${siteUrl}/stable/`,
+        },
+      ]
+    : []),
+  ...releaseVersions.map((version) => ({
+    text: versionLabel(version),
+    link: `${siteUrl}/${version}/`,
+  })),
+  {
+    text: 'Release history',
+    link: 'https://github.com/BennyZhang-Codes/HighOrderMRI.jl/releases',
+  },
+]
+
 export default defineConfig({
   title: 'HighOrderMRI.jl',
   description: 'GPU-accelerated Cartesian and non-Cartesian MRI reconstruction with dynamic high-order field encoding.',
-  base: '/HighOrderMRI.jl/',
+  base: docsBase,
   cleanUrls: true,
   lastUpdated: true,
   head: [
@@ -72,12 +112,10 @@ export default defineConfig({
         ],
       },
       {
-        text: 'v0.1.0-dev',
-        items: [
-          { text: 'v0.1.0-dev · current', link: '/' },
-          { text: 'Release history', link: 'https://github.com/BennyZhang-Codes/HighOrderMRI.jl/releases' },
-          { text: 'Source: main', link: 'https://github.com/BennyZhang-Codes/HighOrderMRI.jl/tree/main' },
-        ],
+        text: docsVersion === 'stable' && stableVersion
+          ? `stable · ${stableVersion}`
+          : docsVersion,
+        items: versionItems,
       },
     ],
     sidebar: [
@@ -190,11 +228,11 @@ export default defineConfig({
       label: 'On this page',
     },
     editLink: {
-      pattern: 'https://github.com/BennyZhang-Codes/HighOrderMRI.jl/edit/docs-modern-ui/docs/src/:path',
+      pattern: `https://github.com/BennyZhang-Codes/HighOrderMRI.jl/edit/${sourceRef}/docs/src/:path`,
       text: 'Edit this page on GitHub',
     },
     footer: {
-      message: 'Research software for field-aware Cartesian and non-Cartesian MRI reconstruction.',
+      message: `HighOrderMRI.jl documentation · ${docsVersion}`,
       copyright: 'HighOrderMRI.jl contributors',
     },
   },
