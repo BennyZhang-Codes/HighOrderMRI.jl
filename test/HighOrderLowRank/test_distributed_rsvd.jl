@@ -83,7 +83,6 @@
                 )
                 forward_multi_error = norm(W - W_ref) / max(norm(W_ref), eps(T))
 
-                @show forward_multi_error
                 @test forward_multi_error < T(1e-4)
             end
 
@@ -119,7 +118,6 @@
                 distributed_rsvd_error =
                     norm(E_multi - E_reference) / max(norm(E_reference), eps(T))
                 energy_reference = sum(values_reference[1:data.L_rank])
-                @show distributed_rsvd_error
                 @test distributed_rsvd_error < T(1e-3)
                 @test energy_multi ≈ energy_reference rtol=T(1e-3)
                 @test timing.n_calls == 1
@@ -191,7 +189,6 @@
                     distributed_shared_error =
                         norm(V_distributed - V_reference) /
                         max(norm(V_reference), eps(T))
-                    @show dyn distributed_shared_error
                     @test distributed_shared_error < T(1e-4)
                 end
             end
