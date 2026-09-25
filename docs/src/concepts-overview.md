@@ -32,7 +32,14 @@ The encoding model combines Cartesian or non-Cartesian sampling, receive-coil se
 
 ### Low-rank acceleration
 
-`HighOrderLowRankOp` accelerates repeated forward and adjoint evaluations using per-dynamic randomized SVD followed by an adaptive spatial basis shared across dynamics. The approximation is restricted to the residual spatial phase representation; first-order Fourier encoding remains in the NFFT. The factorization and coefficient conventions are derived in [Low-rank shared subspace](/theory/low-rank).
+By default, `HighOrderLowRankOp` accelerates repeated forward and adjoint evaluations using per-dynamic randomized SVD followed by an adaptive spatial basis shared across dynamics. The approximation is restricted to the residual spatial phase representation; first-order Fourier encoding remains in the NFFT. The factorization and coefficient conventions are derived in [Low-rank shared subspace](/theory/low-rank).
+
+The experimental option `shared_basis_method=:joint` instead builds
+a shared basis directly from representative phase snapshots and selects its
+rank using sampled error checks. It preserves the NFFT and reconstruction
+paths. See [joint construction](theory/low-rank.md#direct-joint-shared-basis),
+[API parameters](/reference/highorderlowrankop#shared-basis-parameters), and the
+[measured scope and limitations](/guide/performance#representative-measurements).
 
 ### Validation strategy
 

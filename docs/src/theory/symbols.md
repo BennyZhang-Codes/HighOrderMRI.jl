@@ -18,6 +18,8 @@ This page defines the notation used across the HighOrderMRI theory, reconstructi
 | $N_c$ | Number of receive channels after any coil compression |
 | $L$ | Local per-dynamic low-rank truncation rank (`L_rank`) |
 | $R$ | Final shared spatial rank |
+| $K$ | Representative phase-snapshot budget (`joint_snapshots`) |
+| $J$ | Number of fitting voxels in joint construction (`joint_samples` initially) |
 
 ## Physical and image-domain quantities
 
@@ -77,20 +79,28 @@ For real non-negative square-root density weights, $W^H W=W^2$, but the Hermitia
 | $U_d$ | Retained local sample-domain factor | $N_s\times L$ |
 | $\widetilde V_d$ | Retained weighted local spatial factor | $N_v\times L$ |
 | $S_d$ | Incremental shared spatial basis after dynamic $d$ | $N_v\times R_d$ |
-| $S$ | Final shared spatial basis $S_{N_d}$ | $N_v\times R$ |
+| $S$ | Final orthonormal shared spatial basis | $N_v\times R$ |
 | $\bar C_d$ | Stored incremental coefficient block for dynamic $d$, zero-padded to the final rank | $R\times L$ |
-| $\widehat q_d=U_d\bar C_d^H$ | Unscaled sample-domain shared-basis coefficient matrix | $N_s\times R$ |
+| $\widehat q_d$ | Unscaled sample-domain shared-basis coefficient matrix; $U_d\bar C_d^H$ for rSVD | $N_s\times R$ |
 | $q_d$ | Stored sample-domain coefficient matrix after zeroth-order phase, NFFT-centre correction, and $1/\sqrt{N_v}$ normalization | $N_s\times R$ |
 | $\eta_d$ | Retained local rank-$L$ energy, $\|\widetilde V_d\|_F^2$ | non-negative scalar |
 | $\tau$ | Incremental shared-basis tolerance (`shared_basis_tol`) | dimensionless |
 
-A central implementation detail is that, for an earlier dynamic, the stored final coefficient block is generally **not** the post-hoc projection of $\widetilde V_d$ onto the completed basis:
+For incremental rSVD construction, a central implementation detail is that, for an earlier dynamic, the stored final coefficient block is generally **not** the post-hoc projection of $\widetilde V_d$ onto the completed basis:
 
 $$
 \bar C_d\neq S^H\widetilde V_d.
 $$
 
-The production implementation is streaming and does not retain earlier $\widetilde V_d$ matrices for reprojection after later basis expansion.
+The rSVD implementation is streaming and does not retain earlier $\widetilde V_d$ matrices for reprojection after later basis expansion.
+
+For joint construction, $H$ stacks all $H_d$ into a $(N_sN_d)\times N_v$
+matrix and $\widehat q$ stacks the temporal factors into $(N_sN_d)\times R$.
+The weighted conjugated snapshot matrix $A_{\mathrm{snap}}$ has dimensions
+$N_v\times K$ and is distinct from the complete MRI encoding operator $A$.
+Joint $\widehat q$ is fitted directly rather than assembled from local $U_d$.
+Here `shared_basis_tol` controls sampled original-phase error, rather than
+the incremental rSVD tolerance $\tau$. See [joint construction](/theory/low-rank#direct-joint-shared-basis).
 
 ## Implementation array names
 

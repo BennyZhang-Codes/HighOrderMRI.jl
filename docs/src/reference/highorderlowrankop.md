@@ -1,6 +1,6 @@
 # `HighOrderLowRankOp`
 
-Low-rank implementation of the residual high-order/off-resonance phase using per-dynamic randomized SVD and an incrementally constructed shared spatial basis.
+Low-rank implementation of the residual high-order/off-resonance phase. The default uses per-dynamic randomized SVD and an incrementally constructed shared spatial basis; the experimental joint method constructs the shared basis directly from representative phase snapshots.
 
 ## Single-dynamic constructor
 
@@ -38,6 +38,12 @@ HighOrderLowRankOp(
     rsvd_distribution=:auto,
     shared_rank_max=128,
     shared_basis_tol=T(1e-2),
+    global_basis_tol=nothing,
+    shared_basis_method=:rsvd,
+    joint_snapshots=256,
+    joint_samples=512,
+    joint_roi_tol=nothing,
+    joint_basis_report=nothing,
     normal_distribution=:single,
     nfft_center_correction=true,
     verbose=false,
@@ -61,6 +67,8 @@ HighOrderLowRankOp(
 
 ## Low-rank keywords
 
+For the default rSVD construction:
+
 - `L_rank`: retained rank of each dynamic-specific rSVD.
 - `rsvd_seed`: deterministic base seed; dynamic `d` uses `rsvd_seed + d - 1`.
 - `rsvd_chunk`: voxel chunk size for the chunked backend.
@@ -71,13 +79,56 @@ HighOrderLowRankOp(
 - `shared_basis_tol`: incremental second-stage residual tolerance.
 - `shared_rank_max`: hard upper bound on the accumulated shared rank.
 
-The fused CUDA rSVD kernel requires
+The fused CUDA backend supports wide sketches in batches of at most 16
+columns. The matrix-dimension bound `L_rank + rsvd_oversample <= min(nSam,nVox)`
+still applies; this batch size does not truncate the final shared rank.
 
-$$
-L_{\mathrm{rank}} + p \leq 32,
-$$
+## Shared-basis parameters
 
-where $p$ is `rsvd_oversample`.
+::: info Experimental joint construction
+Joint construction is explicitly enabled with `shared_basis_method=:joint`.
+The default remains `:rsvd`. Both methods return the same operator type and
+use the same factor layout, NFFT, and reconstruction interface.
+:::
+
+| Keyword | Default | Meaning |
+|:--|:--|:--|
+| `shared_basis_method` | `:rsvd` | Existing per-dynamic rSVD and incremental sharing; `:joint` explicitly selects joint snapshot construction. |
+| `global_basis_tol` | `nothing` | Optional final recompression of the rSVD representation; measures additional relative Frobenius error. Must remain `nothing` for joint. |
+| `joint_snapshots` | `256` | Representative phase-row budget $K$, used before rank selection and bounded by available phase geometries. |
+| `joint_samples` | `512` | Initial fitting voxel count $J$; may double once if selection fails, within the fitting pool. |
+| `joint_roi_tol` | `nothing` | Optional additional acceptance tolerance on sampled largest-$\lvert B_0\rvert$ voxels. Without it, excessive ROI error produces a warning. |
+| `joint_basis_report` | `nothing` | Optional `Ref{Any}()` receiving selection and audit diagnostics. |
+
+For `:joint`, `shared_rank_max=128` caps the final shared rank, and
+`shared_basis_tol=T(1e-2)` bounds each dynamic's sampled random-voxel error
+against the original phase model. Selection uses `0.9 * shared_basis_tol`;
+the final audit uses the requested tolerance. The search tests rank 1 and
+blocks of eight, including the last available rank. It does not guarantee the
+smallest rank or a full-matrix/image error bound.
+
+The existing `rsvd_seed=1234` controls joint sampling, while
+`rsvd_chunk=4096` bounds temporary phase matrices. `L_rank` is retained as
+metadata; neither it nor `rsvd_oversample` selects a local rank in this mode.
+`rsvd_backend` and `rsvd_finalize` do not change the joint algorithm.
+Use `rsvd_distribution=:auto` or `:single`; explicit `:voxel` is rejected.
+Setup uses the primary GPU or the CPU. The existing
+`normal_distribution=:channel` option can still distribute reconstruction.
+
+The report contains `rank`, `rank_max`, `snapshots`, `sample_count`,
+`tolerance`, `selection_tolerance`, `roi_tolerance`, `validation_errors`,
+`validation_roi_errors`, `audit_errors`, `roi_errors`, `orthogonality`,
+`passed`, and `stage`. It also records snapshot, fitting, validation and audit
+indices, held-out profiles, `disjoint_times`, and `seed`. Errors are relative
+Frobenius errors on sampled phase matrices, one value per dynamic.
+
+Rank/sample exhaustion and failed final audits throw instead of returning
+partial factors; those failures populate the report with `stage=:rank_limit`
+or `:audit`. A report is not guaranteed for an earlier input or CUDA failure.
+Float32 and Float64 are supported. The factors preserve the requested
+precision; small CPU eigendecompositions/QR and phase-audit references use
+Float64. See the [joint example](/guide/operators#automatic-joint-shared-basis)
+and [mathematical scope](/theory/low-rank#direct-joint-shared-basis).
 
 ## Execution keywords
 
@@ -90,7 +141,7 @@ where $p$ is `rsvd_oversample`.
 
 A `HighOrderLowRankOp` with dimensions `(nSam * nDyn * nCha, prod(grid.matrixSize))`, together with stored low-rank factors `q` and `basis` whose second dimension is the final shared rank `R`.
 
-The implementation uses streaming coefficient blocks: when later dynamics expand the shared basis, earlier coefficient blocks are zero-padded rather than recomputed. See [Low-rank shared subspace](/theory/low-rank) for the exact factorization and approximation-error interpretation.
+The default rSVD implementation uses streaming coefficient blocks: when later dynamics expand the shared basis, earlier coefficient blocks are zero-padded rather than recomputed. See [Low-rank shared subspace](/theory/low-rank) for the exact factorization and approximation-error interpretation.
 
 ## Example
 
@@ -113,4 +164,4 @@ op = HighOrderLowRankOp(
 )
 ```
 
-[Source: `HighOrderLowRankOp.jl`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/docs-modern-ui/src/EncodingOperator/HighOrderLowRankOp.jl)
+[Source: `HighOrderLowRankOp.jl`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/dev_jinyuan/src/EncodingOperator/HighOrderLowRankOp.jl)

@@ -9,7 +9,7 @@ HighOrderMRI.jl provides three linear-operator implementations of the field-awar
 | Signal model | Explicit | Explicit | Residual-phase approximation |
 | Dynamics per object | One | One | One or many |
 | CPU | Yes | No | Yes |
-| CUDA | Array operations | Fused kernels | NFFT + chunked/fused rSVD |
+| CUDA | Array operations | Fused kernels | NFFT + rSVD or joint setup |
 | Multi-GPU | No | Voxel-sharded explicit evaluation | Optional voxel-sharded setup and channel-sharded normal operator |
 | Dominant numerical cost | Sample–voxel phase blocks | Repeated sample–voxel phase evaluation | Setup plus $RN_c$ NFFTs per forward/adjoint |
 | Typical numerical role | Small explicit calculations and derivative products | Explicit GPU consistency reference | Repeated large-scale forward/adjoint evaluations |
@@ -163,13 +163,76 @@ lowrank_op = HighOrderLowRankOp(
 )
 ```
 
-For the fused CUDA rSVD backend, the randomized sketch width must satisfy
+The fused CUDA backend handles wide sketches by batching columns in groups
+of 16; a sketch of at most
+16 columns still uses one launch per product. Matrix-dimension limits still
+apply. The final shared rank is separate from the sketch width.
 
-$$
-L+p\leq 32,
-$$
+### Automatic joint shared basis
 
-where $L$ is `L_rank` and $p$ is `rsvd_oversample`. This implementation limit does not constrain the final shared spatial rank. The meaning of the local rank, shared rank, and incremental coefficients is derived in [Low-rank shared subspace](/theory/low-rank).
+The experimental `shared_basis_method=:joint` option builds one spatial basis
+from representative phase snapshots across dynamics. It automatically selects
+the final shared rank under sampled error checks, bypassing local rSVD.
+See the [API reference](/reference/highorderlowrankop#shared-basis-parameters) for parameters
+and defaults, and [theory](/theory/low-rank#direct-joint-shared-basis) for the
+snapshot, fitting, and audit stages.
+
+The following illustrates joint construction, with input arrays already
+prepared using the usual units and layouts:
+
+```julia
+using CUDA
+
+report = Ref{Any}()
+lowrank_op = HighOrderLowRankOp(
+    grid,
+    kspha_dynamic,
+    times_dynamic;
+    fieldmap,
+    csm,
+    mask,
+    arrayType=CuArray,
+    gpus=[2, 3, 4, 5, 6],
+    shared_basis_method=:joint,
+    shared_basis_tol=1f-2,
+    shared_rank_max=32,
+    joint_snapshots=128,
+    joint_samples=512,
+    joint_basis_report=report,
+    global_basis_tol=nothing,
+    rsvd_distribution=:single,
+    rsvd_chunk=32768,
+    rsvd_seed=1234,
+    normal_distribution=:channel,
+)
+
+report[].rank
+maximum(report[].audit_errors)
+maximum(report[].roi_errors)
+```
+
+Device IDs above assume those devices are visible without remapping. Tolerance
+literals use Float32 to match Float32 inputs; use matching Float64 values for
+Float64 inputs. This configuration selected $R=16$ on the frozen 3D dataset;
+it is not a universal rank prescription.
+
+For more demanding phase histories, increase `joint_snapshots` and
+`shared_rank_max` together as needed, then inspect the returned errors and
+memory cost. A larger budget does not guarantee a smaller final rank.
+Joint setup must keep `global_basis_tol=nothing` because recompressing the
+factors would invalidate their audit. That option remains available for rSVD.
+
+::: warning Random-sample acceptance is not ROI acceptance
+The main 3D and EPI joint validations passed the sampled random-voxel 1%
+tolerance, but their sampled high-$|B_0|$ errors were 4.03% and 141.47%.
+Add `joint_roi_tol=1f-2` when that ROI must also pass 1%; these recorded
+configurations would then be rejected. The setting adds an acceptance gate,
+not a new sampling or basis-construction strategy.
+:::
+
+The existing default remains rSVD. See the
+[performance results](/guide/performance#representative-measurements) for
+the cost and accuracy of complete reconstructions.
 
 ## Numerical consistency checks
 

@@ -1,10 +1,18 @@
 # Low-rank shared subspace
 
-`HighOrderLowRankOp` reduces the cost of repeated applications of the expanded encoding model using two successive approximations: a matrix-free randomized SVD (rSVD) of each dynamic-specific residual encoding matrix, followed by incremental recompression of the retained spatial factors into a basis shared across dynamics. The image, coil sensitivities, and first-order Fourier trajectory are not themselves low-rank approximated.
+By default, `HighOrderLowRankOp` reduces the cost of repeated applications of the expanded encoding model using two successive approximations: a matrix-free randomized SVD (rSVD) of each dynamic-specific residual encoding matrix, followed by incremental recompression of the retained spatial factors into a basis shared across dynamics. The image, coil sensitivities, and first-order Fourier trajectory are not themselves low-rank approximated.
+
+An alternative, experimental `shared_basis_method=:joint` construction
+builds the spatial basis directly from representative phase snapshots and
+fits the temporal factors by sampled least squares. Both methods use the
+same final encoding and NFFT. See [joint construction](#direct-joint-shared-basis)
+and the [API parameters](/reference/highorderlowrankop#shared-basis-parameters).
 
 Symbols follow [Symbols and notation](/theory/symbols).
 
 ## Method overview
+
+The following diagram shows the default rSVD construction.
 
 ```mermaid
 flowchart TD
@@ -28,6 +36,14 @@ Separable temporal-spatial representations of higher-order MRI encoding have pre
 HighOrderMRI combines matrix-free per-dynamic factorization with an incrementally constructed shared spatial basis and a global-trajectory NFFT representation. The resulting shared basis is not an exact post-hoc global SVD of all dynamic-specific matrices. Consequently, the Eckart-Young optimality result for a truncated SVD of a fixed matrix does not apply directly to the completed incremental representation. [[5]](/references#ref-5 "Eckart C, Young G. The approximation of one matrix by another of lower rank. Psychometrika. 1936;1:211-218.")
 
 A direct global SVD/rSVD remains a useful approximation-quality reference when memory permits because all dynamics can be considered jointly. The incremental method instead targets memory-bounded construction and scalable execution. These alternatives are distinguished explicitly in [Scientific validation strategy](/guide/validation).
+
+Shared subspace and hierarchical POD constructions also have established mathematical foundations, including HAPOD. [[23]](/references#ref-23 "Himpe C, Leibner T, Rave S. Hierarchical approximate proper orthogonal decomposition. SIAM J Sci Comput. 2018;40:A3267-A3292.")
+
+MRI encoding compression predates the joint builder: Compton et al. use randomized interpolative decomposition for field-corrected MRI; Cartesian MaxGIRF exploits reusable shot/readout structure; Tian and Scheffler jointly compress dynamic field and RF encoding within k-space subregion groups. [[18]](/references#ref-18 "Compton R, Osher S, Bouchard LS. Hybrid regularization for MRI reconstruction with static field inhomogeneity correction. Inverse Probl Imaging. 2013;7:1215-1233.") [[19]](/references#ref-19 "Lee NG, Cui SX, Nayak KS. Cartesian MaxGIRF: Model-based EPI reconstruction incorporating gradient nonlinearity and concomitant field effects. Magn Reson Med. 2026;95:1044-1067. First published online 2025.") [[20]](/references#ref-20 "Tian R, Scheffler K. Group-Patch Joint Compression: Compressing dynamic B0 and static RF spatial modulations across k-space subregion groups for highly accelerated MRI. Magn Reson Med. Published online 2026.")
+
+The joint builder described below keeps the supplied coil/data dimensions and handles nonidentical phase histories. It combines weighted snapshot POD, geometric coverage, sampled least squares, and residual checks; it does not implement those papers in full or establish mathematical priority. Sampled matrix acceptance does not certify physical image accuracy.
+
+For local fixed-precision approximation, Yu et al. give QB energy identities with orthogonality and finite-precision requirements. [[21]](/references#ref-21 "Yu W, Gu Y, Li Y. Efficient randomized algorithms for the fixed-precision low-rank matrix approximation. SIAM J Matrix Anal Appl. 2018;39:1339-1359.") Demmel et al. describe TSQR, a stable alternative to forming a tall matrix's Gram before SVD. [[22]](/references#ref-22 "Demmel J, Grigori L, Hoemmen M, Langou J. Communication-optimal parallel and sequential QR and LU factorizations. SIAM J Sci Comput. 2012;34:A206-A239.") These are numerical references, not additional constructor backends.
 
 ## Residual encoding matrix
 
@@ -307,9 +323,194 @@ $$
 
 Appending basis columns and padding earlier coefficient blocks with zeros leaves the previously stored approximation unchanged. The final coefficients should therefore be interpreted as streaming coefficients associated with the incremental construction, rather than as coefficients from a post-hoc global projection.
 
+## Optional final global recompression
+
+In the rSVD path, `global_basis_tol` optionally compresses the
+completed representation once more. Write its unscaled temporal factor as
+$\widehat q$ and assume $S^HS=I$. The eigenvalues of
+$\widehat q^H\widehat q$ are then the squared singular values of
+$\widehat qS^H$. If $Z_{R_g}$ contains the retained eigenvectors, rotate both
+factors:
+
+$$
+\widehat q_{\mathrm{new}}=\widehat qZ_{R_g},
+\qquad
+S_{\mathrm{new}}=SZ_{R_g}.
+$$
+
+The relative squared Frobenius error is the discarded eigenvalue sum divided
+by the total eigenvalue sum. For non-negligible total energy, the smallest
+positive rank whose ratio is at most `global_basis_tol^2` is selected.
+This measures additional error relative
+to the already compressed representation. It does not include local rSVD error,
+incremental merging error, or missing earlier coefficients. The default
+`global_basis_tol=nothing` preserves the input representation. Finite-precision
+Gram and basis-orthogonality effects still need numerical validation.
+
+## Direct joint shared basis
+
+The `shared_basis_method=:joint` path constructs $S$ jointly from
+representative phase snapshots across dynamics, then fits $\widehat q$
+directly. It bypasses the per-dynamic $U_d,\widetilde V_d$ construction above.
+The final residual model remains
+
+$$
+H\approx\widehat qS^H,\qquad
+H\in\mathbb C^{(N_sN_d)\times N_v},\quad
+\widehat q\in\mathbb C^{(N_sN_d)\times R},\quad
+S\in\mathbb C^{N_v\times R}.
+$$
+
+Here $H$ stacks all dynamics with samples varying fastest. It is an implicit
+matrix, not a full allocated phase array. Within this section, row indices refer to the stacked matrix. The snapshot budget $K$, fitting
+voxel count $J$, and final spatial rank $R$ are separate quantities.
+
+### Phase geometry and representative snapshots
+
+Let $a_j$ contain time and residual field coefficients, and let $b_v$ contain
+the field map and matching spatial basis values, so that
+$H(j,v)=\exp(i2\pi a_j^Tb_v)$. Compute
+
+$$
+\mu=\frac{1}{N_v}\sum_v b_v,\qquad
+G_b=\frac{1}{N_v}\sum_v(b_v-\mu)(b_v-\mu)^T.
+$$
+
+The phase distance used for representative selection is
+
+$$
+d(a,a')^2=(a-a')^TG_b(a-a').
+$$
+
+For $\widetilde h_a(v)=\exp(i2\pi a^T(b_v-\mu))$,
+$|e^{ix}-e^{iy}|\leq|x-y|$ gives the exact-arithmetic bound
+
+$$
+\frac{\|\widetilde h_a-\widetilde h_{a'}\|_2}{\sqrt{N_v}}
+\leq 2\pi d(a,a').
+$$
+
+The removed spatially constant phase can be absorbed into $\widehat q$.
+Only the selection metric is centred; the actual encoding phases are not
+changed. This bound motivates geometric coverage, but it is not a proof
+that a particular snapshot budget covers all dynamics or extreme-field voxels.
+
+The current selection uses a candidate time grid with stride 16 and the last
+sample. When there are at least four dynamics, approximately 10% are held out
+from snapshot selection. Farthest-point selection chooses up to $K$
+representatives; coincident geometries can reduce that count. Coverage counts
+provide snapshot weights. All dynamics, including the held-out ones, are
+subsequently checked.
+
+### Weighted snapshot POD
+
+For selected phase rows $h_{j_k}=H(j_k,:)$ and coverage counts $w_k$, define
+
+$$
+A_{\mathrm{snap}}=
+\begin{bmatrix}
+\sqrt{w_1}h_{j_1}^H & \cdots & \sqrt{w_K}h_{j_K}^H
+\end{bmatrix}.
+$$
+
+The leading left singular subspace minimizes the weighted snapshot error:
+
+$$
+\min_{S^HS=I_R}\|A_{\mathrm{snap}}-SS^HA_{\mathrm{snap}}\|_F^2
+=\sum_{r>R}\sigma_r(A_{\mathrm{snap}})^2.
+$$
+
+This is the POD/truncated-SVD objective, following Eckart--Young and the
+low-rank approximation framework reviewed by Halko et al.
+[[5]](/references#ref-5 "Eckart C, Young G. The approximation of one matrix by another of lower rank. Psychometrika. 1936;1:211-218.") [[4]](/references#ref-4 "Halko N, Martinsson PG, Tropp JA. Finding structure with randomness. SIAM Rev. 2011;53:217-288."). The optimum applies to
+$A_{\mathrm{snap}}$, not automatically to the complete $H$ or to the worst dynamic.
+
+The implementation generates conjugated phase snapshots in bounded voxel
+chunks, accumulates $A_{\mathrm{snap}}^HA_{\mathrm{snap}}$, and builds $S$ in a second pass. A small
+eigendecomposition and a Cholesky-based correction provide an approximately
+orthonormal basis. Directions below `eps(T)` times the largest Gram eigenvalue
+are dropped before normalization. The Gram is formed in the requested input
+precision; converting it to Float64 for its eigendecomposition cannot recover
+weak directions already lost in Float32 arithmetic.
+
+### Oversampled coefficient fitting
+
+For fitting voxel indices $\mathcal J$, let $S_J=S[\mathcal J,:]$. Coefficients
+are obtained by QR-based least squares:
+
+$$
+\widehat q_{\mathrm{fit}}
+=\arg\min_Q\|H[:,\mathcal J]-QS_J^H\|_F
+=H[:,\mathcal J](S_J^\dagger)^H,
+$$
+
+where the last identity assumes $S_J$ has full column rank. The code computes
+the least-squares map using QR rather than normal equations.
+
+The fitting pool contains at most 8192 seeded random voxels and at most half
+the mask. Pivoted QR of the sampled basis adjoint selects anchor points;
+random points supply the remaining oversampling. This combines Q-DEIM-style
+selection with gappy POD. Drmač and Gugercin provide the QR-selection
+foundation; Peherstorfer et al. analyze oversampled gappy POD stability
+[[16]](/references#ref-16 "Drmač Z, Gugercin S. A new selection operator for the discrete empirical interpolation method—Improved a priori error bound and extensions. SIAM J Sci Comput. 2016;38:A631-A648.") [[17]](/references#ref-17 "Peherstorfer B, Drmač Z, Gugercin S. Stability of discrete empirical interpolation and gappy proper orthogonal decomposition with randomized and deterministic sampling points. SIAM J Sci Comput. 2020."). The present pool and
+oversampling policy are not the exact GappyPOD+E algorithm, so its published
+probability bounds are not inherited unchanged.
+
+For any orthonormal $S$, the error separates exactly as
+
+$$
+\boxed{
+\|H-\widehat qS^H\|_F^2
+=\|H-HSS^H\|_F^2+\|HS-\widehat q\|_F^2.
+}
+$$
+
+The first term measures inadequate spatial span; the second measures
+coefficient error. With $E_\perp=H-HSS^H$ and full-column-rank $S_J$,
+
+$$
+\|\widehat q_{\mathrm{fit}}-HS\|_F
+\leq \frac{\|E_\perp[:,\mathcal J]\|_F}{\sigma_{\min}(S_J)}.
+$$
+
+Increasing $R$ and improving the fitting samples therefore address different
+errors. The package joint path uses sampled fitting; the full $\widehat q=HS$
+projection investigated in the EPI experiments is not this implementation.
+
+### Rank selection and final audit
+
+The full requested snapshot budget is used before rank selection. The search
+tests $R=1,8,16,\ldots$ and the final available rank, recomputing the
+least-squares coefficients for each tested prefix. If no rank passes, it can
+double $J$ once, bounded by the fitting pool. It does not automatically grow
+$K$ or search every integer rank.
+
+For each dynamic separately, selection checks evaluate a sampled relative
+Frobenius error against phases recomputed in Float64 from the supplied inputs.
+Selection requires error at most `0.9 * shared_basis_tol`. After generating the
+complete factors, a fresh time-sample audit uses `shared_basis_tol` itself.
+The margin is heuristic and does not establish a confidence level.
+
+For large inputs, the current fixed limits are 193 selection and 257 audit
+time samples per dynamic, 1024 random validation voxels, and an additional
+128 high-$|B_0|$ voxels. Both spatial sets exclude the fitting pool; selection
+and audit voxel sets may overlap. Their time samples are disjoint and exclude
+the snapshot candidate grid when enough samples exist. Tiny inputs report
+`disjoint_times=false` when time separation is impossible.
+
+`joint_roi_tol` optionally imposes a separate high-$|B_0|$ tolerance with the
+same selection margin. With `nothing`, an excessive ROI error is reported and
+warned about, but does not reject the operator. This option changes acceptance,
+not the fitting-point selection policy.
+
+Rank/sample exhaustion and a failed final audit throw, with diagnostics
+available through `joint_basis_report`. There is no accepted partial result
+or silent CPU fallback. Successful sampled checks are not a full-matrix,
+uniform-voxel, minimum-rank, or reconstruction-image guarantee.
+
 ## Final residual representation
 
-Define the unscaled sample-domain factor
+For the rSVD path, define the unscaled sample-domain factor
 
 $$
 \widehat q_d
@@ -327,7 +528,7 @@ H_d
 \widehat q_d S^H.
 $$
 
-All $\widehat q_d$ blocks are concatenated with samples as the fastest-changing index and dynamics as the next index. The stored coefficient matrix additionally incorporates three sample-domain factors:
+All $\widehat q_d$ blocks are concatenated with samples as the fastest-changing index and dynamics as the next index. Joint construction directly supplies the same unscaled representation. Optional final global recompression applies only to the rSVD path. The stored coefficient matrix additionally incorporates three sample-domain factors:
 
 1. the zeroth-order phase $\exp(i2\pi k_{0,jd})$;
 2. the parity-dependent NFFT centre correction;
@@ -386,7 +587,7 @@ For independent per-dynamic spatial factorizations, the corresponding transform 
 
 ## Two-stage approximation error
 
-Before applying zeroth-order, centre-correction, and normalization factors, the approximation is
+For the rSVD path, before applying zeroth-order, centre-correction, and normalization factors, the approximation is
 
 $$
 H_d
@@ -432,6 +633,8 @@ The first term is the local rSVD approximation error and the second term is the 
 
 ## Parameter interpretation
 
+For the default rSVD construction:
+
 | Parameter | Role | Recommended check |
 |---|---|---|
 | `L_rank` | Local truncation rank | Sweep against an explicit operator or independent dense reference |
@@ -440,9 +643,18 @@ The first term is the local rSVD approximation error and the second term is the 
 | `rsvd_finalize` | `:svd` or memory-saving `:gram` | Compare retained spectra and operator errors on a tractable problem |
 | `shared_basis_tol` | Incremental second-stage residual tolerance | Report together with the final `shared_rank` |
 | `shared_rank_max` | Hard cap on accumulated shared rank | Treat an exceeded cap as a configuration failure |
-| `rsvd_backend` | `:chunked` or fused CUDA `:kernel` | The fused kernel requires `L_rank + rsvd_oversample ≤ 32` |
+| `rsvd_backend` | `:chunked` or fused CUDA `:kernel` | The kernel supports wide sketches in batches of at most 16 |
+| `global_basis_tol` | Optional final rSVD representation compression | Additional error relative to the already shared approximation; default `nothing` |
 
 The local rank $L$ and final shared rank $R$ describe different approximations. $L$ controls the per-dynamic rSVD truncation, whereas $R$ is the dimension accumulated by the shared spatial representation. Thus, $R$ may be smaller than, equal to, or larger than $L$.
+
+For `:joint`, `L_rank` and `rsvd_oversample` do not select $R$. Instead,
+`joint_snapshots` controls $K$, `joint_samples` controls the initial $J$, and
+`shared_rank_max` caps $R$. `shared_basis_tol` then denotes a sampled
+original-phase matrix target, not the incremental local-factor tolerance
+above. `global_basis_tol` must be `nothing` to preserve the audited factors.
+See the [joint usage example](/guide/operators#automatic-joint-shared-basis)
+and the [API parameter table](/reference/highorderlowrankop#shared-basis-parameters).
 
 Rank selection should not be based on a single reconstructed image. At minimum, forward error, adjointness, normal-operator error, reconstruction error, seed sensitivity, shared rank, and final solver residual should be examined. The [Scientific validation strategy](/guide/validation) defines the comparison hierarchy, and the [Reconstruction protocol](/guide/reconstruction-protocol) defines the fixed metrics and timing boundaries.
 

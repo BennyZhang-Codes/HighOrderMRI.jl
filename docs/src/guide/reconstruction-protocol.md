@@ -34,7 +34,7 @@ $$
 
 This expression mirrors the production `HighOrderOp` and `HighOrderKernelOp`: static off-resonance contributes `times .* fieldmap`, and all selected dynamic field terms contribute `bf * kspha`. The phase is in cycles before multiplication by $2\pi$. The forward sign is positive and the adjoint uses the conjugate phase and $C_{vc}^*$.
 
-`HighOrderLowRankOp` targets the same model. It sends the active first-order terms to AbstractNFFTs, approximates static off-resonance plus residual spatial phase with per-dynamic rSVD and the incremental shared spatial basis, and folds the spatially constant zeroth-order phase into the sample-domain factor `q`.
+`HighOrderLowRankOp` targets the same model. It sends the active first-order terms to AbstractNFFTs, approximates static off-resonance plus residual spatial phase with a shared spatial basis, and folds the spatially constant zeroth-order phase into the sample-domain factor `q`.
 
 ## 2. Spatial grid
 
@@ -160,7 +160,7 @@ In `HighOrderLowRankOp`, this normalization, the zeroth-order temporal phase, an
 
 ## 8. Low-rank parameters
 
-The following quantities must be reported separately:
+For the default rSVD method, the following quantities must be reported separately:
 
 - `L_rank`: local per-dynamic rSVD truncation rank;
 - `shared_rank`: final incremental shared spatial rank;
@@ -172,6 +172,10 @@ The following quantities must be reported separately:
 - `rsvd_backend`;
 - `rsvd_distribution`.
 
+Also record `shared_basis_method` and `global_basis_tol`. A final global
+truncation adds approximation error relative to the already compressed
+representation; it does not replace the other error measurements.
+
 The default seed schedule is deterministic:
 
 $$
@@ -180,7 +184,23 @@ s_d
 s_0+d-1.
 $$
 
-The shared-basis implementation is incremental. Coefficients of an earlier dynamic are not recomputed when later dynamics append new basis columns; those new rows are zero-padded for the earlier dynamic. Consequently, the stored final coefficient block should not be described as the exact projection $S^H\widetilde V_d$ onto the completed basis. See [Low-rank shared subspace](/theory/low-rank) for the implementation-accurate derivation.
+The rSVD shared-basis implementation is incremental. Coefficients of an earlier dynamic are not recomputed when later dynamics append new basis columns; those new rows are zero-padded for the earlier dynamic. Consequently, the stored final coefficient block should not be described as the exact projection $S^H\widetilde V_d$ onto the completed basis. See [Low-rank shared subspace](/theory/low-rank) for the implementation-accurate derivation.
+
+### Joint-method parameters
+
+For the joint method, record $K$ (`joint_snapshots`), initial and
+final $J$ (`joint_samples`), the selected $R$, `shared_rank_max`,
+`shared_basis_tol`, `joint_roi_tol`, `rsvd_chunk`, and the seed. Retain the
+full `joint_basis_report` so that snapshot selection, fitting indices,
+per-dynamic selection/audit errors, high-$|B_0|$ errors, and time-sample
+separation can be inspected.
+
+Joint automatically selects a shared rank, not a local rSVD rank. Its sampled
+phase-matrix checks do not replace raw operator/image comparisons or the
+predefined ROI metrics below. Report a warning-only ROI failure as a failure
+of that ROI target even when construction succeeds.
+
+Comparisons that change the approximation must identify that change explicitly.
 
 ## 9. Solver freeze
 

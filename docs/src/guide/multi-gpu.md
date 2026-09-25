@@ -86,15 +86,35 @@ $$
 
 Thus, only the sample-domain randomized sketch and the small Gram contributions require reduction across devices. The large spatial factors and the shared spatial basis remain voxel distributed during setup, and the completed shared basis is gathered once to the primary operator device.
 
-Voxel-distributed setup currently requires:
+Voxel distribution requires:
 
 - `arrayType=CuArray`;
-- `rsvd_backend=:kernel`;
+- `rsvd_backend=:kernel` or explicit `:chunked`;
 - `rsvd_finalize=:gram`;
-- at least two distinct GPU IDs;
-- $L+p\leq 32$, where $L$ is `L_rank` and $p$ is `rsvd_oversample`.
+- at least two unique GPU IDs.
 
-With `rsvd_distribution=:auto`, voxel distribution is selected when these conditions are satisfied.
+With `rsvd_distribution=:auto`, this mode is selected for the fused kernel
+when the remaining conditions are satisfied. Chunked voxel distribution
+requires explicit `rsvd_distribution=:voxel`.
+
+### Setup backend selection
+
+The fused backend supports wide sketches by batching 16 columns per launch.
+It preserves the full Gram matrix, including cross-block terms. Explicit
+`rsvd_distribution=:voxel, rsvd_backend=:chunked` is supported
+with `rsvd_finalize=:gram`. Its phase and encoding workspaces are bounded by
+`rsvd_chunk` and reused across dynamics.
+
+Automatic voxel distribution still selects only the fused kernel path on
+CUDA with multiple GPUs and Gram finalization. The chunked path requires
+explicit selection: it was slower on the real EPI setup despite promising
+small-matrix timings. See [backend tradeoffs](/guide/performance#backend-and-precision-tradeoffs).
+
+With `shared_basis_method=:joint`, setup runs on the primary GPU
+(`first(gpus)`), or on the CPU for `arrayType=Array`. Set
+`rsvd_distribution=:auto` or `:single`; `:voxel` is rejected.
+Additional GPUs can still participate in channel-distributed normal evaluation
+without changing its algebra or lifecycle.
 
 ## Iterative reconstruction: channel-distributed normal operator
 
