@@ -25,6 +25,54 @@ HighOrderLowRankOp
 @rebuild_HOOp
 ```
 
+### Automatic joint shared basis
+
+The existing local rSVD construction remains the default. To opt into joint
+phase snapshots and automatic selection of the final shared rank:
+
+```julia
+report = Ref{Any}()
+op = HighOrderLowRankOp(grid, kspha, times;
+    fieldmap, csm, mask,
+    shared_basis_method=:joint,
+    shared_basis_tol=Float32(1e-2),
+    shared_rank_max=256,
+    joint_snapshots=512,
+    joint_samples=512,
+    joint_basis_report=report,
+    global_basis_tol=nothing,
+)
+report[].rank
+maximum(report[].audit_errors)
+maximum(report[].roi_errors)
+```
+
+Match tolerance types to the input precision. Existing `arrayType`, `gpus`,
+`normal_distribution` and reconstruction options still apply. Joint setup
+runs on the primary GPU or CPU; it does not use voxel-distributed rSVD.
+`L_rank` does not truncate local factors in this mode. `rsvd_chunk` bounds
+temporary phase matrices. The requested `joint_snapshots` budget is used
+before choosing rank, subject to available phase geometries. The result uses
+the existing operator, NFFT and normal implementations, including all rank
+cross terms.
+
+Here `shared_basis_tol` constrains a sampled original-phase matrix error for
+each profile, unlike the incremental compression error of the default path.
+The search tests rank 1 and blocks of eight, then audits the completed factors
+on fresh time samples. Selection reserves 10% of each requested tolerance for
+sampling variation; the final audit still uses the requested tolerance and
+can fail. This heuristic is not a proof of the minimum rank or an image-error
+guarantee. Reports include the seed, fitting/validation/audit indices and the
+per-profile errors; tiny inputs record when time samples must be reused.
+
+High-|B0| voxels receive an additional diagnostic. Set
+`joint_roi_tol=Float32(1e-2)` to require that region to pass as well. Without
+this option, an excessive ROI error is reported and warned about. In the EPI
+experiment, a random-voxel 1% pass did **not** imply a high-B0-region 1% pass.
+Rank/sample exhaustion and failed audits throw, with diagnostics in `report`;
+no partially validated operator is returned. Post-audit `global_basis_tol`
+compression is rejected because it would change the checked factors.
+
 ## Reconstruction
 
 ```@docs

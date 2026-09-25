@@ -190,6 +190,11 @@ end
         rsvd_distribution=:auto,
         shared_rank_max=128,
         shared_basis_tol=T(1e-2),
+        shared_basis_method=:rsvd,
+        joint_snapshots=256,
+        joint_samples=512,
+        joint_roi_tol=nothing,
+        joint_basis_report=nothing,
         normal_distribution=:single,
         nfft_center_correction=true,
         verbose=false,
@@ -202,6 +207,11 @@ MRI. For each dynamic, rSVD approximates the off-resonance and higher-order
 encoding matrix. The dynamic spatial bases are subsequently compressed into
 one global spatial basis, allowing the final operator to use one global NFFT
 plan instead of one NFFT per dynamic and low-rank term.
+
+The opt-in `shared_basis_method=:joint` instead constructs a shared basis from
+representative joint phase snapshots and fits temporal coefficients on sampled
+voxels. It selects the final rank using independent original-phase checks;
+the default rSVD path is unchanged.
 
 # Arguments
 
@@ -263,6 +273,25 @@ plan instead of one NFFT per dynamic and low-rank term.
 * `shared_basis_tol::T`                 - Relative approximation-error
   tolerance used while merging per-dynamic spatial bases. The final shared
   rank is adaptive and can be larger than `L_rank`.
+* `shared_basis_method::Symbol`         - `:rsvd` (default) merges local rSVD
+  factors. `:joint` bypasses local rSVD and selects the final shared rank using
+  `shared_basis_tol` as a per-profile sampled original-matrix error target,
+  followed by an independent audit. Selection reserves a 10% margin; the
+  final audit uses the requested tolerance. The two tolerances measure different
+  errors. Rank/sample limits or a failed audit throw instead of returning an
+  unchecked operator. At least four masked voxels are required for `:joint`.
+* `joint_snapshots::Int`                - Representative phase-row budget
+  for `:joint`, bounded by available phase geometries. The full budget is
+  used before rank selection.
+* `joint_samples::Int`                  - Initial number of coefficient-fitting
+  voxels for `:joint`; doubles on failure, bounded by the fitting pool.
+* `joint_roi_tol::Union{Nothing,T}`      - Optional additional sampled high-B0
+  region tolerance for `:joint`. With `nothing`, ROI errors are reported and
+  warned about when they exceed `shared_basis_tol`; they are not certified.
+* `joint_basis_report::Union{Nothing,Ref}` - Optional destination, such as
+  `Ref{Any}()`, for joint rank, sample indices, per-profile development/audit
+  errors and ROI errors. It is filled before rank-limit/audit errors are thrown.
+  It does not change the operator's return type or hot-loop storage.
 * `global_basis_tol::Union{Nothing,T}`  - Optional final relative Frobenius
   tolerance for recompressing the already shared representation. Its error is
   additional to, and reported separately from, local rSVD and online shared-
@@ -306,6 +335,15 @@ no longer needed. This stops its worker tasks and returns explicit workspaces
 to CUDA.jl's reusable memory pool; the reserved-memory value reported by
 `nvidia-smi` does not necessarily decrease immediately.
 
+Joint setup runs on the primary GPU (or CPU for `arrayType=Array`); additional
+GPUs still participate in the unchanged channel normal backend. For `:joint`,
+`L_rank` is metadata rather than a local truncation, `shared_rank_max` is
+bounded by the joint matrix dimensions and fitting pool, and `rsvd_chunk`
+also bounds the temporary joint phase matrices. Set
+`rsvd_distribution=:auto` or `:single` and `global_basis_tol=nothing`:
+post-validation recompression would invalidate the sampled error checks.
+Sampled matrix acceptance is not a full-matrix, ROI or image guarantee.
+
 Before replacing a large operator in the same variable, release the normal
 backend, set the old variable to `nothing`, and run `GC.gc()` before
 constructing the replacement. In an assignment such as
@@ -335,6 +373,11 @@ function HighOrderLowRankOp(
     shared_rank_max   :: Int                       = 128                                     ,
     shared_basis_tol  :: T                         = T(1e-2)                                 , 
     global_basis_tol  :: Union{Nothing,T}          = nothing                                 ,
+    shared_basis_method:: Symbol                    = :rsvd                                   ,
+    joint_snapshots   :: Int                       = 256                                     ,
+    joint_samples     :: Int                       = 512                                     ,
+    joint_roi_tol     :: Union{Nothing,T}          = nothing                                 ,
+    joint_basis_report:: Union{Nothing,Ref}        = nothing                                 ,
     normal_distribution:: Symbol                   = :single                                 ,
     nfft_center_correction :: Bool                 = true                                    ,
     verbose           :: Bool                      = false                                   ,   
@@ -363,10 +406,17 @@ function HighOrderLowRankOp(
     rsvd_backend in (:auto, :chunked, :kernel) || throw(ArgumentError("Unsupported rsvd_backend=$rsvd_backend"))
     rsvd_distribution in (:auto, :single, :voxel) || throw(ArgumentError("Unsupported rsvd_distribution=$rsvd_distribution; " * "expected :auto, :single, or :voxel"))
     normal_distribution in (:single, :channel) || throw(ArgumentError("Unsupported normal_distribution=$normal_distribution; expected :single or :channel"))
+    shared_basis_method in (:rsvd, :joint) || throw(ArgumentError("shared_basis_method must be :rsvd or :joint"))
     isempty(gpus) && throw(ArgumentError("gpus must contain at least one GPU id"))
     length(unique(gpus)) == length(gpus) || throw(ArgumentError("gpus contains duplicate GPU ids: $gpus"))
 
     is_gpu = arrayType == CuArray
+    use_joint_basis = shared_basis_method === :joint
+    if use_joint_basis
+        isnothing(global_basis_tol) || throw(ArgumentError("shared_basis_method=:joint requires global_basis_tol=nothing to preserve its validation"))
+        rsvd_distribution !== :voxel || throw(ArgumentError("Joint basis setup uses the primary device; use rsvd_distribution=:auto or :single"))
+        nCol <= typemax(Int32) || throw(ArgumentError("Joint operator grid indices exceed Int32"))
+    end
     primary_gpu = first(gpus)
     if normal_distribution === :channel
         is_gpu || throw(ArgumentError("normal_distribution=:channel requires arrayType=CuArray"))
@@ -374,7 +424,7 @@ function HighOrderLowRankOp(
     end
     rsvd_backend = rsvd_backend === :auto ? (is_gpu ? :kernel : :chunked) : rsvd_backend
     use_distributed_rsvd =
-    rsvd_distribution === :voxel || (rsvd_distribution === :auto && is_gpu && length(gpus) > 1 && rsvd_finalize === :gram && rsvd_backend === :kernel)
+    !use_joint_basis && (rsvd_distribution === :voxel || (rsvd_distribution === :auto && is_gpu && length(gpus) > 1 && rsvd_finalize === :gram && rsvd_backend === :kernel))
 
     if use_distributed_rsvd
         is_gpu || throw(ArgumentError("rsvd_distribution=:voxel requires arrayType=CuArray"))
@@ -383,7 +433,10 @@ function HighOrderLowRankOp(
     end
     if is_gpu CUDA.device!(primary_gpu) end
     
-    if verbose
+    if verbose && use_joint_basis
+        @info("Joint shared-basis execution configuration", primary_gpu=is_gpu ? primary_gpu : nothing,
+            snapshots=joint_snapshots, samples=joint_samples, normal_distribution)
+    elseif verbose
         @info(
             "rSVD execution configuration",
             backend=rsvd_backend,
@@ -440,18 +493,29 @@ function HighOrderLowRankOp(
 
     L_total = L_rank + rsvd_oversample
 
-    @assert L_total <= min(nSam, nVox) "L_rank + rsvd_oversample exceeds matrix dimensions"
+    if !use_joint_basis
+        @assert L_total <= min(nSam, nVox) "L_rank + rsvd_oversample exceeds matrix dimensions"
+    end
 
     rsvd_chunk = min(rsvd_chunk, nVox)
 
-    max_possible_shared_rank = min(nVox, L_rank * nDyn)
+    max_possible_shared_rank = use_joint_basis ? min(nVox, nSam * nDyn) : min(nVox, L_rank * nDyn)
     effective_shared_rank_max = min(shared_rank_max, max_possible_shared_rank)
     if verbose && effective_shared_rank_max != shared_rank_max
         @info("Clamping shared_rank_max", requested=shared_rank_max, effective=effective_shared_rank_max, max_possible=max_possible_shared_rank)
     end
 
 
-    if use_distributed_rsvd
+    if use_joint_basis
+        q, basis, joint_report = joint_spatial_basis(
+            times_host, fieldmap_host, bf_err_host, kspha_err_host;
+            arrayType, rank_max=effective_shared_rank_max, tol=shared_basis_tol,
+            snapshots=joint_snapshots, sample_count=joint_samples, chunk_size=rsvd_chunk,
+            seed=rsvd_seed, roi_tol=joint_roi_tol, report_ref=joint_basis_report, verbose,
+        )
+        shared_rank = joint_report.rank
+        shared_errors = joint_report.audit_errors
+    elseif use_distributed_rsvd
         q_host, basis_host, shared_rank, shared_errors = let
             distributed_workspace = DistributedRSVDWorkspace(
                 fieldmap_host,
