@@ -48,7 +48,7 @@ end
 # register pressure and very long compilation.  Wider sketches are therefore
 # split into independent column batches while retaining the same E * Ω and
 # E' * Q mathematics.
-const RSVD_KERNEL_RANK_BATCH = 32
+const RSVD_KERNEL_RANK_BATCH = 16
 
 
 @inline function load_kspha(

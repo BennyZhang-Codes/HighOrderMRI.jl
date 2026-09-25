@@ -113,3 +113,48 @@
               max(norm(E_chunked), eps(T)) < T(1e-3)
     end
 end
+
+@testset "rSVD CUDA rank and voxel tails" begin
+    if CUDA.functional()
+        for S in (Float32, Float64)
+            nSam, nVox, M = 67, 131, 12
+            times = S(0.02) .* rand(S, nSam)
+            fieldmap = randn(S, nVox)
+            bf = S(0.02) .* randn(S, nVox, M)
+            kspha = randn(S, M, nSam)
+            phase = times * transpose(fieldmap) + transpose(kspha) * transpose(bf)
+            E_ref = cis.(S(2π) .* phase)
+            tolerance = S === Float32 ? S(1e-4) : S(1e-12)
+
+            times_d, fieldmap_d, bf_d = CuArray(times), CuArray(fieldmap), CuArray(bf)
+            for L in (11, 17, 20, 33, 40, 80, 96, 97)
+                omega = randn(Complex{S}, nVox, L)
+                Q = randn(Complex{S}, nSam, L)
+                W_ref = E_ref * omega
+                B_ref = adjoint(E_ref) * Q
+                gram_ref = adjoint(B_ref) * B_ref
+                omega_d, Q_d = CuArray(omega), CuArray(Q)
+
+                for transposed in (false, true)
+                    kspha_d = CuArray(transposed ? permutedims(kspha) : kspha)
+                    W_d = CUDA.zeros(Complex{S}, nSam, L)
+                    B_d = CUDA.zeros(Complex{S}, nVox, L)
+                    HighOrderMRI.run_kernel_rsvd_forward!(
+                        W_d, omega_d, times_d, fieldmap_d, bf_d, kspha_d;
+                        kspha_transposed=transposed,
+                    )
+                    HighOrderMRI.run_kernel_rsvd_adjoint!(
+                        B_d, Q_d, times_d, fieldmap_d, bf_d, kspha_d;
+                        threads=256, kspha_transposed=transposed,
+                    )
+                    @test norm(Array(W_d) - W_ref) / norm(W_ref) < tolerance
+                    @test norm(Array(B_d) - B_ref) / norm(B_ref) < tolerance
+
+                    # The full Gram includes off-diagonal blocks between batches.
+                    gram = Array(adjoint(B_d) * B_d)
+                    @test norm(gram - gram_ref) / norm(gram_ref) < tolerance
+                end
+            end
+        end
+    end
+end
