@@ -100,3 +100,31 @@
     @test AbstractNFFTs.size_out(op_2d.nfftplan) == (nSam,)
     @test size(op_2d) == (nSam * nCha, prod(grid.matrixSize))
 end
+
+@testset "global shared-basis recompression" begin
+    T = Float32
+    # Use an exactly orthonormal spatial basis so the small qᴴq spectrum is the
+    # Frobenius spectrum of q*basisᴴ.
+    basis = Matrix(qr(randn(Complex{T}, 11, 4)).Q[:, 1:4])
+    q = randn(Complex{T}, 17, 4) * Diagonal(T[1, 0.2, 0.03, 0.002])
+    reference = q * adjoint(basis)
+    q_compressed, basis_compressed, stats =
+        HighOrderMRI.global_recompress_shared_basis(q, basis, T(0.1))
+    compressed = q_compressed * adjoint(basis_compressed)
+
+    @test stats.rank < stats.pre_rank
+    @test stats.relative_error <= T(0.1) + T(1e-5)
+    @test norm(reference - compressed) / norm(reference) ≈ stats.relative_error rtol=T(2e-4)
+    @test stats.basis_orthogonality_error < T(1e-4)
+
+    grid, kspha, times, fieldmap, csm, mask, recon_terms = highorder_lowrank_test_data()
+    common_kwargs = (; fieldmap, csm, mask, recon_terms, L_rank=2, rsvd_seed=0, rsvd_finalize=:gram)
+    op_full = HighOrderLowRankOp(grid, kspha, times; common_kwargs...)
+    op_global = HighOrderLowRankOp(grid, kspha, times; common_kwargs..., global_basis_tol=T(0.2))
+    @test size(op_global.q, 2) <= size(op_full.q, 2)
+    x = randn(Complex{T}, prod(grid.matrixSize))
+    y = randn(Complex{T}, size(op_global, 1))
+    lhs = dot(op_global * x, y)
+    rhs = dot(x, adjoint(op_global) * y)
+    @test abs(lhs - rhs) / max(abs(lhs), abs(rhs), eps(T)) < T(1e-4)
+end

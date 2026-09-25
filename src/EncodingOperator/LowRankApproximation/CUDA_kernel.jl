@@ -43,6 +43,14 @@ end
 @inline phase_sincos(theta::T) where {T<:AbstractFloat} = sincos(theta)
 
 
+# Each fused kernel keeps one accumulator per sketch column in registers.
+# Compiling a single launch with a much larger `Val(L)` causes excessive
+# register pressure and very long compilation.  Wider sketches are therefore
+# split into independent column batches while retaining the same E * Ω and
+# E' * Q mathematics.
+const RSVD_KERNEL_RANK_BATCH = 32
+
+
 @inline function load_kspha(
     kspha::CuDeviceMatrix{T},
     iterm::I,
@@ -85,17 +93,23 @@ function run_kernel_rsvd_forward!(
     @assert size(bf) == (nVox, M)
     expected_kspha_size = kspha_transposed ? (nSam, M) : (M, nSam)
     @assert size(kspha) == expected_kspha_size
-    @assert L <= 32 "Fused rSVD kernel currently supports L_total <= 32"
-
     blocks  = nSam
     nWarp   = threads ÷ 32
 
     M_pad = M + (M % 2)
-    shmem_bytes = M_pad * sizeof(T) + nWarp * L * sizeof(Complex{T})
 
-    @cuda always_inline=true threads=threads blocks=blocks shmem=shmem_bytes CUDA_kernel_rsvd_forward!(
-            W, omega, times, fieldmap, bf, kspha, Int32(nSam), Int32(nVox),
-            Val(M), Val(L), Val(kspha_transposed))
+    for first_rank = 1:RSVD_KERNEL_RANK_BATCH:L
+        last_rank = min(first_rank + RSVD_KERNEL_RANK_BATCH - 1, L)
+        ranks = first_rank:last_rank
+        batch_rank = length(ranks)
+        W_batch = @view W[:, ranks]
+        omega_batch = @view omega[:, ranks]
+        shmem_bytes = M_pad * sizeof(T) + nWarp * batch_rank * sizeof(Complex{T})
+
+        @cuda always_inline=true threads=threads blocks=blocks shmem=shmem_bytes CUDA_kernel_rsvd_forward!(
+                W_batch, omega_batch, times, fieldmap, bf, kspha, Int32(nSam), Int32(nVox),
+                Val(M), Val(batch_rank), Val(kspha_transposed))
+    end
 
     return W
 end
@@ -124,8 +138,6 @@ function run_kernel_rsvd_adjoint!(
     expected_kspha_size = kspha_transposed ? (nSam, M) : (M, nSam)
     @assert size(kspha) == expected_kspha_size
 
-    @assert L <= 32 "Fused rSVD kernel currently supports L_total <= 32"
-
     @assert 32 <= threads <= 1024
     @assert threads % 32 == 0 "threads must be a multiple of warp size"
 
@@ -135,9 +147,17 @@ function run_kernel_rsvd_adjoint!(
 
     shmem_bytes = warps_per_block * M * sizeof(T)
 
-    @cuda always_inline=true threads=threads blocks=blocks shmem=shmem_bytes CUDA_kernel_rsvd_adjoint!(
-            B_adj, Q, times, fieldmap, bf, kspha, Int32(nSam), Int32(nVox),
-            Val(M), Val(L), Val(kspha_transposed))
+    for first_rank = 1:RSVD_KERNEL_RANK_BATCH:L
+        last_rank = min(first_rank + RSVD_KERNEL_RANK_BATCH - 1, L)
+        ranks = first_rank:last_rank
+        batch_rank = length(ranks)
+        B_adj_batch = @view B_adj[:, ranks]
+        Q_batch = @view Q[:, ranks]
+
+        @cuda always_inline=true threads=threads blocks=blocks shmem=shmem_bytes CUDA_kernel_rsvd_adjoint!(
+                B_adj_batch, Q_batch, times, fieldmap, bf, kspha, Int32(nSam), Int32(nVox),
+                Val(M), Val(batch_rank), Val(kspha_transposed))
+    end
 
     return B_adj
 end

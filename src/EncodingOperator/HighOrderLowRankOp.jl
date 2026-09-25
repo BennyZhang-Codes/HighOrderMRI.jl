@@ -255,7 +255,7 @@ plan instead of one NFFT per dynamic and low-rank term.
   CUDA `:kernel` backend for `CuArray`.
 * `rsvd_distribution::Symbol`           - rSVD setup distribution: `:single`,
   `:voxel`, or `:auto`. `:voxel` partitions masked voxels across `gpus` and
-  requires `arrayType=CuArray`, `rsvd_backend=:kernel`, and
+  requires `arrayType=CuArray`, `rsvd_backend=:kernel` or `:chunked`, and
   `rsvd_finalize=:gram`. `:auto` selects this mode when possible and more than
   one GPU is supplied.
 * `shared_rank_max::Int`                - Upper bound on the global spatial
@@ -263,6 +263,10 @@ plan instead of one NFFT per dynamic and low-rank term.
 * `shared_basis_tol::T`                 - Relative approximation-error
   tolerance used while merging per-dynamic spatial bases. The final shared
   rank is adaptive and can be larger than `L_rank`.
+* `global_basis_tol::Union{Nothing,T}`  - Optional final relative Frobenius
+  tolerance for recompressing the already shared representation. Its error is
+  additional to, and reported separately from, local rSVD and online shared-
+  basis errors. `nothing` (the default) preserves the existing representation.
 * `normal_distribution::Symbol`         - Normal-operator distribution used by
   CG. `:single` uses the primary GPU; `:channel` partitions coil channels
   across `gpus` and lazily constructs the multi-GPU backend when
@@ -330,6 +334,7 @@ function HighOrderLowRankOp(
     rsvd_distribution :: Symbol                    = :auto                                   ,
     shared_rank_max   :: Int                       = 128                                     ,
     shared_basis_tol  :: T                         = T(1e-2)                                 , 
+    global_basis_tol  :: Union{Nothing,T}          = nothing                                 ,
     normal_distribution:: Symbol                   = :single                                 ,
     nfft_center_correction :: Bool                 = true                                    ,
     verbose           :: Bool                      = false                                   ,   
@@ -374,7 +379,7 @@ function HighOrderLowRankOp(
     if use_distributed_rsvd
         is_gpu || throw(ArgumentError("rsvd_distribution=:voxel requires arrayType=CuArray"))
         rsvd_finalize === :gram || throw(ArgumentError("Multi-GPU voxel-distributed rSVD currently requires " * "rsvd_finalize=:gram"))
-        rsvd_backend === :kernel || throw(ArgumentError("Multi-GPU voxel-distributed rSVD currently requires " * "rsvd_backend=:kernel"))
+        rsvd_backend in (:kernel, :chunked) || throw(ArgumentError("Multi-GPU voxel-distributed rSVD currently requires " * "rsvd_backend=:kernel or :chunked"))
     end
     if is_gpu CUDA.device!(primary_gpu) end
     
@@ -428,6 +433,7 @@ function HighOrderLowRankOp(
     @info "nSam=$nSam, nVox=$nVox, nDyn=$nDyn, nTerm=$nTerm, nCha=$nCha"
 
     @assert shared_rank_max > 0 "shared_rank_max must be positive"
+    isnothing(global_basis_tol) || global_basis_tol >= zero(T) || throw(ArgumentError("global_basis_tol must be non-negative"))
     @assert rsvd_chunk > 0 "rsvd_chunk must be positive for chunked rSVD"
     @assert L_rank > 0 "L_rank must be positive"
     @assert rsvd_oversample >= 0 "rsvd_oversample must be non-negative"
@@ -447,7 +453,16 @@ function HighOrderLowRankOp(
 
     if use_distributed_rsvd
         q_host, basis_host, shared_rank, shared_errors = let
-            distributed_workspace = DistributedRSVDWorkspace(fieldmap_host, bf_err_host, nSam, L_total, L_rank, gpus)
+            distributed_workspace = DistributedRSVDWorkspace(
+                fieldmap_host,
+                bf_err_host,
+                nSam,
+                L_total,
+                L_rank,
+                gpus;
+                rsvd_backend,
+                rsvd_chunk,
+            )
             distributed_shared = nothing
             try
                 distributed_shared = DistributedSharedSpatialBasis(distributed_workspace, nDyn, effective_shared_rank_max, shared_basis_tol)
@@ -592,6 +607,23 @@ function HighOrderLowRankOp(
         end
     
         basis = copy(@view shared.basis[:, 1:shared_rank])
+    end
+
+    # The incremental merge produces an orthonormal spatial basis up to roundoff.
+    # Optionally rotate it using the eigensystem of qᴴq and discard weak global
+    # directions.  This is an *additional* error relative to the already shared-
+    # compressed representation, not an estimate of the total model error.
+    if !isnothing(global_basis_tol)
+        q, basis, global_compression = global_recompress_shared_basis(q, basis, global_basis_tol)
+        shared_rank = global_compression.rank
+        if verbose @info(
+            "Global shared-basis recompression complete",
+            pre_rank=global_compression.pre_rank,
+            post_rank=global_compression.rank,
+            additional_relative_error=global_compression.relative_error,
+            basis_orthogonality_error=global_compression.basis_orthogonality_error,
+            global_basis_tol,
+        ) end
     end
 
     if is_gpu CUDA.device!(primary_gpu) end

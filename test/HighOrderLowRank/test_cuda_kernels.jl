@@ -57,6 +57,35 @@
         @test norm(Array(B_transposed_d - B_d)) /
               max(norm(Array(B_d)), eps(T)) < T(1e-5)
 
+        # Sketches wider than one fused-kernel register batch are evaluated
+        # in independent column blocks without changing the matrix product.
+        for wide_rank in (
+            HighOrderMRI.RSVD_KERNEL_RANK_BATCH + 8,
+            2 * HighOrderMRI.RSVD_KERNEL_RANK_BATCH + 16,
+            3 * HighOrderMRI.RSVD_KERNEL_RANK_BATCH,
+        )
+            omega_wide = randn(Complex{T}, data.nVox, wide_rank)
+            W_wide_ref = data.E_ref * omega_wide
+            W_wide_d = CUDA.zeros(Complex{T}, data.nSam, wide_rank)
+            HighOrderMRI.run_kernel_rsvd_forward!(
+                W_wide_d, CuArray(omega_wide), times_d, fieldmap_d,
+                bf_err_d, kspha_err_d,
+            )
+            @test norm(Array(W_wide_d) - W_wide_ref) /
+                  max(norm(W_wide_ref), eps(T)) < T(1e-4)
+
+            Q_wide = randn(Complex{T}, data.nSam, wide_rank)
+            B_wide_ref = adjoint(data.E_ref) * Q_wide
+            B_wide_d = CUDA.zeros(Complex{T}, data.nVox, wide_rank)
+            HighOrderMRI.run_kernel_rsvd_adjoint!(
+                B_wide_d, CuArray(Q_wide), times_d, fieldmap_d,
+                bf_err_d, kspha_err_d; threads=128,
+            )
+            @test norm(Array(B_wide_d) - B_wide_ref) /
+                  max(norm(B_wide_ref), eps(T)) < T(1e-4)
+
+        end
+
         L_rank = 1
         L_total = L_rank + data.p_oversample
         workspace = HighOrderMRI.RSVDWorkspace(
