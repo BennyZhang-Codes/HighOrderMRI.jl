@@ -127,20 +127,28 @@ end
     @testset "Independent high-B0 gate" begin
         times = repeat(reshape(collect(range(0.0, 0.1; length=131)), :, 1), 1, 4)
         fieldmap = zeros(4097)
-        fieldmap[end] = 100
         bf = zeros(4097, 0)
         kspha = zeros(0, 131, 4)
         report_ref = Ref{Any}()
-        # This seed leaves the isolated outlier outside the fitting and random
-        # validation sets, so the independent ROI check must detect it.
+        seed = 8
+        order = randperm(Random.Xoshiro(seed), length(fieldmap))
+        available = order[length(fieldmap) ÷ 2 + 1:end]
+        n_random = min(1024, length(available) ÷ 2)
+        audit_order = randperm(Random.Xoshiro(seed + 1), length(available))
+        # Keep the isolated outlier outside the fit and both random checks;
+        # its exact index may change with Julia's seeded permutation.
+        outliers = setdiff(available[n_random+1:end], available[audit_order[1:n_random]])
+        outlier = first(outliers)
+        fieldmap[outlier] = 100
         q, basis, report = @test_logs (:warn, r"high-B0 region") HighOrderMRI.joint_spatial_basis(
             times, fieldmap, bf, kspha; rank_max=1, tol=0.08,
-            snapshots=16, sample_count=32, chunk_size=77, seed=8, report_ref,
+            snapshots=16, sample_count=32, chunk_size=77, seed, report_ref,
         )
+        @test outlier in report.validation_roi && outlier in report.audit_roi
         @test report.passed && maximum(report.roi_errors) > 0.08
         @test_throws ErrorException HighOrderMRI.joint_spatial_basis(
             times, fieldmap, bf, kspha; rank_max=1, tol=0.08, roi_tol=0.08,
-            snapshots=16, sample_count=32, chunk_size=77, seed=8, report_ref,
+            snapshots=16, sample_count=32, chunk_size=77, seed, report_ref,
         )
         @test !report_ref[].passed
     end
