@@ -1,4 +1,56 @@
 @testset "distributed rSVD" begin
+    @testset "shared basis retains energy below rank-scaled threshold" begin
+        T = Float32
+        L = 80
+        V = zeros(Complex{T}, L, L)
+        V[1, 1] = sqrt(T(1e9))
+        for j in 2:21
+            V[j, j] = sqrt(T(5000))
+        end
+        shared = HighOrderMRI.SharedSpatialBasis(V, T, L, L, 1, L, T(1e-3))
+        workspace = HighOrderMRI.SharedBasisUpdateWorkspace(V, T, L, L, L)
+        reported, added = HighOrderMRI.update_shared_basis!(
+            shared, workspace, V, 1, T(sum(abs2, V)),
+        )
+        reconstructed = shared.basis[:, 1:shared.rank] *
+            shared.coeff[1:shared.rank, :, 1]
+        actual = norm(V - reconstructed) / norm(V)
+        @test added == 21
+        @test reported <= shared.tol
+        @test actual <= shared.tol
+    end
+
+    @testset "shared basis resolves cancellation-dominated tail" begin
+        nVox, L = 256, 24
+        U = ComplexF64[cis(2π * (v - 1) * (j - 1) / nVox) / sqrt(nVox)
+            for v in 1:nVox, j in 1:L]
+        W = ComplexF64[cis(2π * (r - 1) * (j - 1) / L) / sqrt(L)
+            for r in 1:L, j in 1:L]
+        spectrum = vcat(1e8, fill(11.0, 20), zeros(3))
+        backends = CUDA.functional() ? (Array, CuArray) : (Array,)
+        for FT in (Float32, Float64), backend in backends
+            @testset "$FT / $backend" begin
+                V = Complex{FT}.(U * Diagonal(sqrt.(spectrum)) * adjoint(W))
+                input = backend(V)
+                shared = HighOrderMRI.SharedSpatialBasis(input, FT, nVox, L, 1, L, FT(1e-3))
+                workspace = HighOrderMRI.SharedBasisUpdateWorkspace(input, FT, nVox, L, L)
+                @test (workspace.residual64 === workspace.residual) == (FT === Float64)
+                reported, added = HighOrderMRI.update_shared_basis!(
+                    shared, workspace, input, 1, FT(sum(abs2, V)),
+                )
+                reconstructed = Array(shared.basis[:, 1:shared.rank]) *
+                    Array(shared.coeff[1:shared.rank, :, 1])
+                actual = norm(V - reconstructed) / norm(V)
+                @test eltype(shared.basis) === Complex{FT}
+                @test eltype(shared.coeff) === Complex{FT}
+                @test added == 12
+                @test reported <= shared.tol
+                @test actual <= shared.tol
+                @test abs(reported - actual) < FT(1e-5)
+            end
+        end
+    end
+
     warning_message =
         "Julia default thread count is smaller than the number of GPU workers; " *
         "multi-GPU execution may be CPU-thread limited"
@@ -139,6 +191,13 @@
                 distributed_shared = HighOrderMRI.DistributedSharedSpatialBasis(
                     workspace, nDyn, max_rank, shared_tol,
                 )
+                @test all(
+                    CUDA.device(distributed_shared.shards[i].residual64) ==
+                    CUDA.device(workspace.shards[i].v_scaled) &&
+                    CUDA.device(distributed_shared.shards[i].gram) ==
+                    CUDA.device(workspace.shards[i].v_scaled)
+                    for i in eachindex(workspace.shards)
+                )
                 reference_shared = HighOrderMRI.SharedSpatialBasis(
                     data.times[:, 1], T, data.nVox, data.L_rank,
                     nDyn, max_rank, shared_tol,
@@ -167,9 +226,16 @@
                         HighOrderMRI.update_distributed_shared_basis!(
                             distributed_shared, workspace, dyn, total_energy,
                         )
+                    distributed_basis_now = HighOrderMRI.gather_distributed_shared_basis(
+                        distributed_shared, workspace,
+                    )
+                    C_now = @view distributed_shared.coeff[1:distributed_shared.rank, :, dyn]
+                    actual_error = norm(v_reference - distributed_basis_now * C_now) /
+                        norm(v_reference)
                     @test distributed_added == reference_added
                     @test reference_error <= shared_tol
                     @test distributed_error <= shared_tol
+                    @test actual_error <= shared_tol + T(5e-5)
                     @test distributed_error ≈ reference_error rtol=T(1e-3) atol=T(1e-3)
                 end
 
@@ -291,6 +357,66 @@
                     end
                 finally
                     HighOrderMRI.shutdown_distributed_workers!(chunked_workspace.workers)
+                end
+            end
+        end
+
+        @testset "distributed shared Gram spectrum and buffer ownership" begin
+            # Uneven voxel shards must retain the same small spectral tail.
+            nVox, L = 259, 24
+            U = ComplexF64[cis(2π * (v - 1) * (j - 1) / nVox) / sqrt(nVox)
+                for v in 1:nVox, j in 1:L]
+            W = ComplexF64[cis(2π * (r - 1) * (j - 1) / L) / sqrt(L)
+                for r in 1:L, j in 1:L]
+            spectrum = vcat(1e8, fill(11.0, 20), zeros(3))
+            for FT in (Float32, Float64)
+                @testset "$FT" begin
+                    V = Complex{FT}.(U * Diagonal(sqrt.(spectrum)) * adjoint(W))
+                    gram_workspace = HighOrderMRI.DistributedRSVDWorkspace(
+                        zeros(FT, nVox), zeros(FT, nVox, 1), L, L, L, test_gpus,
+                    )
+                    gram_shared = nothing
+                    try
+                        gram_shared = HighOrderMRI.DistributedSharedSpatialBasis(
+                            gram_workspace, 2, L, FT(1e-3),
+                        )
+                        @test all(shard ->
+                            (shard.residual64 === shard.residual) == (FT === Float64),
+                            gram_shared.shards,
+                        )
+                        outputs = Vector{Nothing}(undef, length(gram_workspace.workers))
+                        HighOrderMRI.run_on_workers!(outputs, gram_workspace.workers) do i
+                            shard = gram_workspace.shards[i]
+                            CUDA.@sync copyto!(shard.v_scaled, V[shard.voxels, :])
+                            nothing
+                        end
+                        for dyn in 1:2
+                            reported, added = HighOrderMRI.update_distributed_shared_basis!(
+                                gram_shared, gram_workspace, dyn, FT(sum(abs2, V)),
+                            )
+                            basis = HighOrderMRI.gather_distributed_shared_basis(
+                                gram_shared, gram_workspace,
+                            )
+                            coeff = gram_shared.coeff[1:gram_shared.rank, :, dyn]
+                            actual = norm(V - basis * coeff) / norm(V)
+                            @test eltype(basis) === Complex{FT}
+                            @test eltype(coeff) === Complex{FT}
+                            @test added == (dyn == 1 ? 12 : 0)
+                            @test reported <= gram_shared.tol
+                            @test actual <= gram_shared.tol
+                            @test abs(reported - actual) < FT(1e-5)
+                        end
+                        HighOrderMRI.release_distributed_workspaces!(gram_workspace, gram_shared)
+                        HighOrderMRI.release_distributed_workspaces!(gram_workspace, gram_shared)
+                        @test all(shard -> shard.released, gram_workspace.shards)
+                        @test all(shard -> shard.released, gram_shared.shards)
+                    finally
+                        try
+                            HighOrderMRI.release_distributed_workspaces!(gram_workspace, gram_shared)
+                        finally
+                            HighOrderMRI.shutdown_distributed_workers!(gram_workspace.workers)
+                        end
+                    end
                 end
             end
         end
