@@ -30,6 +30,12 @@
             size(shard.kspha_t) == size(workspace.kspha_t_host)
             for shard in workspace.shards
         )
+        @test workspace.rsvd_backend === :kernel
+        @test workspace.chunk_size == 0
+        @test all(
+            size(shard.phase) == (data.nSam, 0) && size(shard.encoding) == (data.nSam, 0)
+            for shard in workspace.shards
+        )
         distributed_shared = nothing
         workspaces_released = false
 
@@ -77,7 +83,6 @@
                 )
                 forward_multi_error = norm(W - W_ref) / max(norm(W_ref), eps(T))
 
-                @show forward_multi_error
                 @test forward_multi_error < T(1e-4)
             end
 
@@ -113,7 +118,6 @@
                 distributed_rsvd_error =
                     norm(E_multi - E_reference) / max(norm(E_reference), eps(T))
                 energy_reference = sum(values_reference[1:data.L_rank])
-                @show distributed_rsvd_error
                 @test distributed_rsvd_error < T(1e-3)
                 @test energy_multi ≈ energy_reference rtol=T(1e-3)
                 @test timing.n_calls == 1
@@ -185,7 +189,6 @@
                     distributed_shared_error =
                         norm(V_distributed - V_reference) /
                         max(norm(V_reference), eps(T))
-                    @show dyn distributed_shared_error
                     @test distributed_shared_error < T(1e-4)
                 end
             end
@@ -207,6 +210,88 @@
                 end
             finally
                 HighOrderMRI.shutdown_distributed_workers!(workspace.workers)
+            end
+        end
+
+        @testset "chunked backend" begin
+            # Four shards split 15 voxels unevenly, and a two-voxel chunk
+            # exercises both full and tail chunks on every GPU.
+            chunk_size = 2
+            omega = randn(Complex{T}, data.nVox, data.L_total)
+
+            kernel_workspace = HighOrderMRI.DistributedRSVDWorkspace(
+                data.fieldmap_masked,
+                data.bf_err,
+                data.nSam,
+                data.L_total,
+                data.L_rank,
+                test_gpus;
+                rsvd_backend=:kernel,
+            )
+            kernel_W = nothing
+            kernel_reconstruction = nothing
+            kernel_energy = zero(T)
+            try
+                kernel_W = HighOrderMRI.distributed_rsvd_forward!(
+                    kernel_workspace, data.times[:, 1], data.kspha_err; omega,
+                )
+                u_kernel, kernel_energy = HighOrderMRI.perform_rsvd_multi_gpu!(
+                    kernel_workspace, data.times[:, 1], data.kspha_err; omega,
+                )
+                v_kernel = HighOrderMRI.gather_distributed_v_scaled(kernel_workspace)
+                kernel_reconstruction = u_kernel * adjoint(v_kernel)
+            finally
+                HighOrderMRI.release_distributed_workspaces!(kernel_workspace)
+                HighOrderMRI.shutdown_distributed_workers!(kernel_workspace.workers)
+            end
+
+            chunked_workspace = HighOrderMRI.DistributedRSVDWorkspace(
+                data.fieldmap_masked,
+                data.bf_err,
+                data.nSam,
+                data.L_total,
+                data.L_rank,
+                test_gpus;
+                rsvd_backend=:chunked,
+                rsvd_chunk=chunk_size,
+            )
+            chunked_released = false
+            try
+                @test chunked_workspace.rsvd_backend === :chunked
+                @test chunked_workspace.chunk_size == chunk_size
+                @test all(
+                    size(shard.phase) == (data.nSam, min(chunk_size, length(shard.voxels))) &&
+                    size(shard.encoding) == (data.nSam, min(chunk_size, length(shard.voxels)))
+                    for shard in chunked_workspace.shards
+                )
+
+                chunked_W = HighOrderMRI.distributed_rsvd_forward!(
+                    chunked_workspace, data.times[:, 1], data.kspha_err; omega,
+                )
+                u_chunked, chunked_energy = HighOrderMRI.perform_rsvd_multi_gpu!(
+                    chunked_workspace, data.times[:, 1], data.kspha_err; omega,
+                )
+                v_chunked = HighOrderMRI.gather_distributed_v_scaled(chunked_workspace)
+                chunked_reconstruction = u_chunked * adjoint(v_chunked)
+
+                W_reference = data.E_ref * omega
+                @test norm(chunked_W - W_reference) / max(norm(W_reference), eps(T)) < T(1e-4)
+                @test chunked_W ≈ kernel_W rtol=T(1e-4) atol=T(1e-5)
+                @test norm(chunked_reconstruction - kernel_reconstruction) /
+                      max(norm(kernel_reconstruction), eps(T)) < T(1e-3)
+                @test chunked_energy ≈ kernel_energy rtol=T(1e-3)
+
+                HighOrderMRI.release_distributed_workspaces!(chunked_workspace)
+                chunked_released = true
+                @test all(shard -> shard.released, chunked_workspace.shards)
+            finally
+                try
+                    if !chunked_released
+                        HighOrderMRI.release_distributed_workspaces!(chunked_workspace)
+                    end
+                finally
+                    HighOrderMRI.shutdown_distributed_workers!(chunked_workspace.workers)
+                end
             end
         end
     end
