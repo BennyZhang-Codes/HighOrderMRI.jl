@@ -7,6 +7,95 @@ mutable struct SharedSpatialBasis{T, BM<:AbstractMatrix{Complex{T}}, CA<:Abstrac
     errors     :: Vector{T}  # additional compression error for each dynamic
 end
 
+"""
+    global_recompress_shared_basis(q, basis, tol)
+
+Apply a final, optional compression to an already shared representation
+`q * basis'`.  The incremental shared-basis construction maintains orthonormal
+columns in `basis`; consequently the eigenvalues of `q' * q` are the squared
+singular values of that representation.  Keeping the leading eigenvectors
+`Z` gives `q_new = q * Z`, `basis_new = basis * Z`.
+
+The returned `relative_error` is the Frobenius-norm error introduced relative
+to the input representation.  It deliberately excludes local rSVD and online
+shared-basis errors.
+"""
+function global_recompress_shared_basis(
+    q::AbstractMatrix{Complex{T}},
+    basis::AbstractMatrix{Complex{T}},
+    tol::T,
+) where {T<:AbstractFloat}
+    tol >= zero(T) || throw(ArgumentError("global basis tolerance must be non-negative"))
+    size(q, 2) == size(basis, 2) || throw(DimensionMismatch("q and basis must have the same rank"))
+
+    pre_rank = size(q, 2)
+    pre_rank == 0 && return q, basis, (
+        pre_rank=0, rank=0, relative_error=zero(T), basis_orthogonality_error=zero(T),
+    )
+
+    # This is intentionally a host-side R×R eigendecomposition.  Form the two
+    # Grams on the selected array first, so CUDA setup transfers only R² values
+    # rather than the potentially multi-gigabyte q and spatial-basis matrices.
+    # R is bounded by shared_rank_max, giving identical rank decisions on CPU
+    # and CUDA paths.
+    q_gram = similar(q, Complex{T}, pre_rank, pre_rank)
+    mul!(q_gram, adjoint(q), q)
+    gram = Matrix(q_gram)
+    eig = eigen(Hermitian(gram))
+    order = sortperm(real.(eig.values); rev=true)
+    values = max.(T.(real.(eig.values[order])), zero(T))
+    vectors = Matrix{Complex{T}}(eig.vectors[:, order])
+    total_energy = sum(values)
+
+    keep_rank = pre_rank
+    relative_error = zero(T)
+    if total_energy > eps(T)
+        allowed_energy = tol^2 * total_energy
+        discarded_energy = total_energy
+        keep_rank = 0
+        while keep_rank < pre_rank && discarded_energy > allowed_energy
+            keep_rank += 1
+            discarded_energy -= values[keep_rank]
+        end
+        # A zero rank is not useful to the NFFT operator even for a numerically
+        # zero factor, so retain one direction in that degenerate case.
+        keep_rank = max(keep_rank, 1)
+        relative_error = sqrt(max(discarded_energy, zero(T)) / total_energy)
+    end
+
+    basis_gram = similar(basis, Complex{T}, pre_rank, pre_rank)
+    mul!(basis_gram, adjoint(basis), basis)
+    identity_gram = Matrix{Complex{T}}(I, pre_rank, pre_rank)
+    basis_orthogonality_error = T(opnorm(Matrix(basis_gram) - identity_gram, Inf))
+
+    if keep_rank == pre_rank
+        return q, basis, (
+            pre_rank=pre_rank, rank=keep_rank, relative_error=relative_error,
+            basis_orthogonality_error=basis_orthogonality_error,
+        )
+    end
+
+    z_host = @view vectors[:, 1:keep_rank]
+    z = similar(q, Complex{T}, pre_rank, keep_rank)
+    # The eigensystem is intentionally computed on the host.  Upload this
+    # small rotation explicitly for CUDA arrays: generic copyto! otherwise
+    # selects scalar host indexing on CuArray.
+    if q isa CuArray
+        copyto!(z, CuArray(z_host))
+    else
+        copyto!(z, z_host)
+    end
+    q_new = similar(q, Complex{T}, size(q, 1), keep_rank)
+    basis_new = similar(basis, Complex{T}, size(basis, 1), keep_rank)
+    mul!(q_new, q, z)
+    mul!(basis_new, basis, z)
+
+    return q_new, basis_new, (
+        pre_rank=pre_rank, rank=keep_rank, relative_error=relative_error,
+        basis_orthogonality_error=basis_orthogonality_error,
+    )
+end
+
 function SharedSpatialBasis(
     prototype,
     ::Type{T},

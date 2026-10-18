@@ -81,6 +81,10 @@ k-space trajectory with field dynamics measured using a Dynamic Field Camera.
 
 ## Copyright & License Notice
 
+Except for the `MRIGeometry/` subpackage, which is separately licensed under
+the [MIT License](MRIGeometry/LICENSE), the following terms apply to
+HighOrderMRI.jl and the remainder of this repository.
+
 This software is copyrighted by the Regents of the University of Minnesota and the Institute of Biophysics, Chinese Academy of Sciences. It can be freely used for educational and research purposes by non-profit institutions, US government agencies, and Chinese government agencies only.
 Other organizations are allowed to use this software only for evaluation purposes, and any further uses will require prior approval. The software may not be sold or redistributed without prior approval.
 One may make copies of the software for their use provided that the copies are not sold or distributed, and are used under the same terms and conditions.

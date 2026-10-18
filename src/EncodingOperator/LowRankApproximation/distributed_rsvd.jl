@@ -40,6 +40,8 @@ mutable struct DistributedRSVDShard{T<:AbstractFloat}
     W           :: CuMatrix{Complex{T}}
     Q           :: CuMatrix{Complex{T}}
     B_adj       :: CuMatrix{Complex{T}}
+    phase       :: CuMatrix{T}
+    encoding    :: CuMatrix{Complex{T}}
     gram        :: CuMatrix{Complex{T}}
     Z           :: CuMatrix{Complex{T}}
     v_scaled    :: CuMatrix{Complex{T}}
@@ -56,6 +58,8 @@ struct DistributedRSVDWorkspace{T<:AbstractFloat}
     nSam        :: Int
     L_total     :: Int
     L_rank      :: Int
+    rsvd_backend :: Symbol
+    chunk_size  :: Int
 end
 
 
@@ -96,6 +100,9 @@ function DistributedRSVDWorkspace(
     L_total  :: Int,
     L_rank   :: Int,
     gpus     :: Vector{Int},
+    ;
+    rsvd_backend::Symbol = :kernel,
+    rsvd_chunk  :: Int = 4096,
 ) where {T<:AbstractFloat}
 
     nVox = length(fieldmap)
@@ -103,6 +110,10 @@ function DistributedRSVDWorkspace(
 
     @assert size(bf, 1) == nVox
     @assert L_rank <= L_total
+    rsvd_backend in (:kernel, :chunked) || throw(ArgumentError(
+        "Unsupported distributed rsvd_backend=$rsvd_backend; expected :kernel or :chunked",
+    ))
+    @assert rsvd_chunk > 0 "rsvd_chunk must be positive"
 
     ranges = split_voxel_ranges(nVox, gpus)
     warn_if_insufficient_gpu_worker_threads(length(gpus); operation=:distributed_rsvd)
@@ -119,6 +130,7 @@ function DistributedRSVDWorkspace(
             gpu_id = gpus[i]
             voxels = ranges[i]
             nLocal = length(voxels)
+            local_chunk_size = rsvd_backend === :chunked ? min(rsvd_chunk, nLocal) : 0
 
             DistributedRSVDShard{T}(
                 gpu_id,
@@ -132,6 +144,10 @@ function DistributedRSVDWorkspace(
                 CUDA.zeros(Complex{T}, nSam, L_total),
                 CUDA.zeros(Complex{T}, nSam, L_total),
                 CUDA.zeros(Complex{T}, nLocal, L_total),
+                # Both arrays are fully overwritten before their first read.
+                # Avoid an eager device-wide memset for a large chunked workspace.
+                CuArray{T}(undef, nSam, local_chunk_size),
+                CuArray{Complex{T}}(undef, nSam, local_chunk_size),
                 CUDA.zeros(Complex{T}, L_total, L_total),
                 CUDA.zeros(Complex{T}, L_total, L_rank),
                 CUDA.zeros(Complex{T}, nLocal, L_rank),
@@ -148,6 +164,8 @@ function DistributedRSVDWorkspace(
             nSam,
             L_total,
             L_rank,
+            rsvd_backend,
+            rsvd_backend === :chunked ? rsvd_chunk : 0,
         )
     catch
         shutdown_distributed_workers!(workers)
@@ -171,11 +189,102 @@ function release_distributed_rsvd_shard!(shard::DistributedRSVDShard)
     CUDA.unsafe_free!(shard.W)
     CUDA.unsafe_free!(shard.Q)
     CUDA.unsafe_free!(shard.B_adj)
+    CUDA.unsafe_free!(shard.phase)
+    CUDA.unsafe_free!(shard.encoding)
     CUDA.unsafe_free!(shard.gram)
     CUDA.unsafe_free!(shard.Z)
     CUDA.unsafe_free!(shard.v_scaled)
 
     return nothing
+end
+
+
+function distributed_rsvd_forward_chunked!(
+    shard::DistributedRSVDShard{T},
+) where {T<:AbstractFloat}
+
+    chunk_size = size(shard.phase, 2)
+    @assert chunk_size > 0 "Chunked distributed rSVD requires a phase workspace"
+
+    nSam = size(shard.W, 1)
+    nLocal = length(shard.voxels)
+    kernel_threads = (32, 8)
+
+    fill!(shard.W, zero(Complex{T}))
+
+    for vox_start = 1:chunk_size:nLocal
+        vox_stop = min(vox_start + chunk_size - 1, nLocal)
+        voxels = vox_start:vox_stop
+        nChunk = length(voxels)
+
+        phase_chunk = @view shard.phase[:, 1:nChunk]
+        encoding_chunk = @view shard.encoding[:, 1:nChunk]
+        bf_chunk = @view shard.bf[voxels, :]
+        fieldmap_chunk = @view shard.fieldmap[voxels]
+        omega_chunk = @view shard.omega[voxels, :]
+
+        # kspha_t is [nSam, M] on each worker.
+        mul!(
+            phase_chunk,
+            shard.kspha_t,
+            transpose(bf_chunk),
+            one(T),
+            zero(T),
+        )
+        kernel_blocks = (cld(nSam, kernel_threads[1]), cld(nChunk, kernel_threads[2]))
+        @cuda threads=kernel_threads blocks=kernel_blocks kernel_phase_to_encoding!(
+            encoding_chunk,
+            phase_chunk,
+            shard.times,
+            fieldmap_chunk,
+        )
+        mul!(shard.W, encoding_chunk, omega_chunk, one(Complex{T}), one(Complex{T}))
+    end
+
+    return shard.W
+end
+
+
+function distributed_rsvd_adjoint_chunked!(
+    shard::DistributedRSVDShard{T},
+) where {T<:AbstractFloat}
+
+    chunk_size = size(shard.phase, 2)
+    @assert chunk_size > 0 "Chunked distributed rSVD requires a phase workspace"
+
+    nSam = size(shard.Q, 1)
+    nLocal = length(shard.voxels)
+    kernel_threads = (32, 8)
+
+    for vox_start = 1:chunk_size:nLocal
+        vox_stop = min(vox_start + chunk_size - 1, nLocal)
+        voxels = vox_start:vox_stop
+        nChunk = length(voxels)
+
+        phase_chunk = @view shard.phase[:, 1:nChunk]
+        encoding_chunk = @view shard.encoding[:, 1:nChunk]
+        bf_chunk = @view shard.bf[voxels, :]
+        fieldmap_chunk = @view shard.fieldmap[voxels]
+        B_adj_chunk = @view shard.B_adj[voxels, :]
+
+        mul!(
+            phase_chunk,
+            shard.kspha_t,
+            transpose(bf_chunk),
+            one(T),
+            zero(T),
+        )
+        kernel_blocks = (cld(nSam, kernel_threads[1]), cld(nChunk, kernel_threads[2]))
+        @cuda threads=kernel_threads blocks=kernel_blocks kernel_phase_to_encoding!(
+            encoding_chunk,
+            phase_chunk,
+            shard.times,
+            fieldmap_chunk,
+        )
+        mul!(B_adj_chunk, adjoint(encoding_chunk), shard.Q)
+    end
+
+    return shard.B_adj
 end
 
 
@@ -212,16 +321,20 @@ function distributed_rsvd_forward!(
             copyto!(shard.omega, omega_local)
         end
 
-        CUDA.@sync run_kernel_rsvd_forward!(
-            shard.W,
-            shard.omega,
-            shard.times,
-            shard.fieldmap,
-            shard.bf,
-            shard.kspha_t;
-            threads=128,
-            kspha_transposed=true,
-        )
+        CUDA.@sync if workspace.rsvd_backend === :kernel
+            run_kernel_rsvd_forward!(
+                shard.W,
+                shard.omega,
+                shard.times,
+                shard.fieldmap,
+                shard.bf,
+                shard.kspha_t;
+                threads=128,
+                kspha_transposed=true,
+            )
+        else
+            distributed_rsvd_forward_chunked!(shard)
+        end
 
         Array(shard.W)
     end
@@ -250,16 +363,20 @@ function distributed_rsvd_adjoint_gram!(
         copyto!(shard.Q, Q)
 
         CUDA.@sync begin
-            run_kernel_rsvd_adjoint!(
-                shard.B_adj,
-                shard.Q,
-                shard.times,
-                shard.fieldmap,
-                shard.bf,
-                shard.kspha_t;
-                threads=256,
-                kspha_transposed=true,
-            )
+            if workspace.rsvd_backend === :kernel
+                run_kernel_rsvd_adjoint!(
+                    shard.B_adj,
+                    shard.Q,
+                    shard.times,
+                    shard.fieldmap,
+                    shard.bf,
+                    shard.kspha_t;
+                    threads=256,
+                    kspha_transposed=true,
+                )
+            else
+                distributed_rsvd_adjoint_chunked!(shard)
+            end
             mul!(shard.gram, adjoint(shard.B_adj), shard.B_adj)
         end
 

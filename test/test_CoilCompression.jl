@@ -145,9 +145,16 @@ using Statistics
             mask, recon_terms, L_rank = 2, rsvd_seed = 0, rsvd_finalize = :gram)
         @test vec(full_data) ≈ full_operator * image rtol = 1.0f-4 atol = 1.0f-5
 
-        physical_signal = randn(Complex{T}, size(original_data))
-        virtual_signal = apply_coil_compression(physical_signal, full_transform; coil_dim = 2)
-        @test adjoint(full_operator) * vec(virtual_signal) ≈ adjoint(original_operator) * vec(physical_signal) rtol = 1.0f-4 atol = 1.0f-5
+        # Compare the complete encoding matrices: a random adjoint probe can
+        # land near the operator null space and amplify harmless setup error.
+        image_basis = Matrix{Complex{T}}(I, size(original_operator, 2), size(original_operator, 2))
+        original_matrix = mapreduce(column -> original_operator * column, hcat, eachcol(image_basis))
+        full_matrix = mapreduce(column -> full_operator * column, hcat, eachcol(image_basis))
+        physical_to_virtual = kron(
+            transpose(full_transform.compression_matrix),
+            Matrix{Complex{T}}(I, n_sample * n_dynamic, n_sample * n_dynamic),
+        )
+        @test full_matrix ≈ physical_to_virtual * original_matrix rtol = 1.0f-4 atol = 1.0f-5
         @test adjoint(full_operator) * (full_operator * image) ≈ adjoint(original_operator) * (original_operator * image) rtol = 1.0f-4 atol = 1.0f-5
 
         compressed_data, compressed_csm, _ = compress_coils(original_data, csm; n_virtual_coils = 1)

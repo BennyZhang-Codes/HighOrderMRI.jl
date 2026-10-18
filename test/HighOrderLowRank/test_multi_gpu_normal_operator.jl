@@ -59,8 +59,6 @@
             normal_op = normalOperator(E)
             result = normal_op * x
             relative_error = norm(result - reference) / max(norm(reference), eps(T))
-            @show relative_error
-
             @test normal_op isa HighOrderMRI.HighOrderLowRankNormalOp
             @test size(normal_op) == (prod(source_op.grid_size), prod(source_op.grid_size))
             @test ishermitian(normal_op)
