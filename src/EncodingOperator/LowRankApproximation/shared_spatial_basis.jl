@@ -119,11 +119,12 @@ function SharedSpatialBasis(
     return SharedSpatialBasis(basis, coeff, 0, max_rank, tol, zeros(T, nDyn))
 end
 
-mutable struct SharedBasisUpdateWorkspace{CM<:AbstractMatrix}
+mutable struct SharedBasisUpdateWorkspace{CM<:AbstractMatrix, CM64<:AbstractMatrix}
     v_scaled  :: CM  # [nVox, L]
     residual  :: CM  # [nVox, L]
+    residual64:: CM64
     correction:: CM  # [max_rank, L]
-    gram      :: CM  # [L, L]
+    gram      :: CM64 # [L, L]
     transform :: CM  # [L, L]
 end
 
@@ -135,11 +136,15 @@ function SharedBasisUpdateWorkspace(
     max_rank:: Int,
 ) where T<:AbstractFloat
 
+    residual = similar(prototype, Complex{T}, nVox, L)
+    residual64 = T === Float64 ? residual : similar(prototype, ComplexF64, nVox, L)
+
     return SharedBasisUpdateWorkspace(
         similar(prototype, Complex{T}, nVox, L),
-        similar(prototype, Complex{T}, nVox, L),
+        residual,
+        residual64,
         similar(prototype, Complex{T}, max_rank, L),
-        similar(prototype, Complex{T}, L, L),
+        similar(prototype, ComplexF64, L, L),
         similar(prototype, Complex{T}, L, L),
     )
 end
@@ -196,31 +201,34 @@ function update_shared_basis!(
     # G = RᴴR，only L×L
     # ---------------------------------------------------------
     gram = workspace.gram
-    mul!(gram, adjoint(residual), residual)
+    if T !== Float64
+        workspace.residual64 .= residual
+    end
+    mul!(gram, adjoint(workspace.residual64), workspace.residual64)
 
     # L is small
     gram_cpu = Array(gram)
     eig = eigen(Hermitian(gram_cpu))
 
     order = sortperm(real.(eig.values); rev=true)
-    values = max.(T.(real.(eig.values[order])), zero(T))
+    values = max.(real.(eig.values[order]), 0.0)
     vectors = eig.vectors[:, order]
 
     if !isempty(values)
-        numerical_threshold = eps(T) * T(L) * max(maximum(values), one(T))
-        values[values .< numerical_threshold] .= zero(T)
+        numerical_threshold = eps(Float64) * max(maximum(values), 1.0)
+        values[values .< numerical_threshold] .= 0.0
     end
 
-    allowed_energy = shared.tol^2 * total_energy
+    allowed_energy = Float64(shared.tol)^2 * Float64(total_energy)
     remaining_energy = sum(values)
     n_add = 0
 
     while n_add < L && remaining_energy > allowed_energy
         n_add += 1
-        remaining_energy = n_add == L ? zero(T) : sum(@view values[(n_add + 1):L])
+        remaining_energy = n_add == L ? 0.0 : sum(@view values[(n_add + 1):L])
     end
 
-    relative_error = sqrt(max(remaining_energy, zero(T)) / total_energy)
+    relative_error = T(sqrt(max(remaining_energy, 0.0) / total_energy))
 
     if n_add == 0
         shared.errors[dyn] = relative_error
@@ -244,14 +252,14 @@ function update_shared_basis!(
     # ---------------------------------------------------------
     selected_values = values[1:n_add]
 
-    if any(selected_values .<= zero(T))
+    if any(selected_values .<= 0.0)
         error(
             "Cannot normalize shared basis residual at dynamic=$dyn: " *
             "non-positive residual eigenvalue detected"
         )
     end
 
-    transform_cpu = vectors[:, 1:n_add] .* reshape(inv.(sqrt.(selected_values)), 1, :)
+    transform_cpu = Complex{T}.(vectors[:, 1:n_add] .* reshape(inv.(sqrt.(selected_values)), 1, :))
 
     transform = @view workspace.transform[:, 1:n_add]
     copyto!(transform, transform_cpu)

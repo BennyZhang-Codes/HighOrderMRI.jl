@@ -4,9 +4,10 @@ mutable struct DistributedSharedBasisShard{T<:AbstractFloat}
 
     basis       :: CuMatrix{Complex{T}}
     residual    :: CuMatrix{Complex{T}}
+    residual64  :: CuMatrix{ComplexF64}
 
     small       :: CuMatrix{Complex{T}}
-    gram        :: CuMatrix{Complex{T}}
+    gram        :: CuMatrix{ComplexF64}
     transform   :: CuMatrix{Complex{T}}
 
     released    :: Bool
@@ -47,14 +48,18 @@ function DistributedSharedSpatialBasis(
     run_on_workers!(shards, rsvd_workspace.workers) do i
         rsvd_shard = rsvd_workspace.shards[i]
         nLocal = length(rsvd_shard.voxels)
-    
+        basis = CUDA.zeros(Complex{T}, nLocal, max_rank)
+        residual = CUDA.zeros(Complex{T}, nLocal, L_rank)
+        residual64 = T === Float64 ? residual : CUDA.zeros(ComplexF64, nLocal, L_rank)
+
         DistributedSharedBasisShard{T}(
             rsvd_shard.gpu_id,
             rsvd_shard.voxels,
-            CUDA.zeros(Complex{T}, nLocal, max_rank),
-            CUDA.zeros(Complex{T}, nLocal, L_rank),
+            basis,
+            residual,
+            residual64,
             CUDA.zeros(Complex{T}, max_rank, L_rank),
-            CUDA.zeros(Complex{T}, L_rank, L_rank),
+            CUDA.zeros(ComplexF64, L_rank, L_rank),
             CUDA.zeros(Complex{T}, L_rank, L_rank),
             false,
         )
@@ -75,6 +80,7 @@ function release_distributed_shared_shard!(shard::DistributedSharedBasisShard)
 
     CUDA.unsafe_free!(shard.basis)
     CUDA.unsafe_free!(shard.residual)
+    shard.residual64 === shard.residual || CUDA.unsafe_free!(shard.residual64)
     CUDA.unsafe_free!(shard.small)
     CUDA.unsafe_free!(shard.gram)
     CUDA.unsafe_free!(shard.transform)
@@ -248,47 +254,53 @@ function update_distributed_shared_basis!(
     # ----------------------------------------------------------
     # G = Σ_g R_gᴴR_g
     # ----------------------------------------------------------
-    local_grams = Vector{Matrix{Complex{T}}}(undef, nShard)
+    local_grams = Vector{Matrix{ComplexF64}}(undef, nShard)
     run_on_workers!(local_grams, rsvd_workspace.workers) do i
         shared_shard = shared.shards[i]
 
-        CUDA.@sync mul!(shared_shard.gram, adjoint(shared_shard.residual), shared_shard.residual)
+        # Float32 Gram eigenvalue noise can hide residual energy below the shared tolerance.
+        CUDA.@sync begin
+            if T !== Float64
+                shared_shard.residual64 .= shared_shard.residual
+            end
+            mul!(shared_shard.gram, adjoint(shared_shard.residual64), shared_shard.residual64)
+        end
 
         Array(shared_shard.gram)
     end
 
-    gram = zeros(Complex{T}, L, L)
+    gram = zeros(ComplexF64, L, L)
 
     for local_gram in local_grams
         gram .+= local_gram
     end
 
-    gram .= (gram .+ adjoint(gram)) .* T(0.5)
+    gram .= (gram .+ adjoint(gram)) .* 0.5
 
     eig = eigen(Hermitian(gram))
 
     order = sortperm(real.(eig.values); rev=true)
 
-    values = max.(T.(real.(eig.values[order])), zero(T))
+    values = max.(real.(eig.values[order]), 0.0)
 
     vectors = eig.vectors[:, order]
 
     if !isempty(values)
-        numerical_threshold = eps(T) * T(L) * max(maximum(values), one(T))
-        values[values .< numerical_threshold] .= zero(T)
+        numerical_threshold = eps(Float64) * max(maximum(values), 1.0)
+        values[values .< numerical_threshold] .= 0.0
     end
 
-    allowed_energy = shared.tol^2 * total_energy
+    allowed_energy = Float64(shared.tol)^2 * Float64(total_energy)
 
     remaining_energy = sum(values)
     n_add = 0
 
     while n_add < L && remaining_energy > allowed_energy
         n_add += 1
-        remaining_energy = n_add == L ? zero(T) : sum(@view values[(n_add + 1):L])
+        remaining_energy = n_add == L ? 0.0 : sum(@view values[(n_add + 1):L])
     end
 
-    relative_error = sqrt(max(remaining_energy, zero(T)) / total_energy)
+    relative_error = T(sqrt(max(remaining_energy, 0.0) / total_energy))
 
     if n_add == 0
         shared.errors[dyn] = relative_error
@@ -307,12 +319,12 @@ function update_distributed_shared_basis!(
 
     selected_values = values[1:n_add]
 
-    if any(selected_values .<= zero(T))
+    if any(selected_values .<= 0.0)
         error("Cannot normalize distributed shared basis " * "at dynamic=$dyn: non-positive residual eigenvalue")
     end
 
     # transform = W / sqrt(λ)
-    transform_cpu = vectors[:, 1:n_add] .* reshape(inv.(sqrt.(selected_values)), 1, :)
+    transform_cpu = Complex{T}.(vectors[:, 1:n_add] .* reshape(inv.(sqrt.(selected_values)), 1, :))
     new_rows = (r + 1):(r + n_add)
 
     # ----------------------------------------------------------

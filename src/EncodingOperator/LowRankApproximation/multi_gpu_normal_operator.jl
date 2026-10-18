@@ -394,11 +394,14 @@ function MultiGPUHighOrderNormalOp(
             MultiGPUHighOrderNormalShard{T,typeof(nfftplan)}(
                 gpu_id,
                 channels,
-                CuArray(q_host),
-                CuArray(basis_host),
-                CuArray(@view csm_host[:, channels]),
+                # Contiguous CuArray views share the source storage but own
+                # separate reference-counted handles. Freeing these handles
+                # when the shard closes must not invalidate the source op.
+                gpu_id == primary_gpu ? view(op.q, :, :) : CuArray(q_host),
+                gpu_id == primary_gpu ? view(op.basis, :, :) : CuArray(basis_host),
+                gpu_id == primary_gpu ? view(op.csm, :, channels) : CuArray(@view csm_host[:, channels]),
                 CuArray(weights2_host),
-                CuArray(mask_idx_host),
+                gpu_id == primary_gpu ? view(op.mask_idx, :) : CuArray(mask_idx_host),
                 nfftplan,
                 op.grid_size,
                 workspace,
@@ -435,7 +438,7 @@ function MultiGPUHighOrderNormalOp(
     shards = Vector{shard_type}(shards_any)
 
     CUDA.device!(primary_gpu)
-    mask_idx = CuArray(mask_idx_host)
+    mask_idx = view(op.mask_idx, :)
     primary_input = CUDA.zeros(Complex{T}, op.nVox)
     primary_sum = CUDA.zeros(Complex{T}, op.nVox)
 
