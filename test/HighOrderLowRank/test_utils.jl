@@ -4,8 +4,8 @@ using AbstractNFFTs
 const T = Float32
 
 
-function highorder_lowrank_test_data(; nDyn::Int=2)
-    nX, nY, nZ = 4, 4, 1
+function highorder_lowrank_test_data(; nDyn::Int=2, nX::Int=4, nY::Int=4)
+    nZ = 1
     nSam, nCha, nTerm = 12, 2, 9
     recon_terms = "111"
 
