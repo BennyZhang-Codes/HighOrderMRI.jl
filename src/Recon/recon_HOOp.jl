@@ -9,7 +9,7 @@
 
 Reconstruct an image with a high-order encoding operator.
 
-For a `HighOrderLowRankOp` using `normal_distribution=:channel`,
+For a `HighOrderLowRankOp` using `normal_distribution=:channel` or `:readout`,
 `normalOperator` lazily creates persistent multi-GPU workers and one NFFT plan
 per participating GPU. By default, those reconstruction-only resources are
 released in a `finally` block after `solve!`, including when reconstruction

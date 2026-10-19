@@ -19,12 +19,17 @@ end
 mutable struct MultiGPUHighOrderNormalShard{T<:AbstractFloat, P<:AbstractNFFTPlan{T}}
     gpu_id        :: Int
     channels      :: UnitRange{Int}
+    readouts      :: UnitRange{Int}
     q             :: CuMatrix{Complex{T}}
     basis         :: CuMatrix{Complex{T}}
     csm           :: CuMatrix{Complex{T}}
     weights2      :: CuVector{T}
     mask_idx      :: CuVector{Int32}
     nfftplan      :: Union{Nothing,P}
+    readout_plans :: Vector{P}
+    readout_cache :: Union{Nothing,PerReadoutCache{T,P}}
+    basis_layout  :: Symbol
+    nSam          :: Int
     grid_size     :: Tuple
     workspace     :: MultiGPUHighOrderNormalWorkspace{T}
     released      :: Bool
@@ -37,6 +42,7 @@ mutable struct MultiGPUHighOrderNormalState{
 }
     workers       :: Vector{DistributedGPUWorker}
     shards        :: Vector{S}
+    distribution  :: Symbol
     primary_gpu   :: Int
     nVox          :: Int
     nGrid         :: Int
@@ -170,6 +176,8 @@ function local_highorder_normal!(shard::MultiGPUHighOrderNormalShard{T}) where {
     shard.released && error("Multi-GPU normal-operator shard on GPU $(shard.gpu_id) was released")
     plan = shard.nfftplan
     plan === nothing && error("NFFT plan on GPU $(shard.gpu_id) was released")
+    shard.readout_cache === nothing || return local_highorder_streamed_normal!(shard)
+    shard.basis_layout === :per_readout && return local_highorder_per_readout_normal!(shard)
 
     workspace = shard.workspace
     fill!(workspace.x_output, zero(Complex{T}))
@@ -216,6 +224,313 @@ function local_highorder_normal!(shard::MultiGPUHighOrderNormalShard{T}) where {
 end
 
 
+function local_highorder_streamed_normal!(shard::MultiGPUHighOrderNormalShard{T}) where {T}
+    cache = something(shard.readout_cache)
+    workspace = shard.workspace
+    fill!(workspace.x_output, zero(Complex{T}))
+    nVox = length(workspace.x_input)
+    rank = size(shard.q, 2)
+    dims = shard.grid_size[end] == 1 ? shard.grid_size[1:2] : shard.grid_size
+    forward = reshape(workspace.grid_forward, dims)
+    backward = reshape(workspace.grid_adjoint, dims)
+    threads, blocks = 256, cld(nVox, 256)
+    readouts = shard.readouts
+    for dyn in first(readouts):min(last(readouts), first(readouts) + length(cache.basis) - 1)
+        prefetch_readout!(cache, dyn)
+    end
+    # Process all local channels while the readout's factors are resident.
+    # The next factors arrive on the cache's transfer stream concurrently.
+    try
+    for dyn in readouts
+        slot = acquire_readout!(cache, dyn, readouts)
+        basis, plan = cache.basis[slot], first(cache.plans)
+        rows = ((dyn - 1) * shard.nSam + 1):(dyn * shard.nSam)
+        for c in 1:length(shard.channels)
+            fill!(workspace.k_channel, zero(Complex{T}))
+            for r in 1:rank
+                @cuda threads=threads blocks=blocks kernel_scatter_basis_csm!(
+                    workspace.grid_forward, workspace.x_input, basis,
+                    r, shard.csm, c, shard.mask_idx, nVox)
+                mul!(workspace.k_signal, plan, forward)
+                @views @. workspace.k_channel += workspace.k_signal * shard.q[rows, r]
+            end
+            @views @. workspace.k_channel *= shard.weights2[rows]
+            for r in 1:rank
+                @views @. workspace.k_weighted = workspace.k_channel * conj(shard.q[rows, r])
+                mul!(backward, adjoint(plan), workspace.k_weighted)
+                @cuda threads=threads blocks=blocks kernel_accumulate_basis_csm!(
+                    workspace.x_output, workspace.grid_adjoint, basis,
+                    r, shard.csm, c, shard.mask_idx, nVox)
+            end
+        end
+        finish_readout!(cache, dyn, readouts)
+    end
+    finally
+        drain_readout_copies!(cache)
+    end
+    return workspace.x_output
+end
+
+
+function local_highorder_per_readout_normal!(shard::MultiGPUHighOrderNormalShard{T}) where {T}
+    workspace = shard.workspace
+    fill!(workspace.x_output, zero(Complex{T}))
+
+    nVox = length(workspace.x_input)
+    local_rank = size(shard.q, 2)
+    nfft_dims = shard.grid_size[end] == 1 ? shard.grid_size[1:2] : shard.grid_size
+    nfft_forward = reshape(workspace.grid_forward, nfft_dims)
+    nfft_adjoint = reshape(workspace.grid_adjoint, nfft_dims)
+    threads = 256
+    blocks_vox = cld(nVox, threads)
+
+    # Readouts occupy disjoint rows of A, so their weighted normal operators
+    # add independently. Each readout uses its own VΣ block and NFFT plan.
+    for c = 1:length(shard.channels), d in shard.readouts
+        rows = ((d - 1) * shard.nSam + 1):(d * shard.nSam)
+        basis_offset = (d - 1) * local_rank
+        plan = shard.readout_plans[d]
+        fill!(workspace.k_channel, zero(Complex{T}))
+
+        for r = 1:local_rank
+            @cuda threads=threads blocks=blocks_vox kernel_scatter_basis_csm!(
+                workspace.grid_forward, workspace.x_input, shard.basis,
+                basis_offset + r, shard.csm, c, shard.mask_idx, nVox)
+            mul!(workspace.k_signal, plan, nfft_forward)
+            @views @. workspace.k_channel += workspace.k_signal * shard.q[rows, r]
+        end
+
+        @views @. workspace.k_channel *= shard.weights2[rows]
+
+        for r = 1:local_rank
+            @views @. workspace.k_weighted = workspace.k_channel * conj(shard.q[rows, r])
+            mul!(nfft_adjoint, adjoint(plan), workspace.k_weighted)
+            @cuda threads=threads blocks=blocks_vox kernel_accumulate_basis_csm!(
+                workspace.x_output, workspace.grid_adjoint, shard.basis,
+                basis_offset + r, shard.csm, c, shard.mask_idx, nVox)
+        end
+    end
+
+    return workspace.x_output
+end
+
+
+function local_highorder_shared_adjoint!(
+    shard::MultiGPUHighOrderNormalShard{T},
+    data::CuMatrix{Complex{T}},
+) where {T}
+    shard.released && error("Multi-GPU adjoint shard was released")
+    plan = shard.nfftplan
+    plan === nothing && error("NFFT plan on GPU $(shard.gpu_id) was released")
+    workspace = shard.workspace
+    fill!(workspace.x_output, zero(Complex{T}))
+    dims = shard.grid_size[end] == 1 ? shard.grid_size[1:2] : shard.grid_size
+    backward = reshape(workspace.grid_adjoint, dims)
+    nVox = length(workspace.x_output)
+    threads, blocks = 256, cld(nVox, 256)
+
+    # Match the parent adjoint's rank-then-coil accumulation within each shard.
+    # x_input is scratch here; every normal application overwrites it.
+    x_l = workspace.x_input
+    for r in axes(shard.basis, 2)
+        fill!(x_l, zero(Complex{T}))
+        for c in axes(data, 2)
+            @views @. workspace.k_weighted = data[:, c] * conj(shard.q[:, r])
+            mul!(backward, adjoint(plan), workspace.k_weighted)
+            @cuda threads=threads blocks=blocks kernel_gather_csm!(
+                x_l, workspace.grid_adjoint, shard.csm, c, shard.mask_idx, nVox)
+        end
+        @views @. workspace.x_output += x_l * shard.basis[:, r]
+    end
+    # data is the adjoint input, already weighted by the caller when required;
+    # applying the normal backend's weights2 here would change A^H.
+    return workspace.x_output
+end
+
+
+function local_highorder_streamed_adjoint!(
+    shard::MultiGPUHighOrderNormalShard{T},
+    data::CuMatrix{Complex{T}},
+) where {T}
+    shard.released && error("Multi-GPU adjoint shard was released")
+    cache = something(shard.readout_cache)
+    workspace = shard.workspace
+    fill!(workspace.x_output, zero(Complex{T}))
+    dims = shard.grid_size[end] == 1 ? shard.grid_size[1:2] : shard.grid_size
+    backward = reshape(workspace.grid_adjoint, dims)
+    rank = size(shard.q, 2)
+    nVox = length(workspace.x_output)
+    threads, blocks = 256, cld(nVox, 256)
+    prime_readout_cache!(cache)
+    try
+        for dyn in axes(cache.nodes, 3)
+            slot = acquire_readout!(cache, dyn)
+            basis, plan = cache.basis[slot], first(cache.plans)
+            rows = ((dyn - 1) * shard.nSam + 1):(dyn * shard.nSam)
+            for c in 1:length(shard.channels), r in 1:rank
+                @views @. workspace.k_weighted = data[rows, c] * conj(shard.q[rows, r])
+                mul!(backward, adjoint(plan), workspace.k_weighted)
+                @cuda threads=threads blocks=blocks kernel_accumulate_basis_csm!(
+                    workspace.x_output, workspace.grid_adjoint, basis,
+                    r, shard.csm, c, shard.mask_idx, nVox)
+            end
+            finish_readout!(cache, dyn)
+        end
+    finally
+        drain_readout_copies!(cache)
+    end
+    return workspace.x_output
+end
+
+
+function multi_gpu_highorder_adjoint!(
+    output::CuVector{Complex{T}},
+    state::MultiGPUHighOrderNormalState{T},
+    data::CuVector{Complex{T}},
+) where {T}
+    state.released && error("Multi-GPU adjoint backend was released")
+    state.distribution === :readout && return multi_gpu_highorder_adjoint!(
+        output, state, data, first(state.shards).csm)
+    length(output) == state.nGrid || throw(DimensionMismatch("adjoint output has the wrong length"))
+    nPoint = size(first(state.shards).q, 1)
+    nChannel = sum(length(shard.channels) for shard in state.shards)
+    length(data) == nPoint * nChannel || throw(DimensionMismatch("adjoint data has the wrong length"))
+    CUDA.deviceid(CUDA.device(output)) == state.primary_gpu ||
+        throw(ArgumentError("adjoint output must reside on the primary GPU"))
+    CUDA.deviceid(CUDA.device(data)) == state.primary_gpu ||
+        throw(ArgumentError("adjoint data must reside on the primary GPU"))
+    CUDA.device!(state.primary_gpu)
+    host_data = reshape(Array(data), nPoint, nChannel)
+    completed = Vector{Nothing}(undef, length(state.workers))
+    run_on_workers!(completed, state.workers; phase=:adjoint_operator) do i
+        shard = state.shards[i]
+        local_data = CuArray(@view host_data[:, shard.channels])
+        if shard.basis_layout === :shared
+            local_highorder_shared_adjoint!(shard, local_data)
+        else
+            local_highorder_streamed_adjoint!(shard, local_data)
+        end
+        # This blocking download also completes every use of local_data.
+        copyto!(state.host_outputs[i], shard.workspace.x_output)
+        CUDA.unsafe_free!(local_data)
+        nothing
+    end
+    host_sum = state.host_outputs[1]
+    for i in 2:length(state.host_outputs)
+        host_part = state.host_outputs[i]
+        @inbounds @simd for v in eachindex(host_sum)
+            host_sum[v] += host_part[v]
+        end
+    end
+    copyto!(state.primary_sum, host_sum)
+    fill!(output, zero(Complex{T}))
+    @cuda threads=256 blocks=cld(state.nVox, 256) kernel_scatter_masked_image!(
+        output, state.primary_sum, state.mask_idx, state.nVox)
+    CUDA.synchronize()
+    return output
+end
+
+
+function local_highorder_readout_adjoint!(
+    shard::MultiGPUHighOrderNormalShard{T},
+    data::CuMatrix{Complex{T}},
+    csm::CuMatrix{Complex{T}},
+    readouts::UnitRange{Int},
+) where {T}
+    shard.released && error("Multi-GPU adjoint shard was released")
+    cache = something(shard.readout_cache)
+    workspace = shard.workspace
+    fill!(workspace.x_output, zero(Complex{T}))
+    dims = shard.grid_size[end] == 1 ? shard.grid_size[1:2] : shard.grid_size
+    backward = reshape(workspace.grid_adjoint, dims)
+    rank = size(shard.q, 2)
+    nVox = length(workspace.x_output)
+    threads, blocks = 256, cld(nVox, 256)
+    # x_input is scratch during an adjoint; a subsequent normal application
+    # overwrites it with the new solver input on every worker.
+    x_l = workspace.x_input
+    for dyn in first(readouts):min(last(readouts), first(readouts)+length(cache.basis)-1)
+        prefetch_readout!(cache, dyn)
+    end
+    try
+        for dyn in readouts
+            slot = acquire_readout!(cache, dyn, readouts)
+            basis, plan = cache.basis[slot], first(cache.plans)
+            rows = ((dyn-1)*shard.nSam+1):(dyn*shard.nSam)
+            local_rows = ((dyn-first(readouts))*shard.nSam+1):((dyn-first(readouts)+1)*shard.nSam)
+            for r in 1:rank
+                fill!(x_l, zero(Complex{T}))
+                for c in axes(csm, 2)
+                    @views @. workspace.k_weighted = data[local_rows, c] * conj(shard.q[rows, r])
+                    mul!(backward, adjoint(plan), workspace.k_weighted)
+                    @cuda threads=threads blocks=blocks kernel_gather_csm!(
+                        x_l, workspace.grid_adjoint, csm, c, shard.mask_idx, nVox)
+                end
+                @views @. workspace.x_output += x_l * basis[:, r]
+            end
+            finish_readout!(cache, dyn, readouts)
+        end
+    finally
+        drain_readout_copies!(cache)
+    end
+    return workspace.x_output
+end
+
+
+function multi_gpu_highorder_adjoint!(
+    output::CuVector{Complex{T}},
+    state::MultiGPUHighOrderNormalState{T},
+    data::CuVector{Complex{T}},
+    csm::CuMatrix{Complex{T}},
+) where {T}
+    state.released && error("Multi-GPU adjoint backend was released")
+    length(output) == state.nGrid || throw(DimensionMismatch("adjoint output has the wrong length"))
+    size(csm, 1) == state.nVox || throw(DimensionMismatch("adjoint sensitivity maps have the wrong voxel count"))
+    nPoint = size(first(state.shards).q, 1)
+    nChannel = size(csm, 2)
+    length(data) == nPoint*nChannel || throw(DimensionMismatch("adjoint data has the wrong length"))
+    all(CUDA.deviceid(CUDA.device(array)) == state.primary_gpu for array in (output,data,csm)) ||
+        throw(ArgumentError("adjoint inputs and output must reside on the primary GPU"))
+    CUDA.device!(state.primary_gpu)
+    host_data = reshape(Array(data), nPoint, nChannel)
+    # Readout-sharded normal workers already own all coil maps. Reuse those
+    # persistent arrays instead of allocating another replica for the RHS.
+    host_csm = state.distribution === :readout ? nothing : Array(csm)
+    nDyn = size(something(first(state.shards).readout_cache).nodes, 3)
+    nActive = min(nDyn, length(state.workers))
+    readout_ranges = [((i-1)*nDyn÷nActive+1):(i*nDyn÷nActive) for i in 1:nActive]
+    completed = Vector{Nothing}(undef, nActive)
+    # Each factor block is streamed once across the worker group, rather than
+    # once per channel worker. All coils for a readout are evaluated together.
+    run_on_workers!(completed, view(state.workers,1:nActive); phase=:readout_adjoint) do i
+        shard = state.shards[i]
+        readouts = readout_ranges[i]
+        rows = ((first(readouts)-1)*shard.nSam+1):(last(readouts)*shard.nSam)
+        local_data = CuArray(@view host_data[rows,:])
+        local_csm = state.distribution === :readout ? shard.csm :
+            (i == 1 ? view(csm,:,:) : CuArray(host_csm))
+        local_highorder_readout_adjoint!(shard, local_data, local_csm, readouts)
+        copyto!(state.host_outputs[i], shard.workspace.x_output)
+        CUDA.unsafe_free!(local_data)
+        state.distribution === :readout || CUDA.unsafe_free!(local_csm)
+        nothing
+    end
+    host_sum = state.host_outputs[1]
+    for i in 2:nActive
+        host_part = state.host_outputs[i]
+        @inbounds @simd for v in eachindex(host_sum)
+            host_sum[v] += host_part[v]
+        end
+    end
+    copyto!(state.primary_sum, host_sum)
+    fill!(output, zero(Complex{T}))
+    @cuda threads=256 blocks=cld(state.nVox,256) kernel_scatter_masked_image!(
+        output, state.primary_sum, state.mask_idx, state.nVox)
+    CUDA.synchronize()
+    return output
+end
+
+
 function release_multi_gpu_normal_shard!(shard::MultiGPUHighOrderNormalShard)
     shard.released && return nothing
     shard.released = true
@@ -230,6 +545,8 @@ function release_multi_gpu_normal_shard!(shard::MultiGPUHighOrderNormalShard)
     # the worker that owns the CUDA context. Its internal allocations are
     # collected once, after every worker has stopped.
     shard.nfftplan = nothing
+    shard.readout_cache === nothing || release_per_readout_cache!(shard.readout_cache)
+    empty!(shard.readout_plans)
 
     CUDA.unsafe_free!(shard.q)
     CUDA.unsafe_free!(shard.basis)
@@ -304,15 +621,23 @@ end
 
 
 """
-    MultiGPUHighOrderNormalOp(op, weights; gpus, verbose=false)
+    MultiGPUHighOrderNormalOp(op, weights; gpus, distribution=:channel, verbose=false)
 
-Build a channel-sharded multi-GPU implementation of
+Build a multi-GPU implementation of
 `adjoint(op) * Diagonal(abs2.(weights)) * op`.
 
+`distribution=:channel` partitions coils. `distribution=:readout` partitions
+independent readouts, requires `op.basis_layout === :per_readout`, and replicates
+all coil sensitivity maps on each active GPU. CPU-stored spatial factors are
+streamed once across the worker group per normal application in readout mode.
+
 `weights` must contain one value per sample/dynamic point, not one repeated copy
-per channel. The existing single-GPU `op` stays unchanged and can still be used as
-the forward operator passed to the reconstruction solver. The first GPU in `gpus`
-must be the GPU that owns `op` and the solver vectors.
+per channel. The parent `op` can still be passed to the reconstruction solver.
+When its owned normal backend has been initialized, shared-basis adjoints reuse
+the channel workers, while CPU-stored per-readout adjoints reuse the workers
+with readout sharding, streaming each independent factor block once across the
+worker group. The first GPU in `gpus` must be the GPU that owns `op` and the
+solver vectors.
 
 Call [`release_multi_gpu_normal_operator!`](@ref), or `close`, after reconstruction
 to stop the persistent workers and release all per-GPU NFFT plans and workspaces.
@@ -321,20 +646,28 @@ function MultiGPUHighOrderNormalOp(
     op                   :: HighOrderLowRankOp{T},
     weights              :: AbstractArray;
     gpus                 :: Vector{Int},
+    distribution         :: Symbol = :channel,
     verbose              :: Bool = false,
     _weights_are_squared :: Bool = false,
 ) where {T<:AbstractFloat}
     op.q isa CuArray || throw(ArgumentError("MultiGPUHighOrderNormalOp requires a CuArray HighOrderLowRankOp"))
     isempty(gpus) && throw(ArgumentError("gpus must contain at least one GPU id"))
     length(unique(gpus)) == length(gpus) || throw(ArgumentError("gpus contains duplicate GPU ids: $gpus"))
+    distribution in (:channel, :readout) || throw(ArgumentError("distribution must be :channel or :readout"))
+    distribution === :readout && op.basis_layout !== :per_readout &&
+        throw(ArgumentError("readout distribution requires basis_layout=:per_readout"))
 
     primary_gpu = first(gpus)
     source_gpu = CUDA.deviceid(CUDA.device(op.q))
     source_gpu == primary_gpu || throw(ArgumentError("the first GPU ($primary_gpu) must own the source operator; op is on GPU $source_gpu"))
 
-    nWorker = min(length(gpus), op.nCha)
+    nWorker = min(length(gpus), distribution === :readout ? op.nDyn : op.nCha)
     setup_gpus = gpus[1:nWorker]
-    channel_ranges = balanced_channel_ranges(op.nCha, nWorker)
+    channel_ranges = distribution === :channel ? balanced_channel_ranges(op.nCha, nWorker) :
+        fill(1:op.nCha, nWorker)
+    readout_ranges = distribution === :readout ?
+        [((i - 1) * op.nDyn ÷ nWorker + 1):(i * op.nDyn ÷ nWorker) for i in 1:nWorker] :
+        fill(1:op.nDyn, nWorker)
     warn_if_insufficient_gpu_worker_threads(
         nWorker;
         operation=:multi_gpu_normal_operator,
@@ -346,7 +679,10 @@ function MultiGPUHighOrderNormalOp(
 
     CUDA.device!(primary_gpu)
     q_host = Matrix{Complex{T}}(Array(op.q))
-    basis_host = Matrix{Complex{T}}(Array(op.basis))
+    # CPU-stored independent factors can be hundreds of GiB; share this bank
+    # among worker caches instead of copying it on the host or onto each GPU.
+    basis_host = op.basis isa Union{Matrix{Complex{T}},RegeneratedSpatialBasis{T}} ?
+        op.basis : Matrix{Complex{T}}(Array(op.basis))
     csm_host = Matrix{Complex{T}}(Array(op.csm))
     mask_idx_host = Vector{Int32}(Array(op.mask_idx))
     weights_host = vec(Array(weights))
@@ -366,6 +702,9 @@ function MultiGPUHighOrderNormalOp(
     end
     nfft_nodes_host = reshape(op.nfft_traj, size(op.nfft_traj, 1), nPoint)
     nfft_dims = op.grid_size[end] == 1 ? op.grid_size[1:2] : op.grid_size
+    per_readout = op.basis_layout === :per_readout
+    streamed = per_readout && op.per_readout_storage in (:cpu, :regenerate)
+    nPlanPoint = per_readout ? op.nSam : nPoint
 
     workers = DistributedGPUWorker[]
     shards_any = Vector{Any}(undef, nWorker)
@@ -378,15 +717,29 @@ function MultiGPUHighOrderNormalOp(
         run_on_workers!(shards_any, workers; phase=:normal_operator_setup) do i
             gpu_id = setup_gpus[i]
             channels = channel_ranges[i]
-            nfftplan = plan_nfft(CuArray, nfft_nodes_host, nfft_dims; m=3, σ=1.25)
+            first_nodes = per_readout ? view(nfft_nodes_host, :, 1:op.nSam) : nfft_nodes_host
+            nfftplan = plan_nfft(CuArray, first_nodes, nfft_dims; m=3, σ=1.25)
             eltype(nfftplan) == Complex{T} || error("NFFT plan precision $(eltype(nfftplan)) does not match Complex{$T}")
+            readout_plans = typeof(nfftplan)[]
+            if per_readout && !streamed
+                push!(readout_plans, nfftplan)
+                for d = 2:op.nDyn
+                    rows = ((d - 1) * op.nSam + 1):(d * op.nSam)
+                    plan = plan_nfft(CuArray, view(nfft_nodes_host, :, rows), nfft_dims; m=3, σ=1.25)
+                    eltype(plan) == Complex{T} || error("NFFT plan precision $(eltype(plan)) does not match Complex{$T}")
+                    push!(readout_plans, plan)
+                end
+            end
+
+            readout_cache = streamed ? PerReadoutCache(basis_host, op.nfft_traj, nfft_dims;
+                capacity=op.per_readout_cache_size, first_plan=nfftplan) : nothing
 
             workspace = MultiGPUHighOrderNormalWorkspace{T}(
                 CUDA.zeros(Complex{T}, nGrid),
                 CUDA.zeros(Complex{T}, nGrid),
-                CUDA.zeros(Complex{T}, nPoint),
-                CUDA.zeros(Complex{T}, nPoint),
-                CUDA.zeros(Complex{T}, nPoint),
+                CUDA.zeros(Complex{T}, nPlanPoint),
+                CUDA.zeros(Complex{T}, nPlanPoint),
+                CUDA.zeros(Complex{T}, nPlanPoint),
                 CUDA.zeros(Complex{T}, op.nVox),
                 CUDA.zeros(Complex{T}, op.nVox),
             )
@@ -394,15 +747,21 @@ function MultiGPUHighOrderNormalOp(
             MultiGPUHighOrderNormalShard{T,typeof(nfftplan)}(
                 gpu_id,
                 channels,
+                readout_ranges[i],
                 # Contiguous CuArray views share the source storage but own
                 # separate reference-counted handles. Freeing these handles
                 # when the shard closes must not invalidate the source op.
                 gpu_id == primary_gpu ? view(op.q, :, :) : CuArray(q_host),
-                gpu_id == primary_gpu ? view(op.basis, :, :) : CuArray(basis_host),
+                streamed ? CuMatrix{Complex{T}}(undef, op.nVox, 0) :
+                    (gpu_id == primary_gpu ? view(op.basis, :, :) : CuArray(basis_host)),
                 gpu_id == primary_gpu ? view(op.csm, :, channels) : CuArray(@view csm_host[:, channels]),
                 CuArray(weights2_host),
                 gpu_id == primary_gpu ? view(op.mask_idx, :) : CuArray(mask_idx_host),
                 nfftplan,
+                readout_plans,
+                readout_cache,
+                op.basis_layout,
+                op.nSam,
                 op.grid_size,
                 workspace,
                 false,
@@ -451,6 +810,7 @@ function MultiGPUHighOrderNormalOp(
     state = MultiGPUHighOrderNormalState(
         workers,
         shards,
+        distribution,
         primary_gpu,
         op.nVox,
         nGrid,
@@ -468,8 +828,12 @@ function MultiGPUHighOrderNormalOp(
     if verbose
         @info("Multi-GPU normal operator ready",
             gpus=setup_gpus,
+            distribution,
             channel_ranges=channel_ranges,
-            shared_rank=size(op.basis, 2),
+            readout_ranges=readout_ranges,
+            basis_layout=op.basis_layout,
+            temporal_rank=size(op.q, 2),
+            spatial_columns=size(op.basis, 2),
             nPoint,
             nVox=op.nVox,
             transfer=:host_staged,
@@ -547,7 +911,7 @@ function normal_weights2(op :: HighOrderLowRankOp{T}, weights) where {T<:Abstrac
         for c = 2:op.nCha
             rows = ((c - 1) * nPoint + 1):(c * nPoint)
             copyto!(segment, @view raw[rows])
-            isapprox(segment, first_segment; rtol, atol) || throw(ArgumentError("normal_distribution=:channel currently requires identical weights for every channel"))
+            isapprox(segment, first_segment; rtol, atol) || throw(ArgumentError("the multi-GPU normal backend requires identical weights for every channel"))
         end
     end
 
@@ -593,7 +957,7 @@ function ensure_highorder_normal_backend!(
     weights2 :: Vector{T},
 ) where {T<:AbstractFloat}
     backend = op.normal_backend
-    backend.distribution === :channel || error("ensure_highorder_normal_backend! requires normal_distribution=:channel")
+    backend.distribution in (:channel, :readout) || error("ensure_highorder_normal_backend! requires normal_distribution=:channel or :readout")
 
     cached = backend.operator
     if cached !== nothing
@@ -610,6 +974,7 @@ function ensure_highorder_normal_backend!(
         op,
         weights2;
         gpus=backend.gpus,
+        distribution=backend.distribution,
         verbose=backend.verbose,
         _weights_are_squared=true,
     )
@@ -629,7 +994,7 @@ function LinearOperatorCollection.normalOperator(
         return LinearOperatorCollection.NormalOp(eltype(LinearOperators.storage_type(op)); parent=op, weights=weights)
     end
 
-    isempty(kwargs) || @debug("Ignoring normalOperator keyword arguments for the channel-distributed HighOrderLowRankOp", kwargs)
+    isempty(kwargs) || @debug("Ignoring normalOperator keyword arguments for the multi-GPU HighOrderLowRankOp", kwargs)
     weights2 = normal_weights2(op, weights)
     normal_op = ensure_highorder_normal_backend!(op, weights2)
     return highorder_normal_view(op, normal_op)
@@ -654,4 +1019,11 @@ end
 # The parent owns the distributed plans and workspaces. Closing a view must not
 # invalidate other views created from the same HighOrderLowRankOp.
 Base.close(::HighOrderLowRankNormalOp) = nothing
-Base.close(op::HighOrderLowRankOp) = release_highorder_normal_backend!(op)
+function Base.close(op::HighOrderLowRankOp)
+    try
+        release_highorder_normal_backend!(op)
+    finally
+        op.readout_cache === nothing || release_per_readout_cache!(op.readout_cache)
+    end
+    return nothing
+end

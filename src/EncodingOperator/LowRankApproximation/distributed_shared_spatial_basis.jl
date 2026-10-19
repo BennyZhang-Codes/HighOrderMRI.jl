@@ -138,22 +138,7 @@ function update_distributed_shared_basis!(
 
     fill!(@view(shared.coeff[:, :, dyn]), zero(Complex{T}))
 
-    # ----------------------------------------------------------
-    # R_g = Vscaled_g
-    # ----------------------------------------------------------
-    outputs = Vector{Nothing}(undef, nShard)
-    run_on_workers!(outputs, rsvd_workspace.workers) do i
-        shared_shard = shared.shards[i]
-        rsvd_shard = rsvd_workspace.shards[i]
-
-        @assert shared_shard.gpu_id == rsvd_shard.gpu_id
-        @assert shared_shard.voxels == rsvd_shard.voxels
-
-        CUDA.@sync copyto!(shared_shard.residual, rsvd_shard.v_scaled)
-        nothing
-    end
-
-
+    correction = zeros(Complex{T}, r, L)
     # ----------------------------------------------------------
     # 第一次投影：
     # C = Σ_g B_gᴴ V_g
@@ -169,15 +154,22 @@ function update_distributed_shared_basis!(
             B = @view shared_shard.basis[:, 1:r]
             projection = @view shared_shard.small[1:r, :]
 
-            # CUDA.@sync mul!(projection, adjoint(B), rsvd_shard.v_scaled)
-            CUDA.@sync CUDA.CUBLAS.gemm!(
-                'C', 'N',
-                one(Complex{T}),
-                B,
-                rsvd_shard.v_scaled,
-                zero(Complex{T}),
-                projection,
-            )
+            @assert shared_shard.gpu_id == rsvd_shard.gpu_id
+            @assert shared_shard.voxels == rsvd_shard.voxels
+
+            # Copy and project on the same worker stream. Only the completed
+            # projection is needed by the CPU before the next stage.
+            CUDA.@sync begin
+                copyto!(shared_shard.residual, rsvd_shard.v_scaled)
+                CUDA.CUBLAS.gemm!(
+                    'C', 'N',
+                    one(Complex{T}),
+                    B,
+                    rsvd_shard.v_scaled,
+                    zero(Complex{T}),
+                    projection,
+                )
+            end
 
             Array(projection)
         end
@@ -220,33 +212,31 @@ function update_distributed_shared_basis!(
             Array(small)
         end
 
-        correction = zeros(Complex{T}, r, L)
-
         for local_value in local_correction
             correction .+= local_value
         end
 
         @views shared.coeff[1:r, :, dyn] .+= correction
 
-        # ------------------------------------------------------
-        # 第二次正交化：
-        # R_g -= B_g correction
-        # ------------------------------------------------------
-        outputs = Vector{Nothing}(undef, nShard)
-        run_on_workers!(outputs, rsvd_workspace.workers) do i
-            shared_shard = shared.shards[i]
-
-            B = @view shared_shard.basis[:, 1:r]
-            small = @view shared_shard.small[1:r, :]
-
-            copyto!(small, correction)
-
-            CUDA.@sync mul!(shared_shard.residual, B, small, -one(Complex{T}), one(Complex{T}))
-            nothing
-        end
     end
 
     if total_energy <= eps(T)
+        # Preserve the residual workspace even when no Gram matrix is needed.
+        outputs = Vector{Nothing}(undef, nShard)
+        run_on_workers!(outputs, rsvd_workspace.workers) do i
+            shard = shared.shards[i]
+            CUDA.@sync begin
+                if r == 0
+                    copyto!(shard.residual, rsvd_workspace.shards[i].v_scaled)
+                else
+                    small = @view shard.small[1:r, :]
+                    copyto!(small, correction)
+                    mul!(shard.residual, view(shard.basis, :, 1:r), small,
+                        -one(Complex{T}), one(Complex{T}))
+                end
+            end
+            nothing
+        end
         shared.errors[dyn] = zero(T)
         return zero(T), 0
     end
@@ -258,8 +248,21 @@ function update_distributed_shared_basis!(
     run_on_workers!(local_grams, rsvd_workspace.workers) do i
         shared_shard = shared.shards[i]
 
-        # Float32 Gram eigenvalue noise can hide residual energy below the shared tolerance.
+        @assert shared_shard.gpu_id == rsvd_workspace.shards[i].gpu_id
+        @assert shared_shard.voxels == rsvd_workspace.shards[i].voxels
+
+        # Finish the second orthogonalization and compute its Gram on the same
+        # stream. The CPU only needs the completed Gram, not the residual.
+        # Float32 Gram noise can hide energy below the shared tolerance.
         CUDA.@sync begin
+            if r == 0
+                copyto!(shared_shard.residual, rsvd_workspace.shards[i].v_scaled)
+            else
+                small = @view shared_shard.small[1:r, :]
+                copyto!(small, correction)
+                mul!(shared_shard.residual, view(shared_shard.basis, :, 1:r), small,
+                    -one(Complex{T}), one(Complex{T}))
+            end
             if T !== Float64
                 shared_shard.residual64 .= shared_shard.residual
             end
