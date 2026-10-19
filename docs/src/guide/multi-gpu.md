@@ -90,6 +90,16 @@ large spatial factors and the shared basis remain voxel-sharded during setup,
 then the completed shared basis is gathered once to the primary operator
 device.
 
+For shared-basis setup with `Float32` and at least 256 samples per readout,
+the forward kernel partitions the masked voxels into smaller tiles and sums
+their sketch contributions on the GPU. Each worker retains at most 64 MiB of
+temporary partial sketches; small voxel shards use the original forward kernel.
+The adjoint kernel uses two cooperating lanes per voxel and reuses each temporal
+load for a pair of voxels, keeping spatial coefficients in registers. These mappings retain
+all samples, voxels, sketch columns, and random seeds, while changing floating
+point summation order. `Float64`, single-GPU setup, and per-readout setup retain
+their previous mappings. Shared-basis Gram precision is unchanged.
+
 Voxel distribution currently requires:
 
 - `arrayType=CuArray`;

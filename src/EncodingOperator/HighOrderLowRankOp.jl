@@ -604,6 +604,7 @@ function HighOrderLowRankOp(
                 gpus;
                 rsvd_backend,
                 rsvd_chunk,
+                kernel_tiling=true,
             )
             distributed_shared = nothing
             try

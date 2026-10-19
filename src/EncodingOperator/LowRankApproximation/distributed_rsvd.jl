@@ -38,6 +38,7 @@ mutable struct DistributedRSVDShard{T<:AbstractFloat}
     rng         :: CUDA.RNG
     omega       :: CuMatrix{Complex{T}}
     W           :: CuMatrix{Complex{T}}
+    W_partial   :: CuArray{Complex{T},3}
     Q           :: CuMatrix{Complex{T}}
     B_adj       :: CuMatrix{Complex{T}}
     phase       :: CuMatrix{T}
@@ -60,6 +61,17 @@ struct DistributedRSVDWorkspace{T<:AbstractFloat}
     L_rank      :: Int
     rsvd_backend :: Symbol
     chunk_size  :: Int
+    adjoint_lanes :: Int
+end
+
+
+function rsvd_forward_partitions(::Type{T}, nVox::Int, nSam::Int, L::Int) where {T}
+    # Keep each voxel tile small enough to reuse its field and sketch rows.
+    # Bound the extra storage independently of volume size.
+    T === Float32 && nSam >= 256 && nVox >= 32768 || return 0
+    max_parts = min(512, (64 * 1024^2) ÷ (sizeof(Complex{T}) * nSam * L))
+    max_parts >= 2 || return 0
+    return min(cld(nVox, 16384), max_parts)
 end
 
 
@@ -103,6 +115,7 @@ function DistributedRSVDWorkspace(
     ;
     rsvd_backend::Symbol = :kernel,
     rsvd_chunk  :: Int = 4096,
+    kernel_tiling::Bool = false,
 ) where {T<:AbstractFloat}
 
     nVox = length(fieldmap)
@@ -131,6 +144,8 @@ function DistributedRSVDWorkspace(
             voxels = ranges[i]
             nLocal = length(voxels)
             local_chunk_size = rsvd_backend === :chunked ? min(rsvd_chunk, nLocal) : 0
+            nParts = kernel_tiling && rsvd_backend === :kernel ?
+                rsvd_forward_partitions(T, nLocal, nSam, L_total) : 0
 
             DistributedRSVDShard{T}(
                 gpu_id,
@@ -142,6 +157,7 @@ function DistributedRSVDWorkspace(
                 CUDA.RNG(0),
                 CUDA.zeros(Complex{T}, nLocal, L_total),
                 CUDA.zeros(Complex{T}, nSam, L_total),
+                CuArray{Complex{T}}(undef, nSam, L_total, nParts),
                 CUDA.zeros(Complex{T}, nSam, L_total),
                 CUDA.zeros(Complex{T}, nLocal, L_total),
                 # Both arrays are fully overwritten before their first read.
@@ -166,6 +182,7 @@ function DistributedRSVDWorkspace(
             L_rank,
             rsvd_backend,
             rsvd_backend === :chunked ? rsvd_chunk : 0,
+            kernel_tiling && rsvd_backend === :kernel && T === Float32 && nSam >= 256 ? 2 : 32,
         )
     catch
         shutdown_distributed_workers!(workers)
@@ -187,6 +204,7 @@ function release_distributed_rsvd_shard!(shard::DistributedRSVDShard)
     CUDA.unsafe_free!(shard.kspha_t)
     CUDA.unsafe_free!(shard.omega)
     CUDA.unsafe_free!(shard.W)
+    CUDA.unsafe_free!(shard.W_partial)
     CUDA.unsafe_free!(shard.Q)
     CUDA.unsafe_free!(shard.B_adj)
     CUDA.unsafe_free!(shard.phase)
@@ -322,16 +340,19 @@ function distributed_rsvd_forward!(
         end
 
         CUDA.@sync if workspace.rsvd_backend === :kernel
-            run_kernel_rsvd_forward!(
-                shard.W,
-                shard.omega,
-                shard.times,
-                shard.fieldmap,
-                shard.bf,
-                shard.kspha_t;
-                threads=128,
-                kspha_transposed=true,
-            )
+            if size(shard.W_partial, 3) > 0
+                run_kernel_rsvd_forward_tiled!(
+                    shard.W, shard.W_partial, shard.omega, shard.times,
+                    shard.fieldmap, shard.bf, shard.kspha_t;
+                    threads=128, kspha_transposed=true,
+                )
+            else
+                run_kernel_rsvd_forward!(
+                    shard.W, shard.omega, shard.times, shard.fieldmap,
+                    shard.bf, shard.kspha_t;
+                    threads=128, kspha_transposed=true,
+                )
+            end
         else
             distributed_rsvd_forward_chunked!(shard)
         end
@@ -371,8 +392,10 @@ function distributed_rsvd_adjoint_gram!(
                     shard.fieldmap,
                     shard.bf,
                     shard.kspha_t;
-                    threads=256,
+                    threads=workspace.adjoint_lanes == 2 ? 128 : 256,
                     kspha_transposed=true,
+                    lanes_per_voxel=workspace.adjoint_lanes,
+                    voxels_per_group=workspace.adjoint_lanes == 2 ? 2 : 1,
                 )
             else
                 distributed_rsvd_adjoint_chunked!(shard)
