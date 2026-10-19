@@ -5,7 +5,8 @@ workload:
 
 - the explicit CUDA operator shards masked voxels;
 - distributed low-rank setup shards masked voxels;
-- the optional low-rank normal operator shards receive channels.
+- the optional low-rank normal operator shards receive channels, or independent
+  readouts with `basis_layout=:per_readout`.
 
 These choices are complementary. Multi-GPU partitioning changes execution and
 communication, not the intended numerical approximation.
@@ -117,6 +118,29 @@ The backend is constructed lazily when `normalOperator(W ∘ op)` is first
 requested. Setup distribution and normal distribution are independent; the
 same operator may use voxel shards during rSVD setup and coil shards during
 iterative reconstruction.
+
+## Readout-distributed normal operator
+
+For independent per-readout factors, select:
+
+```julia
+basis_layout=:per_readout
+normal_distribution=:readout
+```
+
+Each worker evaluates all coils for its assigned contiguous readout range.
+The contributions are summed in image space, including all cross-rank terms
+within each readout. This is the same weighted normal operator as channel
+distribution, with a different summation order.
+
+With `per_readout_storage=:cpu`, each spatial factor block is streamed once
+across the worker group per normal application. Channel distribution instead
+streams the whole bank to every worker. Readout distribution keeps all coil
+sensitivity maps on each GPU, which increases device storage. It uses at most
+one worker per readout and supports uneven readout counts. The shared layout
+continues to use `:channel`; `:readout` requires `basis_layout=:per_readout`.
+The default `normal_distribution=:single` and existing `:channel` behavior
+are unchanged.
 
 ## Resource lifecycle
 

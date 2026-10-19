@@ -71,7 +71,8 @@ Configuration and owned state for an optional optimized normal-operator backend.
 The backend is initialized lazily by `normalOperator`, because constructing the
 forward operator alone should not allocate one NFFT plan and workspace per GPU.
 `operator` is kept here so that `HighOrderLowRankOp` owns the multi-GPU resources
-and can release them with `close(op)`.
+and can release them with `close(op)`. Streamed per-readout adjoints reuse its
+GPU workers once this backend has been initialized.
 """
 mutable struct HighOrderNormalBackend
     distribution :: Symbol
@@ -86,8 +87,8 @@ High-order field encoding operator using a low-rank approximation of the
 off-resonance and higher-order phase terms.
 
 The zeroth-order term is applied as a temporal modulation, the first-order
-terms are handled by the NFFT trajectory, and the remaining smooth phase is
-represented by one global spatial basis shared by all dynamics. See the
+terms are handled by the NFFT trajectory, and the remaining smooth phase uses
+a shared spatial basis by default or independent per-readout factors. See the
 `HighOrderLowRankOp` constructor documentation for input dimensions and
 configuration options.
 """
@@ -106,11 +107,16 @@ mutable struct HighOrderLowRankOp{
     nDyn       :: Int
     L          :: Int                    # SVD truncation rank
     
-    q          :: AQ                     # [nSam*nDyn, shared_rank], Q_d = U_d*C_dᴴ
-    basis      :: AB                     # [nVox, shared_rank]
+    basis_layout :: Symbol               # :shared or :per_readout
+    per_readout_storage :: Symbol        # :gpu, :cpu, or :regenerate
+    per_readout_cache_size :: Int
+    readout_cache :: Union{Nothing,PerReadoutCache{T,P}}
+    q          :: AQ                     # temporal factors; rows grouped by readout
+    basis      :: AB                     # shared columns or consecutive per-readout VΣ blocks
     csm        :: AC                     # [nVox, nCha]
     
     nfftplan   :: P                      # one reusable CPU/GPU NFFT plan
+    readout_plans :: Vector{P}           # per-readout plans; empty for :shared
     nfft_traj  :: Array{T,3}             # signed normalized NFFT nodes [nDim, nSam, nDyn]
     mask_idx   :: AbstractVector{Int32}  # Extracted 3D mask indices
     grid_size  :: Tuple                  # gridding size
@@ -206,7 +212,10 @@ Construct a high-order low-rank encoding operator for dynamic non-Cartesian
 MRI. For each dynamic, rSVD approximates the off-resonance and higher-order
 encoding matrix. The dynamic spatial bases are subsequently compressed into
 one global spatial basis, allowing the final operator to use one global NFFT
-plan instead of one NFFT per dynamic and low-rank term.
+plan instead of one NFFT per dynamic and low-rank term. With
+`basis_layout=:per_readout`, the same local rSVD factors are retained without
+shared compression and evaluated using one cached NFFT plan per readout. This
+provides an independent-readout baseline with the same field model and scaling.
 
 The opt-in `shared_basis_method=:joint` instead constructs a shared basis from
 representative joint phase snapshots and fits temporal coefficients on sampled
@@ -268,6 +277,35 @@ the default rSVD path is unchanged.
   requires `arrayType=CuArray`, `rsvd_backend=:kernel` or `:chunked`, and
   `rsvd_finalize=:gram`. `:auto` selects this mode when possible and more than
   one GPU is supplied.
+* `basis_layout::Symbol`                - `:shared` (default) merges spatial
+  factors across readouts. `:per_readout` retains each readout's `U` and `VΣ`
+  factors independently; `shared_rank_max` and `shared_basis_tol` have no effect
+  in this mode, and joint construction or global recompression is unsupported.
+* `per_readout_storage::Symbol`        - `:gpu` (default) keeps independent
+  factors and plans on the GPU. With `basis_layout=:per_readout` and
+  `arrayType=CuArray`, `:cpu` keeps the full spatial bank in host RAM and uses a
+  bounded GPU cache with asynchronous lookahead. The factors and phase model
+  are unchanged; sufficient host RAM is still required. `:regenerate` saves
+  the original rSVD `Q/Z` and generates `(H'Q)Z` directly into bounded GPU slots
+  on a producer stream. It requires voxel-distributed kernel/Gram setup and
+  does not allocate the complete spatial bank.
+* `per_readout_cache_size::Int`        - Number of resident readouts per GPU
+  for CPU-stored or regenerated factors (default `5`, capped at `nDyn`). With
+  regeneration, `1` serializes generation/use; `2` or more permits lookahead.
+  Each cache shares one
+  pinned host staging buffer and refills consumed slots while another readout
+  computes. Both normal and forward/adjoint paths use this cache.
+* `per_readout_gather::Symbol`        - Spatial-factor aggregation during
+  voxel-distributed per-readout setup: `:pipeline` (default) overlaps downloads
+  and host writes with later rSVD phases using two pinned buffers per GPU;
+  `:synchronous` retains the blocking gather. Single-device setup is unchanged.
+* `per_readout_host_cache_bytes::Int` - Host spatial-factor budget for
+  `:regenerate` (default `0`). A fixed, evenly spaced subset of readouts is
+  materialized during setup and reused across CG iterations; each block must
+  fit completely. All worker caches share this host bank. Q/Z and model maps
+  are additional metadata. Cache misses use the original precision and rank;
+  regenerating them changes floating-point evaluation geometry and requires
+  numerical agreement checks rather than a bitwise guarantee.
 * `shared_rank_max::Int`                - Upper bound on the global spatial
   basis rank, clamped to `min(nVox, L_rank * nDyn)`.
 * `shared_basis_tol::T`                 - Relative approximation-error
@@ -298,7 +336,9 @@ the default rSVD path is unchanged.
   basis errors. `nothing` (the default) preserves the existing representation.
 * `normal_distribution::Symbol`         - Normal-operator distribution used by
   CG. `:single` uses the primary GPU; `:channel` partitions coil channels
-  across `gpus` and lazily constructs the multi-GPU backend when
+  across `gpus`; `:readout` partitions independent readouts and keeps all coil
+  sensitivity maps on each participating GPU. `:readout` requires
+  `basis_layout=:per_readout`. Both multi-GPU modes initialize lazily when
   `normalOperator(W ∘ op)` is requested.
 * `nfft_center_correction::Bool`        - Apply the parity-aware NFFT centre
   correction that aligns AbstractNFFTs' integer-centred grid with `Grid`'s
@@ -324,11 +364,11 @@ converted to AbstractNFFTs nodes as `-kᵢ * Δᵢ`, independently for each acti
 dimension. The operator normalization is `1 / sqrt(nVox)` and is folded into
 `q`. The output ordering is samples first, then dynamics, then channels.
 
-Voxel-distributed rSVD accelerates operator setup; channel-distributed normal
+Voxel-distributed rSVD accelerates operator setup; multi-GPU normal
 evaluation accelerates CG iterations. They are independent and are controlled
 by `rsvd_distribution` and `normal_distribution`, respectively. Start Julia
 with at least one default thread per participating GPU for effective
-concurrency. `recon_HOOp` releases its channel-distributed normal backend by
+concurrency. `recon_HOOp` releases its multi-GPU normal backend by
 default. After direct use of `normalOperator`, or when calling
 `recon_HOOp(...; release_backend=false)`, call `close(op)` when the backend is
 no longer needed. This stops its worker tasks and returns explicit workspaces
@@ -370,6 +410,11 @@ function HighOrderLowRankOp(
     rsvd_finalize     :: Symbol                    = :svd                                    ,
     rsvd_backend      :: Symbol                    = :auto                                   ,
     rsvd_distribution :: Symbol                    = :auto                                   ,
+    basis_layout      :: Symbol                    = :shared                                 ,
+    per_readout_storage:: Symbol                   = :gpu                                    ,
+    per_readout_cache_size:: Int                   = 5                                       ,
+    per_readout_gather:: Symbol                    = :pipeline                               ,
+    per_readout_host_cache_bytes:: Int             = 0                                       ,
     shared_rank_max   :: Int                       = 128                                     ,
     shared_basis_tol  :: T                         = T(1e-2)                                 , 
     global_basis_tol  :: Union{Nothing,T}          = nothing                                 ,
@@ -405,8 +450,23 @@ function HighOrderLowRankOp(
     rsvd_finalize in (:svd, :gram) || throw(ArgumentError("rsvd_finalize must be :svd or :gram, " * "got $rsvd_finalize"))
     rsvd_backend in (:auto, :chunked, :kernel) || throw(ArgumentError("Unsupported rsvd_backend=$rsvd_backend"))
     rsvd_distribution in (:auto, :single, :voxel) || throw(ArgumentError("Unsupported rsvd_distribution=$rsvd_distribution; " * "expected :auto, :single, or :voxel"))
-    normal_distribution in (:single, :channel) || throw(ArgumentError("Unsupported normal_distribution=$normal_distribution; expected :single or :channel"))
+    normal_distribution in (:single, :channel, :readout) || throw(ArgumentError("Unsupported normal_distribution=$normal_distribution; expected :single, :channel, or :readout"))
+    basis_layout in (:shared, :per_readout) || throw(ArgumentError("basis_layout must be :shared or :per_readout"))
+    normal_distribution === :readout && basis_layout !== :per_readout &&
+        throw(ArgumentError("normal_distribution=:readout requires basis_layout=:per_readout"))
+    per_readout_storage in (:gpu, :cpu, :regenerate) || throw(ArgumentError("per_readout_storage must be :gpu, :cpu, or :regenerate"))
+    per_readout_host_cache_bytes >= 0 || throw(ArgumentError("per_readout_host_cache_bytes must be non-negative"))
+    per_readout_cache_size > 0 || throw(ArgumentError("per_readout_cache_size must be positive"))
+    per_readout_gather in (:pipeline, :synchronous) || throw(ArgumentError("per_readout_gather must be :pipeline or :synchronous"))
+    if per_readout_storage in (:cpu, :regenerate)
+        basis_layout === :per_readout || throw(ArgumentError("CPU factor storage requires basis_layout=:per_readout"))
+        arrayType == CuArray || throw(ArgumentError("CPU factor storage with a GPU cache requires arrayType=CuArray"))
+    end
     shared_basis_method in (:rsvd, :joint) || throw(ArgumentError("shared_basis_method must be :rsvd or :joint"))
+    if basis_layout === :per_readout
+        shared_basis_method === :rsvd || throw(ArgumentError("basis_layout=:per_readout requires shared_basis_method=:rsvd"))
+        isnothing(global_basis_tol) || throw(ArgumentError("basis_layout=:per_readout does not support global_basis_tol"))
+    end
     isempty(gpus) && throw(ArgumentError("gpus must contain at least one GPU id"))
     length(unique(gpus)) == length(gpus) || throw(ArgumentError("gpus contains duplicate GPU ids: $gpus"))
 
@@ -418,9 +478,9 @@ function HighOrderLowRankOp(
         nCol <= typemax(Int32) || throw(ArgumentError("Joint operator grid indices exceed Int32"))
     end
     primary_gpu = first(gpus)
-    if normal_distribution === :channel
-        is_gpu || throw(ArgumentError("normal_distribution=:channel requires arrayType=CuArray"))
-        length(gpus) >= 2 || throw(ArgumentError("normal_distribution=:channel requires at least two GPUs"))
+    if normal_distribution in (:channel, :readout)
+        is_gpu || throw(ArgumentError("normal_distribution=$normal_distribution requires arrayType=CuArray"))
+        length(gpus) >= 2 || throw(ArgumentError("normal_distribution=$normal_distribution requires at least two GPUs"))
     end
     rsvd_backend = rsvd_backend === :auto ? (is_gpu ? :kernel : :chunked) : rsvd_backend
     use_distributed_rsvd =
@@ -430,6 +490,10 @@ function HighOrderLowRankOp(
         is_gpu || throw(ArgumentError("rsvd_distribution=:voxel requires arrayType=CuArray"))
         rsvd_finalize === :gram || throw(ArgumentError("Multi-GPU voxel-distributed rSVD currently requires " * "rsvd_finalize=:gram"))
         rsvd_backend in (:kernel, :chunked) || throw(ArgumentError("Multi-GPU voxel-distributed rSVD currently requires " * "rsvd_backend=:kernel or :chunked"))
+    end
+    if per_readout_storage === :regenerate
+        use_distributed_rsvd && rsvd_backend === :kernel || throw(ArgumentError(
+            "per_readout_storage=:regenerate requires voxel-distributed kernel/Gram rSVD; use rsvd_distribution=:voxel, rsvd_backend=:kernel, rsvd_finalize=:gram"))
     end
     if is_gpu CUDA.device!(primary_gpu) end
     
@@ -485,7 +549,9 @@ function HighOrderLowRankOp(
 
     @info "nSam=$nSam, nVox=$nVox, nDyn=$nDyn, nTerm=$nTerm, nCha=$nCha"
 
-    @assert shared_rank_max > 0 "shared_rank_max must be positive"
+    if basis_layout === :shared
+        @assert shared_rank_max > 0 "shared_rank_max must be positive"
+    end
     isnothing(global_basis_tol) || global_basis_tol >= zero(T) || throw(ArgumentError("global_basis_tol must be non-negative"))
     @assert rsvd_chunk > 0 "rsvd_chunk must be positive for chunked rSVD"
     @assert L_rank > 0 "L_rank must be positive"
@@ -501,12 +567,24 @@ function HighOrderLowRankOp(
 
     max_possible_shared_rank = use_joint_basis ? min(nVox, nSam * nDyn) : min(nVox, L_rank * nDyn)
     effective_shared_rank_max = min(shared_rank_max, max_possible_shared_rank)
-    if verbose && effective_shared_rank_max != shared_rank_max
+    if verbose && basis_layout === :shared && effective_shared_rank_max != shared_rank_max
         @info("Clamping shared_rank_max", requested=shared_rank_max, effective=effective_shared_rank_max, max_possible=max_possible_shared_rank)
     end
 
 
-    if use_joint_basis
+    if basis_layout === :per_readout
+        q, basis = per_readout_basis(
+            times_host, fieldmap_host, bf_err_host, kspha_err_host;
+            arrayType, gpus, L_rank, rsvd_seed, rsvd_chunk, rsvd_oversample,
+            rsvd_finalize, rsvd_backend, use_distributed_rsvd, verbose,
+            host_storage=per_readout_storage === :cpu,
+            gather_mode=per_readout_gather,
+            regenerate=per_readout_storage === :regenerate,
+            host_cache_bytes=per_readout_host_cache_bytes,
+        )
+        shared_rank = L_rank
+        shared_errors = T[]
+    elseif use_joint_basis
         q, basis, joint_report = joint_spatial_basis(
             times_host, fieldmap_host, bf_err_host, kspha_err_host;
             arrayType, rank_max=effective_shared_rank_max, tol=shared_basis_tol,
@@ -694,8 +772,13 @@ function HighOrderLowRankOp(
     csm = arrayType(csm_host)
     mask_idx = arrayType(mask_idx_host)
     
-    if verbose @info("Shared spatial basis complete", rank=shared_rank, max_error=maximum(shared_errors), mean_error=sum(shared_errors) / length(shared_errors)) end
-    if verbose @info("Global temporal basis ready", shared_rank=shared_rank, nPoint=nSam * nDyn, size=size(q)) end
+    if verbose && basis_layout === :shared
+        @info("Shared spatial basis complete", rank=shared_rank, max_error=maximum(shared_errors), mean_error=sum(shared_errors) / length(shared_errors))
+        @info("Global temporal basis ready", shared_rank=shared_rank, nPoint=nSam * nDyn, size=size(q))
+    elseif verbose
+        @info("Per-readout factors ready", rank_per_readout=L_rank, readouts=nDyn, temporal_size=size(q), spatial_size=size(basis), per_readout_storage, per_readout_cache_size, spatial_bytes=sizeof(basis))
+        basis isa RegeneratedSpatialBasis && @info("Regenerated factor storage", stats=regenerated_basis_stats(basis))
+    end
 
 
     # AbstractNFFTs evaluates the forward transform with a negative Fourier
@@ -704,9 +787,21 @@ function HighOrderLowRankOp(
     # and normalized independently by each voxel spacing.
     nfft_traj = -Array{T,3}(kspha[nfft_term_range, :, :]) .* reshape(voxel_spacing, :, 1, 1)
     nfft_nodes = reshape(nfft_traj, length(nfft_term_range), nSam * nDyn) # dyn1 [all samples]、dyn2 [all samples] ……
-    nfftplan = plan_nfft(arrayType, nfft_nodes, MatrixSize; m=3, σ=1.25)
+    readout_cache = nothing
+    if basis_layout === :per_readout && per_readout_storage in (:cpu, :regenerate)
+        nfftplan = plan_nfft(arrayType, nfft_traj[:, :, 1], MatrixSize; m=3, σ=1.25)
+        readout_plans = typeof(nfftplan)[]
+        readout_cache = PerReadoutCache(basis, nfft_traj, MatrixSize;
+            capacity=per_readout_cache_size, first_plan=nfftplan)
+    elseif basis_layout === :per_readout
+        readout_plans = [plan_nfft(arrayType, nfft_traj[:, :, dyn], MatrixSize; m=3, σ=1.25) for dyn in 1:nDyn]
+        nfftplan = first(readout_plans)
+    else
+        nfftplan = plan_nfft(arrayType, nfft_nodes, MatrixSize; m=3, σ=1.25)
+        readout_plans = typeof(nfftplan)[]
+    end
     @assert eltype(nfftplan) == Complex{T} "NFFT plan precision must match the operator precision"
-    if verbose @info("Global NFFT plan ready", trajectory_eltype=eltype(nfft_nodes), plan_eltype=eltype(nfftplan), nPoint=nSam * nDyn, nfft_per_forward=shared_rank * nCha, previous_nfft_per_forward=nDyn * L_rank * nCha) end
+    if verbose @info("NFFT plans ready", basis_layout, trajectory_eltype=eltype(nfft_nodes), plan_eltype=eltype(nfftplan), nPoint=nSam * nDyn, nfft_per_forward=(basis_layout === :shared ? shared_rank : nDyn * L_rank) * nCha) end
 
     q_scale = inv(sqrt(T(nVox)))
     # `kspha` has already been processed by `prep_kspha`. Therefore a leading
@@ -729,11 +824,12 @@ function HighOrderLowRankOp(
     end
 
     nGrid = prod(grid.matrixSize)
+    workspace_samples = basis_layout === :per_readout ? nSam : nSam * nDyn
     workspace = HighOrderLowRankWorkspace(
         fill!(similar(q, Complex{T}, nGrid), 0),
         similar(q, Complex{T}, nGrid),
-        similar(q, Complex{T}, nSam * nDyn),
-        similar(q, Complex{T}, nSam * nDyn),
+        similar(q, Complex{T}, workspace_samples),
+        similar(q, Complex{T}, workspace_samples),
         similar(q, Complex{T}, nVox),
         similar(q, Complex{T}, nVox),
         similar(q, Complex{T}, nVox),
@@ -743,8 +839,8 @@ function HighOrderLowRankOp(
     Mv = Mtu = arrayType(Vector{Complex{T}}(undef, 0))  
     return HighOrderLowRankOp{T, Nothing, typeof(ctprod!), typeof(nfftplan), typeof(q), typeof(basis), typeof(csm), typeof(workspace), typeof(Mv)}(
         nSam, nVox, nCha, nDyn, L_rank,
-        q, basis, csm,
-        nfftplan, nfft_traj, mask_idx, grid.matrixSize, workspace, normal_backend,
+        basis_layout, per_readout_storage, per_readout_cache_size, readout_cache, q, basis, csm,
+        nfftplan, readout_plans, nfft_traj, mask_idx, grid.matrixSize, workspace, normal_backend,
         nRow, nCol, false, false, prod!, nothing, ctprod!,
         0, 0, 0, 
         Mv, Mtu,
@@ -777,7 +873,19 @@ end
 # -------------------------------------------------------------------------
 # Zero-allocation prod! and ctprod!
 # -------------------------------------------------------------------------
+function ensure_per_readout_cache!(op::HighOrderLowRankOp)
+    if op.basis_layout === :per_readout && op.per_readout_storage in (:cpu, :regenerate)
+        if op.readout_cache === nothing || op.readout_cache.released
+            dims = op.grid_size[end] == 1 ? op.grid_size[1:2] : op.grid_size
+            op.readout_cache = PerReadoutCache(op.basis, op.nfft_traj, dims;
+                capacity=op.per_readout_cache_size, first_plan=op.nfftplan)
+        end
+    end
+    return nothing
+end
+
 function prod!(y::AbstractVector{Complex{T}}, op::HighOrderLowRankOp{T}, x::AbstractVector{Complex{T}}) where T
+    ensure_per_readout_cache!(op)
 
     workspace  = op.workspace
     grid_flat  = workspace.grid_flat_prod
@@ -793,31 +901,59 @@ function prod!(y::AbstractVector{Complex{T}}, op::HighOrderLowRankOp{T}, x::Abst
     nfft_dims = op.grid_size[end] == 1 ? op.grid_size[1:2] : op.grid_size
     nfft_img  = reshape(grid_flat, nfft_dims)
     
-    shared_rank = size(op.basis, 2)
+    rank = size(op.q, 2)
     basis = op.basis
 
     threads = 256
     blocks_vox = cld(op.nVox, threads)
 
-    for r = 1:shared_rank
-        @views @. x_weighted = x_masked * conj(basis[:, r])
-        
-        for c = 1:op.nCha
-            if grid_flat isa CuArray
-                @cuda threads=threads blocks=blocks_vox kernel_scatter_csm!(grid_flat, x_weighted, op.csm, c, op.mask_idx, op.nVox)
-            else
-                @views @. grid_flat[op.mask_idx] = x_weighted * op.csm[:, c]
-            end
-            
-            mul!(k_signal, op.nfftplan, nfft_img)
-            @views @. y_global[:, c] += k_signal * op.q[:, r]
+    nBlocks = op.basis_layout === :per_readout ? op.nDyn : 1
+    cache = op.readout_cache
+    cache === nothing || prime_readout_cache!(cache)
+    try
+    for dyn in 1:nBlocks
+        rows = op.basis_layout === :per_readout ? (((dyn - 1) * op.nSam + 1):(dyn * op.nSam)) : (1:nPoint)
+        if cache === nothing
+            plan = op.basis_layout === :per_readout ? op.readout_plans[dyn] : op.nfftplan
+        else
+            slot = acquire_readout!(cache, dyn)
+            plan = first(cache.plans)
+            basis = cache.basis[slot]
         end
+        for r = 1:rank
+            column = op.basis_layout === :per_readout && cache === nothing ? (dyn - 1) * op.L + r : r
+            @views @. x_weighted = x_masked * conj(basis[:, column])
+            for c = 1:op.nCha
+                if grid_flat isa CuArray
+                    @cuda threads=threads blocks=blocks_vox kernel_scatter_csm!(grid_flat, x_weighted, op.csm, c, op.mask_idx, op.nVox)
+                else
+                    @views @. grid_flat[op.mask_idx] = x_weighted * op.csm[:, c]
+                end
+                mul!(k_signal, plan, nfft_img)
+                @views @. y_global[rows, c] += k_signal * op.q[rows, r]
+            end
+        end
+        cache === nothing || finish_readout!(cache, dyn)
+    end
+    finally
+        cache === nothing || drain_readout_copies!(cache)
     end
 
     return y
 end
 
 function ctprod!(x::AbstractVector{Complex{T}}, op::HighOrderLowRankOp{T}, y::AbstractVector{Complex{T}}) where T
+    ensure_per_readout_cache!(op)
+
+    # A solver normally builds the multi-GPU normal backend before its initial
+    # adjoint. Reuse those channel workers for the large streamed RHS as well.
+    # Standalone adjoints retain their existing single-device execution path.
+    cached = op.normal_backend.operator
+    if op.basis_layout === :per_readout && op.per_readout_storage in (:cpu, :regenerate) &&
+       cached isa MultiGPUHighOrderNormalOp && !cached.state.released &&
+       x isa CuArray && y isa CuArray && length(x) == prod(op.grid_size)
+        return multi_gpu_highorder_adjoint!(x, cached.state, y, op.csm)
+    end
 
     nPoint = op.nSam * op.nDyn
     y_global = reshape(y, nPoint, op.nCha)
@@ -833,27 +969,43 @@ function ctprod!(x::AbstractVector{Complex{T}}, op::HighOrderLowRankOp{T}, y::Ab
     nfft_dims = op.grid_size[end] == 1 ? op.grid_size[1:2] : op.grid_size
     nfft_img  = reshape(grid_flat, nfft_dims)
 
-    shared_rank = size(op.basis, 2)
+    rank = size(op.q, 2)
     basis = op.basis
 
     threads = 256
     blocks_vox = cld(op.nVox, threads)
 
-    for r = 1:shared_rank
-        fill!(x_l, zero(Complex{T}))
-            
-        for c = 1:op.nCha
-            @views @. k_weighted = y_global[:, c] * conj(op.q[:, r])
-            mul!(nfft_img, adjoint(op.nfftplan), k_weighted)
-            
-            if grid_flat isa CuArray
-                @cuda threads=threads blocks=blocks_vox kernel_gather_csm!(x_l, grid_flat, op.csm, c, op.mask_idx, op.nVox)
-            else
-                @views @. x_l += grid_flat[op.mask_idx] * conj(op.csm[:, c])
-            end
+    nBlocks = op.basis_layout === :per_readout ? op.nDyn : 1
+    cache = op.readout_cache
+    cache === nothing || prime_readout_cache!(cache)
+    try
+    for dyn in 1:nBlocks
+        rows = op.basis_layout === :per_readout ? (((dyn - 1) * op.nSam + 1):(dyn * op.nSam)) : (1:nPoint)
+        if cache === nothing
+            plan = op.basis_layout === :per_readout ? op.readout_plans[dyn] : op.nfftplan
+        else
+            slot = acquire_readout!(cache, dyn)
+            plan = first(cache.plans)
+            basis = cache.basis[slot]
         end
-        @views @. x_masked += x_l * basis[:, r]
-        
+        for r = 1:rank
+            column = op.basis_layout === :per_readout && cache === nothing ? (dyn - 1) * op.L + r : r
+            fill!(x_l, zero(Complex{T}))
+            for c = 1:op.nCha
+                @views @. k_weighted = y_global[rows, c] * conj(op.q[rows, r])
+                mul!(nfft_img, adjoint(plan), k_weighted)
+                if grid_flat isa CuArray
+                    @cuda threads=threads blocks=blocks_vox kernel_gather_csm!(x_l, grid_flat, op.csm, c, op.mask_idx, op.nVox)
+                else
+                    @views @. x_l += grid_flat[op.mask_idx] * conj(op.csm[:, c])
+                end
+            end
+            @views @. x_masked += x_l * basis[:, column]
+        end
+        cache === nothing || finish_readout!(cache, dyn)
+    end
+    finally
+        cache === nothing || drain_readout_copies!(cache)
     end
     
     if length(x) == prod(op.grid_size)

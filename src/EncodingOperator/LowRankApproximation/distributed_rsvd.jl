@@ -396,7 +396,10 @@ end
 function finalize_distributed_rsvd_gram!(
     workspace :: DistributedRSVDWorkspace{T},
     Q         :: Matrix{Complex{T}},
-    gram      :: Matrix{Complex{T}},
+    gram      :: Matrix{Complex{T}};
+    v_read_finished = nothing,
+    materialize::Bool = true,
+    factorization_ref = nothing,
 ) where {T<:AbstractFloat}
 
     eig = eigen(Hermitian(gram))
@@ -424,13 +427,22 @@ function finalize_distributed_rsvd_gram!(
     # U = QZ
     u_trunc = Q * Z_cpu
 
+    factorization_ref === nothing || (factorization_ref[] = (; Q, Z=Z_cpu))
+
     completed = Vector{Nothing}(undef, length(workspace.shards))
 
-    run_on_workers!(completed, workspace.workers) do i
+    if materialize
+      run_on_workers!(completed, workspace.workers) do i
         shard = workspace.shards[i]
         copyto!(shard.Z, Z_cpu)
+        # Earlier phases of the next readout can run during the previous
+        # factor download. Only the overwrite of v_scaled must wait for it.
+        if v_read_finished !== nothing && v_read_finished[i] !== nothing
+            CUDA.wait(v_read_finished[i], CUDA.stream())
+        end
         CUDA.@sync mul!(shard.v_scaled, shard.B_adj, shard.Z)
         nothing
+      end
     end
 
     total_energy = T(sum(@view values[1:workspace.L_rank]))
@@ -446,6 +458,9 @@ function perform_rsvd_multi_gpu!(
     seed      :: Int = 0,
     omega             = nothing,
     timing    :: Union{Nothing, DistributedRSVDTiming} = nothing,
+    v_read_finished = nothing,
+    materialize::Bool = true,
+    factorization_ref = nothing,
 ) where {T<:AbstractFloat}
 
     t0 = time_ns()
@@ -465,7 +480,8 @@ function perform_rsvd_multi_gpu!(
     adjoint_gram_time = (time_ns() - t0) * 1e-9
 
     t0 = time_ns()
-    result = finalize_distributed_rsvd_gram!(workspace, Q, gram)
+    result = finalize_distributed_rsvd_gram!(workspace, Q, gram;
+        v_read_finished, materialize, factorization_ref)
     finalize_time = (time_ns() - t0) * 1e-9
 
     if timing !== nothing
@@ -498,4 +514,43 @@ function gather_distributed_v_scaled(
     end
 
     return v_scaled
+end
+
+
+function distributed_rsvd_host_buffers(workspace::DistributedRSVDWorkspace{T}) where {T}
+    parts = Vector{Matrix{Complex{T}}}(undef, length(workspace.shards))
+    run_on_workers!(parts, workspace.workers; phase=:spatial_factor_host_buffers) do i
+        part = Matrix{Complex{T}}(undef, size(workspace.shards[i].v_scaled))
+        CUDA.pin(part)
+        part
+    end
+    return parts
+end
+
+
+function gather_distributed_v_scaled!(
+    destination::AbstractMatrix{Complex{T}},
+    workspace::DistributedRSVDWorkspace{T},
+    host_parts::Vector{Matrix{Complex{T}}},
+) where {T<:AbstractFloat}
+    size(destination) == (workspace.nVox, workspace.L_rank) ||
+        throw(DimensionMismatch("destination must have size (nVox, L_rank)"))
+    length(host_parts) == length(workspace.shards) ||
+        throw(DimensionMismatch("one host buffer is required per rSVD shard"))
+    for (part, shard) in zip(host_parts, workspace.shards)
+        size(part) == size(shard.v_scaled) ||
+            throw(DimensionMismatch("host buffer does not match its spatial-factor shard"))
+    end
+
+    # Workers write disjoint voxel ranges directly into the final readout block.
+    # Reuse their pinned buffers instead of allocating, zeroing and copying a
+    # complete nVox-by-L_rank temporary for every readout.
+    run_on_workers!(host_parts, workspace.workers; phase=:spatial_factor_gather) do i
+        shard = workspace.shards[i]
+        part = host_parts[i]
+        copyto!(part, shard.v_scaled)
+        @views destination[shard.voxels, :] .= part
+        part
+    end
+    return nothing
 end
