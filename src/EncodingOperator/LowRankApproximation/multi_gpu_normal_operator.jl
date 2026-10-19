@@ -315,6 +315,39 @@ function local_highorder_per_readout_normal!(shard::MultiGPUHighOrderNormalShard
 end
 
 
+function local_highorder_shared_adjoint!(
+    shard::MultiGPUHighOrderNormalShard{T},
+    data::CuMatrix{Complex{T}},
+) where {T}
+    shard.released && error("Multi-GPU adjoint shard was released")
+    plan = shard.nfftplan
+    plan === nothing && error("NFFT plan on GPU $(shard.gpu_id) was released")
+    workspace = shard.workspace
+    fill!(workspace.x_output, zero(Complex{T}))
+    dims = shard.grid_size[end] == 1 ? shard.grid_size[1:2] : shard.grid_size
+    backward = reshape(workspace.grid_adjoint, dims)
+    nVox = length(workspace.x_output)
+    threads, blocks = 256, cld(nVox, 256)
+
+    # Match the parent adjoint's rank-then-coil accumulation within each shard.
+    # x_input is scratch here; every normal application overwrites it.
+    x_l = workspace.x_input
+    for r in axes(shard.basis, 2)
+        fill!(x_l, zero(Complex{T}))
+        for c in axes(data, 2)
+            @views @. workspace.k_weighted = data[:, c] * conj(shard.q[:, r])
+            mul!(backward, adjoint(plan), workspace.k_weighted)
+            @cuda threads=threads blocks=blocks kernel_gather_csm!(
+                x_l, workspace.grid_adjoint, shard.csm, c, shard.mask_idx, nVox)
+        end
+        @views @. workspace.x_output += x_l * shard.basis[:, r]
+    end
+    # data is the adjoint input, already weighted by the caller when required;
+    # applying the normal backend's weights2 here would change A^H.
+    return workspace.x_output
+end
+
+
 function local_highorder_streamed_adjoint!(
     shard::MultiGPUHighOrderNormalShard{T},
     data::CuMatrix{Complex{T}},
@@ -372,7 +405,11 @@ function multi_gpu_highorder_adjoint!(
     run_on_workers!(completed, state.workers; phase=:adjoint_operator) do i
         shard = state.shards[i]
         local_data = CuArray(@view host_data[:, shard.channels])
-        local_highorder_streamed_adjoint!(shard, local_data)
+        if shard.basis_layout === :shared
+            local_highorder_shared_adjoint!(shard, local_data)
+        else
+            local_highorder_streamed_adjoint!(shard, local_data)
+        end
         # This blocking download also completes every use of local_data.
         copyto!(state.host_outputs[i], shard.workspace.x_output)
         CUDA.unsafe_free!(local_data)
@@ -596,10 +633,11 @@ streamed once across the worker group per normal application in readout mode.
 
 `weights` must contain one value per sample/dynamic point, not one repeated copy
 per channel. The parent `op` can still be passed to the reconstruction solver.
-When its owned normal backend has been initialized, CPU-stored per-readout
-adjoints reuse those workers with readout sharding, streaming each independent
-factor block once across the worker group. The first GPU in `gpus` must be the
-GPU that owns `op` and the solver vectors.
+When its owned normal backend has been initialized, shared-basis adjoints reuse
+the channel workers, while CPU-stored per-readout adjoints reuse the workers
+with readout sharding, streaming each independent factor block once across the
+worker group. The first GPU in `gpus` must be the GPU that owns `op` and the
+solver vectors.
 
 Call [`release_multi_gpu_normal_operator!`](@ref), or `close`, after reconstruction
 to stop the persistent workers and release all per-GPU NFFT plans and workspaces.

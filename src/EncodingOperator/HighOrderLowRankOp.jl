@@ -71,8 +71,8 @@ Configuration and owned state for an optional optimized normal-operator backend.
 The backend is initialized lazily by `normalOperator`, because constructing the
 forward operator alone should not allocate one NFFT plan and workspace per GPU.
 `operator` is kept here so that `HighOrderLowRankOp` owns the multi-GPU resources
-and can release them with `close(op)`. Streamed per-readout adjoints reuse its
-GPU workers once this backend has been initialized.
+and can release them with `close(op)`. Shared and streamed per-readout adjoints
+reuse its GPU workers once this backend has been initialized.
 """
 mutable struct HighOrderNormalBackend
     distribution :: Symbol
@@ -946,13 +946,16 @@ function ctprod!(x::AbstractVector{Complex{T}}, op::HighOrderLowRankOp{T}, y::Ab
     ensure_per_readout_cache!(op)
 
     # A solver normally builds the multi-GPU normal backend before its initial
-    # adjoint. Reuse those channel workers for the large streamed RHS as well.
+    # adjoint. Reuse its workers for shared and streamed per-readout RHSs.
     # Standalone adjoints retain their existing single-device execution path.
     cached = op.normal_backend.operator
-    if op.basis_layout === :per_readout && op.per_readout_storage in (:cpu, :regenerate) &&
-       cached isa MultiGPUHighOrderNormalOp && !cached.state.released &&
+    if cached isa MultiGPUHighOrderNormalOp && !cached.state.released &&
        x isa CuArray && y isa CuArray && length(x) == prod(op.grid_size)
-        return multi_gpu_highorder_adjoint!(x, cached.state, y, op.csm)
+        if op.basis_layout === :shared
+            return multi_gpu_highorder_adjoint!(x, cached.state, y)
+        elseif op.per_readout_storage in (:cpu, :regenerate)
+            return multi_gpu_highorder_adjoint!(x, cached.state, y, op.csm)
+        end
     end
 
     nPoint = op.nSam * op.nDyn

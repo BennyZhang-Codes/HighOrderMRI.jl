@@ -119,6 +119,13 @@ requested. Setup distribution and normal distribution are independent; the
 same operator may use voxel shards during rSVD setup and coil shards during
 iterative reconstruction.
 
+For the shared spatial basis, subsequent adjoint applications also reuse these
+channel workers, including the initial right-hand side in CG. Each worker
+computes its coils' adjoint contribution, and the image contributions are summed
+on the host. This evaluates the adjoint input directly; the normal backend's
+squared weights are not applied again. Standalone adjoints before backend setup
+retain single-GPU execution.
+
 ## Readout-distributed normal operator
 
 For independent per-readout factors, select:
