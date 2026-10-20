@@ -1,4 +1,4 @@
-export HighOrderExplicitGPUOp, explicit_gpu_normal
+export explicit_gpu_normal
 
 mutable struct ExplicitGPUState{T<:AbstractFloat}
     backend::Symbol
@@ -22,6 +22,7 @@ mutable struct ExplicitGPUState{T<:AbstractFloat}
     Z::CuMatrix{Complex{T}}
     Q::CuMatrix{Complex{T}}
     P::CuMatrix{Complex{T}}
+    phase_cache::CuMatrix{Complex{T}}
     phase::CuMatrix{T}
     Y::CuMatrix{Complex{T}}
     released::Bool
@@ -43,9 +44,10 @@ function activate_explicit_gpu!(state::ExplicitGPUState)
 end
 
 """
-    HighOrderExplicitGPUOp(grid, kspha, times; backend=:blocked, kwargs...)
+    ExplicitGPUOp(grid, kspha, times; backend=:blocked, kwargs...)
 
-Single-GPU explicit encoding with GPU solver storage and persistent workspaces.
+Internal single-GPU implementation of `HighOrderKernelOp` resident backends.
+Use the public `HighOrderKernelOp(...; gpus=[id], backend=...)` constructor.
 `backend=:direct` reuses the existing CUDA encoding kernels, `:blocked` builds
 one complex phase block and reuses it for both products of the weighted normal,
 and `:cached` retains the complete complex phase matrix on the GPU while
@@ -62,7 +64,7 @@ dispatch and is retained for comparisons with the generic GPU matrix path.
 The blocked/cached kernels do not
 enable fast math; the reused legacy direct kernels retain their `@fastmath`.
 The object owns mutable scratch space and is not reentrant. Call `close` after
-the last use. Existing explicit operators and their defaults are unchanged.
+the last use.
 Model arrays are prepared on the host during construction. Pass GPU data and
 weights to `recon_HOOp` so that CG vectors remain on the GPU. Input and output
 vectors must belong to the GPU selected during construction. Applications and
@@ -80,7 +82,13 @@ vectors must belong to the GPU selected during construction. Applications and
   inputs and order-selection convention as [`HighOrderKernelOp`](@ref).
 - `backend`: `:direct`, `:blocked` (default), `:cached`, or `:cached_full`.
 - `gpus=nothing`: use the current GPU, or pass one visible CUDA ID such as
-  `gpus=[2]`. Use [`HighOrderExplicitMultiGPUOp`](@ref) for multiple IDs.
+  `gpus=[2]`. The public constructor selects the internal multi-GPU type for multiple IDs.
+- `phase_cache_bytes=0`: optional byte limit for a prefix of complex phase
+  blocks with `backend=:blocked`. The cache is generated during construction
+  and reused by forward, adjoint, and normal applications. The limit counts
+  cached `Complex{T}` entries only, rounds down to complete sample blocks,
+  and applies separately to each GPU. Model, scratch, solver, and library
+  storage require additional memory. Zero preserves full recomputation.
 - `block_size=320`: sample rows per block, including cache construction;
   unlike the legacy `nBlock`, this is a block size, not a number of blocks.
 - `phase_backend=:kernel`: fused phase generation, or `:gemm` for real GEMM.
@@ -88,7 +96,7 @@ vectors must belong to the GPU selected during construction. Applications and
 - `forward_threads=256`, `adjoint_threads=512`: direct-kernel thread counts.
   The Float64 adjoint is capped at 128 threads to fit the register budget.
 """
-mutable struct HighOrderExplicitGPUOp{T,F,G} <: HOOp{Complex{T}}
+mutable struct ExplicitGPUOp{T,F,G} <: HOOp{Complex{T}}
     nrow::Int
     ncol::Int
     symmetric::Bool
@@ -104,7 +112,7 @@ mutable struct HighOrderExplicitGPUOp{T,F,G} <: HOOp{Complex{T}}
     state::ExplicitGPUState{T}
 end
 
-LinearOperators.storage_type(op::HighOrderExplicitGPUOp) = typeof(op.Mv)
+LinearOperators.storage_type(op::ExplicitGPUOp) = typeof(op.Mv)
 
 function explicit_phase_kernel!(P, phase, bf, coefficients, times, fieldmap,
                                 first_sample, rows, use_phase::Bool)
@@ -129,6 +137,9 @@ function explicit_phase_kernel!(P, phase, bf, coefficients, times, fieldmap,
 end
 
 function explicit_phase_block!(state::ExplicitGPUState, rows::UnitRange{Int})
+    if last(rows) <= size(state.phase_cache, 1)
+        return @view state.phase_cache[rows, :]
+    end
     n = length(rows)
     P = @view state.P[1:n, :]
     use_phase = state.phase_backend === :gemm
@@ -285,21 +296,24 @@ function explicit_gpu_normal!(out, state::ExplicitGPUState{T}, D, x) where {T}
     return explicit_scatter!(out, state)
 end
 
-function HighOrderExplicitGPUOp(grid::Grid{T}, kspha::AbstractMatrix{T}, times::AbstractVector{T};
+function ExplicitGPUOp(grid::Grid{T}, kspha::AbstractMatrix{T}, times::AbstractVector{T};
     fieldmap=zeros(T, grid.matrixSize...), csm=ones(Complex{T}, grid.matrixSize..., 1),
     mask=trues(grid.matrixSize...), recon_terms=nothing, k_nominal=kspha[2:4, :],
     backend::Symbol=:blocked, block_size::Int=320, phase_backend::Symbol=:kernel,
-    gemm_backend::Symbol=:cublas, gpus=nothing,
+    gemm_backend::Symbol=:cublas, gpus=nothing, phase_cache_bytes::Integer=0,
     forward_threads::Int=256, adjoint_threads::Int=512,
 ) where {T<:AbstractFloat}
     if gpus !== nothing
         ids = Int.(collect(gpus))
         length(ids) == 1 || throw(ArgumentError(
-            "HighOrderExplicitGPUOp requires one GPU; use HighOrderExplicitMultiGPUOp for multiple GPUs"))
+            "ExplicitGPUOp requires one GPU; use ExplicitMultiGPUOp for multiple GPUs"))
         0 <= only(ids) < length(collect(CUDA.devices())) || throw(ArgumentError("invalid visible GPU ID"))
         CUDA.device!(only(ids))
     end
     backend in (:direct, :blocked, :cached, :cached_full) || throw(ArgumentError("unknown explicit backend $backend"))
+    phase_cache_bytes >= 0 || throw(ArgumentError("phase_cache_bytes must be nonnegative"))
+    phase_cache_bytes == 0 || backend === :blocked || throw(ArgumentError(
+        "phase_cache_bytes applies to backend=:blocked; cached backends already retain the complete phase matrix"))
     phase_backend in (:kernel, :gemm) || throw(ArgumentError("unknown phase backend $phase_backend"))
     gemm_backend in (:cublas, :auto) || throw(ArgumentError("gemm_backend must be :cublas or :auto"))
     block_size > 0 || throw(ArgumentError("block_size must be positive"))
@@ -317,22 +331,26 @@ function HighOrderExplicitGPUOp(grid::Grid{T}, kspha::AbstractMatrix{T}, times::
     nVox > 0 || throw(ArgumentError("mask must contain voxels"))
     nSam > 0 && nCha > 0 || throw(ArgumentError("samples and coils must be positive"))
     B = min(block_size, nSam)
+    # Cache complete sample blocks only. The limit applies to complex P bytes,
+    # with all remaining model, scratch, and solver storage checked separately.
+    cache_rows = min(nSam, B*(phase_cache_bytes ÷ (sizeof(Complex{T})*nVox*B)))
     # The reused adjoint keeps 32 complex coil accumulators per thread. Its
     # Float64 specialization exceeds the register budget at 512 threads.
     effective_adjoint_threads = T === Float64 ? min(adjoint_threads, 128) : adjoint_threads
-    if backend in (:cached, :cached_full)
+    if backend in (:cached, :cached_full) || cache_rows > 0
         # Include the complete complex P, CSM/Z/Q, image buffers, application
         # workspace, real phase block, model arrays, and an allowance for CG.
         # The remaining 20% is reserved for libraries and allocator overhead.
         workspace_rows = backend === :cached_full ? nSam : B
-        complex_elements = nSam*nVox + 3*nVox*nCha + 2*nVox + workspace_rows*nCha
+        phase_elements = backend in (:cached, :cached_full) ? nSam*nVox : (B+cache_rows)*nVox
+        complex_elements = phase_elements + 3*nVox*nCha + 2*nVox + workspace_rows*nCha
         real_elements = nTerm*(nVox+nSam) + nSam + nVox
         phase_backend === :gemm && (real_elements += B*nVox)
         solver_elements = 8*length(mask) + 3*nSam*nCha
         estimate = sizeof(Complex{T})*(complex_elements+solver_elements) +
             sizeof(T)*real_elements + sizeof(Int32)*nVox
         estimate < 0.8 * CUDA.free_memory() || throw(ArgumentError(
-            "full complex P plus workspaces needs at least $estimate bytes; insufficient GPU memory"))
+            "estimated complex phase storage plus workspaces needs $estimate bytes; insufficient GPU memory"))
     end
     prepared = prep_kspha(kspha, k_nominal, nTerm; recon_terms)
     bf = basisfunc_spha(grid.x[indices], grid.y[indices], grid.z[indices], collect(1:nTerm))
@@ -347,34 +365,37 @@ function HighOrderExplicitGPUOp(grid::Grid{T}, kspha::AbstractMatrix{T}, times::
         CUDA.zeros(Complex{T}, backend===:direct ? (0,0) : (nVox,nCha)),
         CUDA.zeros(Complex{T}, backend===:direct ? (0,0) : (nVox,nCha)),
         CUDA.zeros(Complex{T}, backend===:direct ? (0,0) : (backend in (:cached,:cached_full) ? nSam : B,nVox)),
+        CUDA.zeros(Complex{T}, cache_rows>0 ? (cache_rows,nVox) : (0,0)),
         CUDA.zeros(T, phase_backend===:gemm && backend!==:direct ? (B,nVox) : (0,0)),
         CUDA.zeros(Complex{T}, backend===:direct ? (0,0) : (backend===:cached_full ? nSam : B,nCha)), false)
-    if backend in (:cached, :cached_full)
+    initialize_rows = backend in (:cached, :cached_full) ? nSam : cache_rows
+    if initialize_rows > 0
+        destination = backend in (:cached, :cached_full) ? state.P : state.phase_cache
         # Write each block to its final cache location without a second complex block.
-        for first_sample in 1:B:nSam
-            rows = first_sample:min(first_sample+B-1, nSam)
+        for first_sample in 1:B:initialize_rows
+            rows = first_sample:min(first_sample+B-1, initialize_rows)
             if phase_backend === :gemm
                 explicit_gemm!(state, 'T', 'T', one(T), @view(state.kspha[:, rows]),
                     state.bf, zero(T), @view(state.phase[1:length(rows), :]))
             end
             @cuda threads=256 blocks=cld(length(rows)*nVox,256) explicit_phase_kernel!(
-                @view(state.P[rows, :]), state.phase, state.bf, state.kspha,
+                @view(destination[rows, :]), state.phase, state.bf, state.kspha,
                 state.times, state.fieldmap, first_sample, length(rows), phase_backend===:gemm)
         end
     end
     forward = (out, x) -> explicit_gpu_forward!(out, state, x)
     backward = (out, y) -> explicit_gpu_adjoint!(out, state, y)
-    return HighOrderExplicitGPUOp{T,typeof(forward),typeof(backward)}(
+    return ExplicitGPUOp{T,typeof(forward),typeof(backward)}(
         nSam*nCha, prod(grid.matrixSize), false, false, forward, nothing, backward,
         0, 0, 0, CUDA.zeros(Complex{T},0), CUDA.zeros(Complex{T},0), state)
 end
 
-function Base.adjoint(op::HighOrderExplicitGPUOp{T}) where {T}
+function Base.adjoint(op::ExplicitGPUOp{T}) where {T}
     return LinearOperator{Complex{T}}(op.ncol, op.nrow, false, false,
         op.ctprod!, nothing, op.prod!; S=CuVector{Complex{T}})
 end
 
-function LinearOperatorCollection.normalOperator(op::HighOrderExplicitGPUOp{T}, weights=nothing; kwargs...) where {T}
+function LinearOperatorCollection.normalOperator(op::ExplicitGPUOp{T}, weights=nothing; kwargs...) where {T}
     activate_explicit_gpu!(op.state)
     # normalOperator(W ∘ A) supplies WᴴW, which must never be squared here.
     raw = weights isa LinearOperatorCollection.WeightingOp ? weights.weights : weights
@@ -396,8 +417,8 @@ end
 """
     explicit_gpu_normal(op; weights=nothing)
 
-Create the data normal operator `Aᴴ * D * A` for a single- or multi-GPU
-explicit operator, with `D = abs2.(weights)`. Raw sample weights may have one
+Create the data normal operator `Aᴴ * D * A` for a resident
+`HighOrderKernelOp` (`backend=:direct`, `:blocked`, `:cached`, or `:cached_full`), with `D = abs2.(weights)`. Raw sample weights may have one
 entry per sample or per sample and coil; `nothing` means unit weights.
 
 In contrast, `normalOperator(op, D)` accepts an already squared, real
@@ -405,11 +426,11 @@ nonnegative diagonal. `normalOperator(W ∘ op)` also supplies that squared
 diagonal automatically. Regularization is applied separately by the solver.
 The result shares the operator's mutable workspaces and lifetime.
 """
-function explicit_gpu_normal(op::HighOrderExplicitGPUOp; weights=nothing)
+function explicit_gpu_normal(op::ExplicitGPUOp; weights=nothing)
     return LinearOperatorCollection.normalOperator(op, weights===nothing ? nothing : abs2.(weights))
 end
 
-function Base.close(op::HighOrderExplicitGPUOp)
+function Base.close(op::ExplicitGPUOp)
     state = op.state
     state.released && return nothing
     CUDA.device!(CUDA.device(state.x))
@@ -420,4 +441,8 @@ function Base.close(op::HighOrderExplicitGPUOp)
     end
     state.released = true
     return nothing
+end
+
+function explicit_gpu_normal(op::HighOrderKernelOp{T,F1,F2,S,O}; weights=nothing) where {T,F1,F2,S,O<:HOOp}
+    return LinearOperatorCollection.normalOperator(op, weights === nothing ? nothing : abs2.(weights))
 end

@@ -1,6 +1,5 @@
-export HighOrderExplicitMultiGPUOp
 
-struct ExplicitGPUShard{T,O<:HighOrderExplicitGPUOp{T}}
+struct ExplicitGPUShard{T,O<:ExplicitGPUOp{T}}
     gpu_id::Int
     rows::UnitRange{Int}
     op::O
@@ -32,21 +31,22 @@ mutable struct ExplicitMultiGPUState{T,S<:ExplicitGPUShard{T}}
 end
 
 """
-    HighOrderExplicitMultiGPUOp(grid, kspha, times; gpus, kwargs...)
+    ExplicitMultiGPUOp(grid, kspha, times; gpus, kwargs...)
 
-Explicit encoding split over contiguous sample ranges on the selected devices.
+Internal implementation of `HighOrderKernelOp` with multiple GPUs and a
+resident backend. Explicit encoding is split over contiguous sample ranges.
 The first device owns CG vectors. Each persistent GPU worker retains the full
 masked spatial model and all coils, generates its own phase blocks, and reuses
 each block in both products of the weighted normal. Global `1/sqrt(nVox)`
-normalization is identical to `HighOrderExplicitGPUOp`.
+normalization is identical to `ExplicitGPUOp`.
 
 Communication uses reusable host buffers for image broadcast and reduction;
 phase matrices never leave their owning GPU. This also works without CUDA peer
 access. Forward and adjoint preserve sample-by-coil ordering. Model inputs must
 be host arrays. Device IDs refer to the process's CUDA-visible devices.
 
-`backend`, `phase_backend`, `gemm_backend`, and kernel/block settings are passed
-to `HighOrderExplicitGPUOp`. The operator is not reentrant. Call `close` after
+`backend`, `phase_backend`, `gemm_backend`, `phase_cache_bytes`, and kernel/block settings are passed
+to `ExplicitGPUOp`. The operator is not reentrant. Call `close` after
 all derived normal operators are no longer needed.
 
 All GPUs retain the full spatial model and all coils. Cached backends must fit
@@ -54,8 +54,13 @@ their local sample rows, model, phase-generation workspace, and application
 workspace on each GPU individually. The sum of available GPU memory is not a
 sufficient feasibility check. Set Julia's thread count before startup; one
 thread per worker plus a coordinator is recommended for concurrent submission.
+
+For `backend=:blocked`, `phase_cache_bytes` limits an optional complex phase
+prefix on each GPU independently. Remaining sample blocks are regenerated
+during applications, preserving the full encoding. The default is zero;
+include initialization in one-shot reconstruction timing.
 """
-mutable struct HighOrderExplicitMultiGPUOp{T,F,G,S<:ExplicitMultiGPUState{T}} <: HOOp{Complex{T}}
+mutable struct ExplicitMultiGPUOp{T,F,G,S<:ExplicitMultiGPUState{T}} <: HOOp{Complex{T}}
     nrow::Int
     ncol::Int
     symmetric::Bool
@@ -71,7 +76,7 @@ mutable struct HighOrderExplicitMultiGPUOp{T,F,G,S<:ExplicitMultiGPUState{T}} <:
     state::S
 end
 
-LinearOperators.storage_type(op::HighOrderExplicitMultiGPUOp) = typeof(op.Mv)
+LinearOperators.storage_type(op::ExplicitMultiGPUOp) = typeof(op.Mv)
 
 function explicit_multi_check!(state::ExplicitMultiGPUState, out, input)
     state.released && throw(ArgumentError("operator is closed"))
@@ -138,7 +143,7 @@ function explicit_multi_normal!(out, state::ExplicitMultiGPUState, normals, inpu
     return explicit_multi_reduce!(out, state)
 end
 
-function HighOrderExplicitMultiGPUOp(grid::Grid{T}, kspha::AbstractMatrix{T}, times::AbstractVector{T};
+function ExplicitMultiGPUOp(grid::Grid{T}, kspha::AbstractMatrix{T}, times::AbstractVector{T};
     gpus, fieldmap=zeros(T, grid.matrixSize...), csm=ones(Complex{T}, grid.matrixSize..., 1),
     mask=trues(grid.matrixSize...), k_nominal=kspha[2:4, :], kwargs...,
 ) where {T<:AbstractFloat}
@@ -162,7 +167,7 @@ function HighOrderExplicitMultiGPUOp(grid::Grid{T}, kspha::AbstractMatrix{T}, ti
         warn_if_insufficient_gpu_worker_threads(length(ids); operation=:explicit_encoding)
         run_on_workers!(shards, workers; phase=:explicit_setup) do i
             rows = ranges[i]
-            op = HighOrderExplicitGPUOp(grid, kspha[:, rows], times[rows];
+            op = ExplicitGPUOp(grid, kspha[:, rows], times[rows];
                 fieldmap, csm, mask, k_nominal=k_nominal[:, rows], kwargs...)
             try
                 return ExplicitGPUShard(ids[i], rows, op,
@@ -194,17 +199,17 @@ function HighOrderExplicitMultiGPUOp(grid::Grid{T}, kspha::AbstractMatrix{T}, ti
     CUDA.device!(first(ids))
     forward = (out, input) -> explicit_multi_forward!(out, state, input)
     backward = (out, input) -> explicit_multi_adjoint!(out, state, input)
-    return HighOrderExplicitMultiGPUOp{T,typeof(forward),typeof(backward),typeof(state)}(
+    return ExplicitMultiGPUOp{T,typeof(forward),typeof(backward),typeof(state)}(
         nSam*nCha, nGrid, false, false, forward, nothing, backward, 0, 0, 0,
         CUDA.zeros(Complex{T}, 0), CUDA.zeros(Complex{T}, 0), state)
 end
 
-function Base.adjoint(op::HighOrderExplicitMultiGPUOp{T}) where {T}
+function Base.adjoint(op::ExplicitMultiGPUOp{T}) where {T}
     return LinearOperator{Complex{T}}(op.ncol, op.nrow, false, false,
         op.ctprod!, nothing, op.prod!; S=CuVector{Complex{T}})
 end
 
-function LinearOperatorCollection.normalOperator(op::HighOrderExplicitMultiGPUOp{T}, weights=nothing; kwargs...) where {T}
+function LinearOperatorCollection.normalOperator(op::ExplicitMultiGPUOp{T}, weights=nothing; kwargs...) where {T}
     state = op.state
     state.released && throw(ArgumentError("operator is closed"))
     raw = weights isa LinearOperatorCollection.WeightingOp ? weights.weights : weights
@@ -229,11 +234,11 @@ function LinearOperatorCollection.normalOperator(op::HighOrderExplicitMultiGPUOp
         normal, nothing, normal; S=CuVector{Complex{T}})
 end
 
-function explicit_gpu_normal(op::HighOrderExplicitMultiGPUOp; weights=nothing)
+function explicit_gpu_normal(op::ExplicitMultiGPUOp; weights=nothing)
     return LinearOperatorCollection.normalOperator(op, weights===nothing ? nothing : abs2.(weights))
 end
 
-function Base.close(op::HighOrderExplicitMultiGPUOp)
+function Base.close(op::ExplicitMultiGPUOp)
     state = op.state
     state.released && return nothing
     try

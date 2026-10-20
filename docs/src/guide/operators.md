@@ -11,17 +11,18 @@ size, required reference accuracy, and available hardware.
 | Target model | Explicit | Explicit | Approximation of residual phase |
 | Dynamics per object | One | One | One or many |
 | CPU | Yes | No | Yes |
-| CUDA | Array operations | Fused kernels | NFFT + fused/chunked rSVD |
-| Multi-GPU | No | Voxel-sharded explicit evaluation | Optional voxel-sharded setup and channel-sharded normal operator |
+| CUDA | Array operations | Direct kernels or cuBLAS | NFFT + fused/chunked rSVD |
+| Multi-GPU | No | Voxel shards (legacy) or sample shards (resident) | Optional voxel-sharded setup and channel-sharded normal operator |
 | Main cost | Sample–voxel phase matrix blocks | Repeated sample–voxel phase evaluation | Setup plus ``R N_c`` NFFTs per forward/adjoint |
 | Recommended role | Debugging and small CPU/GPU work | Explicit numerical reference | Large iterative reconstruction |
 
-For iterative explicit reconstruction, [`HighOrderExplicitGPUOp`](@ref) and
-[`HighOrderExplicitMultiGPUOp`](@ref) also provide persistent GPU workspaces
-and GPU solver storage. They support direct kernels, cuBLAS sample blocks,
-and complete complex-phase caching. Select a backend from measurements at
-the actual voxel, sample, and coil counts; the low-rank path's speed advantage
-depends on the problem and the explicit reference used.
+For iterative explicit reconstruction, `HighOrderKernelOp` also provides
+resident GPU workspaces and solver storage with `backend=:direct`, `:blocked`,
+`:cached`, or `:cached_full`. Use `gpus=[id]` for one GPU or `gpus=[id1,id2]`
+for several GPUs; the implementation is selected automatically. The default
+`backend=:legacy` preserves the original kernels and CPU solver storage.
+Select a backend from measurements at the actual voxel, sample, and coil
+counts; the low-rank path's speed advantage depends on the explicit reference.
 
 ## Shared inputs
 
@@ -133,7 +134,7 @@ reference_op = HighOrderKernelOp(
 )
 ```
 
-Masked voxels are split into approximately equal contiguous ranges. Every GPU
+With the default `backend=:legacy`, masked voxels are split into approximately equal contiguous ranges. Every GPU
 produces a partial forward signal, which is summed on the host; the adjoint
 collects the disjoint voxel shards. This changes data placement, not the
 mathematical model.
@@ -146,8 +147,8 @@ The current `kspha_dt` forward path of `HighOrderKernelOp` falls back to the
 array-based CPU derivative implementation. Its adjoint retains the ordinary
 kernel encoding action described above. Use
 `HighOrderOp(...; arrayType=CuArray, kspha_dt=...)` when the derivative forward
-product must run on CUDA. The fused kernel path currently accelerates only the
-ordinary explicit encoding.
+product must run on CUDA. Resident backends require ordinary encoding: `kspha_dt`
+currently requires `backend=:legacy`.
 
 ## GPU-resident explicit reconstruction
 
@@ -157,7 +158,7 @@ solver vectors on the GPU selected during construction:
 ```julia
 using CUDA
 
-op = HighOrderExplicitGPUOp(grid, kspha, times;
+op = HighOrderKernelOp(grid, kspha, times;
     fieldmap, csm, mask,
     gpus=[0],
     backend=:blocked,
@@ -174,10 +175,10 @@ end
 ```
 
 Use model and data precision consistently (`Float32`/`ComplexF32` above).
-`gpus=[id]` selects one CUDA device; omitting it uses the current device.
+`gpus=[id]` selects one CUDA device; the default is `gpus=[0]`.
 IDs are zero-based and relative to `CUDA_VISIBLE_DEVICES` when that variable
-filters the device list. Use `HighOrderExplicitMultiGPUOp(...; gpus=[...])`
-to select multiple GPUs; its first ID owns solver vectors.
+filters the device list. Pass multiple IDs to the same constructor to select multi-GPU execution;
+its first ID owns solver vectors. The resident implementation types are internal.
 `block_size` counts sample rows, whereas the older `nBlock` keyword counts
 blocks. The operator's specialized `normalOperator` generates each complex
 phase block once and reuses it for all coils and both matrix products.
@@ -189,6 +190,15 @@ is blocked in both modes. Include ``8N_tN_v`` bytes for ComplexF32 ``P`` plus
 the real phase block, model, coil buffers, solver, and library workspace when
 checking feasibility. Cached setup belongs in one-shot reconstruction timing.
 
+When the full matrix cannot fit, `backend=:blocked` also accepts
+`phase_cache_bytes`, for example `phase_cache_bytes=8 * 2^30`. It retains a
+prefix of complete complex phase blocks up to that byte limit and regenerates
+the remaining blocks. The default is zero. This changes storage and repeated
+work without truncating samples or approximating the encoding. The cache
+limit excludes the model, scratch, solver, and library storage; initialization
+still belongs in total time. Partial caching is distinct from retaining the
+complete matrix with `:cached` or `:cached_full`.
+
 [`explicit_gpu_normal`](@ref) accepts raw weights and squares them once.
 `normalOperator(op, D)` expects the already squared diagonal ``D=W^H W``;
 `normalOperator(W ∘ op)` supplies it automatically. Regularization remains in
@@ -196,7 +206,7 @@ the solver. Operators and their derived normals share mutable workspaces
 and must be used sequentially; close the operator after the final use.
 
 For sample-distributed execution on several GPUs, use
-[`HighOrderExplicitMultiGPUOp`](@ref) as described in
+[`HighOrderKernelOp`](@ref) as described in
 [Multi-GPU execution](multi-gpu.md#GPU-resident-sample-distributed-explicit-operator).
 
 ## Low-rank operator

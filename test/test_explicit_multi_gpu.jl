@@ -26,7 +26,7 @@ const EXPLICIT_MULTI_GPU_TEST_RESULTS = NamedTuple[]
             expected = A'*(D.*(A*x))
             tolerance = T === Float32 ? 3e-5 : 2e-12
             for (backend, phase_backend) in ((:direct, :kernel), (:blocked, :kernel), (:blocked, :gemm), (:cached, :gemm), (:cached_full, :gemm))
-                op = HighOrderExplicitMultiGPUOp(grid, kspha, times; gpus=ids,
+                op = HighOrderKernelOp(grid, kspha, times; gpus=ids,
                     fieldmap, csm, mask, backend, phase_backend, block_size=4)
                 xgpu = CuArray(x); ygpu = CuArray(y)
                 forward = Array(op*xgpu)
@@ -58,14 +58,14 @@ const EXPLICIT_MULTI_GPU_TEST_RESULTS = NamedTuple[]
         end
         grid = Grid(2,2,1,0.01f0,0.01f0,0.01f0)
         K = zeros(Float32,9,3); times=zeros(Float32,3)
-        @test_throws ArgumentError HighOrderExplicitMultiGPUOp(grid,K,times;gpus=Int[])
-        @test_throws ArgumentError HighOrderExplicitMultiGPUOp(grid,K,times;gpus=[0,0])
-        @test_throws ArgumentError HighOrderExplicitMultiGPUOp(grid,K,times;gpus=[999])
+        @test_throws ArgumentError HighOrderKernelOp(grid,K,times;gpus=Int[])
+        @test_throws ArgumentError HighOrderKernelOp(grid,K,times;gpus=[0,0])
+        @test_throws ArgumentError HighOrderKernelOp(grid,K,times;gpus=[999])
 
         # A caller can select another device between construction, normal
         # setup, application and close. The workspace still belongs to GPU 0.
         CUDA.device!(last(ids))
-        op = HighOrderExplicitGPUOp(grid, K, times; gpus=[first(ids)], block_size=2)
+        op = HighOrderKernelOp(grid, K, times; gpus=[first(ids)], backend=:blocked, block_size=2)
         @test CUDA.deviceid(CUDA.device()) == first(ids)
         xgpu = CUDA.ones(ComplexF32, 4)
         output = similar(xgpu)
@@ -81,9 +81,9 @@ const EXPLICIT_MULTI_GPU_TEST_RESULTS = NamedTuple[]
 
         # Constructor failures must drain jobs and stop their workers, allowing
         # the next construction to proceed normally.
-        @test_throws HighOrderMRI.DistributedGPUWorkerError HighOrderExplicitMultiGPUOp(
-            grid, K, times; gpus=ids[1:2], backend=:invalid)
-        op = HighOrderExplicitMultiGPUOp(grid, K, times; gpus=ids[1:2], block_size=2)
+        @test_throws HighOrderMRI.DistributedGPUWorkerError HighOrderKernelOp(
+            grid, K, times; gpus=ids[1:2], backend=:blocked, phase_backend=:invalid)
+        op = HighOrderKernelOp(grid, K, times; gpus=ids[1:2], backend=:blocked, block_size=2)
         @test Array(explicit_gpu_normal(op)*xgpu) ≈ fill(3f0, 4)
         close(op)
     else

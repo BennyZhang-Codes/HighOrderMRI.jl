@@ -215,7 +215,8 @@ is created lazily. `recon_HOOp` releases it in a `finally` block by default.
 Use `release_backend=false` only when the same operator and normal backend
 will immediately be reused, then call `close(op)` after the final solve.
 
-For `HighOrderExplicitGPUOp` or `HighOrderExplicitMultiGPUOp`, supply
+For `HighOrderKernelOp` with a resident backend (`:direct`, `:blocked`,
+`:cached`, or `:cached_full`), supply
 `CuArray` data and weights so that the solver uses GPU vectors. The operator
 owns persistent workspaces, including a cached phase matrix when requested;
 call `close(op)` in a `finally` block after all solves and normal applications

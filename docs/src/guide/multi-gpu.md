@@ -3,9 +3,9 @@
 HighOrderMRI uses different decompositions for different phases of the
 workload:
 
-- the explicit CUDA operator shards masked voxels;
-- `HighOrderExplicitMultiGPUOp` shards samples and retains solver vectors on
-  the primary GPU;
+- `HighOrderKernelOp(...; backend=:legacy)` shards masked voxels;
+- its resident backends (`:direct`, `:blocked`, `:cached`, `:cached_full`)
+  shard samples and retain solver vectors on the first selected GPU;
 - distributed low-rank setup shards masked voxels;
 - the optional low-rank normal operator shards receive channels, or independent
   readouts with `basis_layout=:per_readout`.
@@ -50,7 +50,7 @@ op = HighOrderKernelOp(
 )
 ```
 
-The operator partitions `nVox` into contiguous ranges. Each device owns its
+With the default `backend=:legacy`, the operator partitions `nVox` into contiguous ranges. Each device owns its
 field map, basis rows, coil-map rows, and workspaces. Forward partial signals
 are reduced on the host; adjoint voxel results are gathered into their
 original mask positions.
@@ -58,7 +58,7 @@ original mask positions.
 ### GPU-resident sample-distributed explicit operator
 
 ```julia
-op = HighOrderExplicitMultiGPUOp(grid, kspha, times;
+op = HighOrderKernelOp(grid, kspha, times;
     fieldmap, csm, mask,
     gpus=[0, 1, 2, 3, 4],
     backend=:blocked,
@@ -72,8 +72,10 @@ Device IDs are relative to `CUDA_VISIBLE_DEVICES`. The first ID owns the CG
 vectors. With no visibility filter, `gpus=[1, 2, 4, 5, 6]` directly selects
 those CUDA device IDs. With `CUDA_VISIBLE_DEVICES=2,1,4,5,6`, use
 `gpus=[0, 1, 2, 3, 4]` to select the same devices with physical GPU 2 first.
-For a single GPU, `HighOrderExplicitGPUOp(...; gpus=[2])` selects device 2
-when no filter is set. Each persistent worker receives a contiguous sample range, the same
+For a single GPU, `HighOrderKernelOp(...; gpus=[2], backend=:blocked)` selects device 2
+when no filter is set. The same public constructor selects the internal single-
+or multi-GPU implementation from `gpus`; no separate operator name is needed.
+Each persistent worker receives a contiguous sample range, the same
 masked voxels, and all coils. The weighted normal is the sum of the workers'
 local normal operators, with the same global voxel normalization as the
 single-GPU operator. Each complex phase block is generated once per local
@@ -93,6 +95,14 @@ GEMM per forward or adjoint, instead of several sample-block products. Matrix
 initialization remains blocked in both modes. Check each device's phase matrix,
 workspace, model, solver, and library memory before constructing this mode;
 aggregate memory alone does not establish feasibility.
+
+For a bounded cache, use `backend=:blocked, phase_cache_bytes=8 * 2^30`.
+The byte limit applies independently to each GPU's complex phase prefix;
+the remaining sample blocks are still evaluated on every application. The
+cache keeps complete sample blocks and can use less than the requested
+limit. Count its initialization in setup and include all other workspaces
+when checking each GPU's memory. The default `phase_cache_bytes=0` preserves
+the uncached path.
 
 Pass GPU data and weights to `recon_HOOp`. After all reconstruction and normal
 applications finish, call `close(op)` to release the workers and device
