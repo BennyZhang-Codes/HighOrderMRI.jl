@@ -11,21 +11,41 @@ samples first and then channels.
 - Supports CUDA kernel acceleration and multiple GPUs.
 - Supports multiple receive channels, static off-resonance, and masking.
 """
-mutable struct HighOrderKernelOp{T,F1,F2,S<:AbstractVector{T}} <: HOOp{T}
+mutable struct HighOrderKernelOp{T,F1,F2,S<:AbstractVector{T},O} <: HOOp{T}
     nrow       :: Int
     ncol       :: Int
     symmetric  :: Bool
     hermitian  :: Bool
-    prod!      :: Function
-    tprod!     :: F1
+    prod!      :: F1
+    tprod!     :: Nothing
     ctprod!    :: F2
     nprod      :: Int
     ntprod     :: Int
     nctprod    :: Int
     Mv         :: S         # Dynamically adapted CPU/GPU Vector
     Mtu        :: S         # Dynamically adapted CPU/GPU Vector
+    gpu_operator :: O       # Resident single-/multi-GPU implementation, or nothing
 end
 LinearOperators.storage_type(op::HighOrderKernelOp) = typeof(op.Mv)
+
+function HighOrderKernelOp(op::HOOp{T}) where {T}
+    return HighOrderKernelOp{T,typeof(op.prod!),typeof(op.ctprod!),typeof(op.Mv),typeof(op)}(
+        op.nrow, op.ncol, op.symmetric, op.hermitian,
+        op.prod!, nothing, op.ctprod!, 0, 0, 0, op.Mv, op.Mtu, op)
+end
+
+# Delegate normal construction once; the returned normal uses the original
+# resident workspace directly, with no wrapper in its iteration path.
+function LinearOperatorCollection.normalOperator(
+    op::HighOrderKernelOp{T,F1,F2,S,O}, weights=nothing; kwargs...,
+) where {T,F1,F2,S,O<:HOOp}
+    return LinearOperatorCollection.normalOperator(op.gpu_operator, weights; kwargs...)
+end
+
+function Base.close(op::HighOrderKernelOp)
+    isnothing(op.gpu_operator) || close(op.gpu_operator)
+    return nothing
+end
 
 mutable struct HighOrderKernelGPUWorkspace{T<:AbstractFloat}
     gpu_id   :: Int
@@ -105,10 +125,35 @@ Fourier encoding operator.
   the derivative path to limit temporary memory.
 * `arrayType::Type{<:AbstractArray}`     - Compute backend. The kernel
   implementation requires `CuArray` (the default); solver vectors stay on the
-  CPU while persistent workspaces execute on the selected GPUs.
+  CPU with `backend=:legacy` and on the first selected GPU with resident backends.
 * `gpus::Vector{Int}`                   - Zero-based CUDA device IDs.
+  One ID selects single-GPU execution; multiple IDs select multi-GPU execution.
+  IDs are relative to `CUDA_VISIBLE_DEVICES` when it filters the device list.
+* `backend::Symbol`                    - `:legacy` (default) preserves the
+  original voxel-distributed kernels and CPU solver storage. `:direct`,
+  `:blocked`, `:cached`, and `:cached_full` use persistent GPU solver storage;
+  multiple GPUs split sample rows. `:blocked` reuses one phase block in both
+  products of the weighted normal. Cached modes retain all local phase rows;
+  `:cached_full` also applies them in a single GEMM per forward/adjoint.
+* `block_size::Int`                    - Sample rows per resident phase block;
+  default `320`. Unlike `nBlock`, this is a block size, not a block count.
+* `phase_backend::Symbol`              - `:kernel` (default) fuses phase and
+  complex exponential; `:gemm` uses real GEMM followed by the exponential.
+* `gemm_backend::Symbol`               - `:cublas` (default) explicitly calls
+  cuBLAS; `:auto` retains generic `mul!` dispatch for comparison.
+* `phase_cache_bytes::Integer`         - Per-GPU complex phase cache budget
+  with `backend=:blocked`; default `0` disables caching. Complete sample
+  blocks are cached up to the budget. Other model, scratch, solver, and library
+  storage is additional. Insufficient memory raises an error without resizing.
+* `forward_threads`, `adjoint_threads` - Resident direct-kernel thread counts;
+  defaults `256` and `512`. Float64 adjoints are capped at `128`.
 * `verbose::Bool`                       - Print progress information; default
   is `false`.
+
+Resident backends accept host model inputs. Pass GPU data and weights to
+`recon_HOOp`; the first entry of `gpus` owns the solver vectors. Call `close(op)`
+after all derived normal operators are no longer used. The workspaces are not
+reentrant. `kspha_dt` currently requires `backend=:legacy`.
 """
 function HighOrderKernelOp(
     grid        :: Grid{T}                                                             ,
@@ -123,12 +168,31 @@ function HighOrderKernelOp(
     nBlock      :: Int64                     = 50                                      , 
     arrayType   :: Type{<:AbstractArray}     = CuArray                                 ,
     gpus        :: Vector{Int}               = [0]                                     ,
+    backend     :: Symbol                    = :legacy                                 ,
+    block_size  :: Int                       = 320                                     ,
+    phase_backend :: Symbol                  = :kernel                                 ,
+    gemm_backend :: Symbol                   = :cublas                                 ,
+    phase_cache_bytes :: Integer             = 0                                       ,
+    forward_threads :: Int                   = 256                                     ,
+    adjoint_threads :: Int                   = 512                                     ,
     verbose     :: Bool                      = false                                   , 
     ) where {T<:AbstractFloat}
 
     arrayType <: CuArray || throw(ArgumentError("HighOrderKernelOp requires arrayType=CuArray"))
     isempty(gpus) && throw(ArgumentError("gpus must contain at least one CUDA device id"))
     length(unique(gpus)) == length(gpus) || throw(ArgumentError("gpus contains duplicate device ids: $gpus"))
+    all(id -> 0 <= id < length(collect(CUDA.devices())), gpus) || throw(ArgumentError("invalid visible GPU ID"))
+
+    if backend !== :legacy
+        backend in (:direct, :blocked, :cached, :cached_full) || throw(ArgumentError("unknown explicit backend $backend"))
+        isnothing(kspha_dt) || throw(ArgumentError("kspha_dt requires backend=:legacy"))
+        constructor = length(gpus) == 1 ? ExplicitGPUOp : ExplicitMultiGPUOp
+        op = constructor(grid, kspha, times; gpus, fieldmap, csm, mask,
+            recon_terms, k_nominal, backend, block_size, phase_backend,
+            gemm_backend, phase_cache_bytes, forward_threads, adjoint_threads)
+        return HighOrderKernelOp(op)
+    end
+    iszero(phase_cache_bytes) || throw(ArgumentError("phase_cache_bytes requires backend=:blocked"))
 
     nX, nY, nZ = grid.nX, grid.nY, grid.nZ
     nTerm, nSam = size(kspha)
@@ -198,12 +262,12 @@ function HighOrderKernelOp(
 
     Mv = Mtu = Vector{Complex{T}}(undef, 0)
     
-    return HighOrderKernelOp{Complex{T},Nothing,Function,typeof(Mv)}(
+    return HighOrderKernelOp{Complex{T},typeof(func_prod),typeof(func_ctprod),typeof(Mv),Nothing}(
                         nRow, nCol, 
                         false, false,
                         func_prod, nothing, func_ctprod,
                         0, 0, 0, 
-                        Mv, Mtu)
+                        Mv, Mtu, nothing)
 end
 
 
@@ -283,5 +347,5 @@ function Base.adjoint(op::HighOrderKernelOp{T}) where T
                             op.hermitian,
                             op.ctprod!, 
                             nothing, 
-                            op.prod!)
+                            op.prod!; S=LinearOperators.storage_type(op))
 end

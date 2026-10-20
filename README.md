@@ -14,7 +14,8 @@ operator for large 2D and 3D reconstruction.
 - Expanded signal encoding through third-order real solid-harmonic terms.
 - Parallel imaging, static off-resonance correction, and reconstruction masks.
 - `HighOrderOp`: array-based explicit evaluation on CPU or CUDA.
-- `HighOrderKernelOp`: fused explicit CUDA evaluation on one or more GPUs.
+- `HighOrderKernelOp`: explicit CUDA kernels, cuBLAS blocks, and optional phase
+  caching; `gpus` selects one or more GPUs through the same interface.
 - `HighOrderLowRankOp`: per-dynamic matrix-free rSVD, adaptive global shared
   spatial basis, and a global-trajectory NFFT.
 - Optional voxel-distributed multi-GPU rSVD setup and channel-distributed
