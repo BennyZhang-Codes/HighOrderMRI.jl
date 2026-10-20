@@ -30,6 +30,33 @@ The zeroth-order temporal phase and the first-order Fourier terms are kept
 outside ``H_d``. The explicit operators evaluate this matrix element by
 element. The low-rank operator never materializes it.
 
+The optional `concomitant` keyword adds the phase
+
+```math
+\phi_c(j,v)=c_1(j)z_v^2+c_2(j)(x_v^2+y_v^2)+c_3(j)x_vz_v+c_4(j)y_vz_v.
+```
+
+Supply time-integrated coefficients in cycles/m² as `[4, nSam, nDyn]`, or
+`[4, nSam]` for a single profile. This order follows the
+[T-Hex author's `KBasis` implementation](https://gitlab.ethz.ch/sbianchi/example_code_nonfourier_sense/-/blob/0123062586f25f744b48071b53244c67680a402f/KBasis.m).
+Coordinates must be in metres in the same frame and physical origin as the
+coefficients. Divide coefficients expressed in rad/m² by `2π`; the operator
+does not infer coefficients or multiply them by `times` again.
+
+```julia
+op = HighOrderLowRankOp(grid, kspha, times;
+    fieldmap, csm, mask, concomitant=concomitant,
+)
+```
+
+`concomitant=nothing` preserves the existing matrices and adds no phase
+buffers. Supplied terms are appended to the residual model before shared,
+per-readout, or joint basis construction. `kspha` retains its 9 or 16
+spherical-harmonic rows; `recon_terms` selects only those rows.
+`HighOrderOp` and `HighOrderKernelOp` accept `[4, nSam]` coefficients through
+the same keyword. Their `kspha_dt` delay-estimation path ignores this input
+and keeps its existing model.
+
 ## Per-dynamic randomized SVD
 
 Let ``L`` be `L_rank`, ``p`` be `rsvd_oversample`, and
@@ -231,9 +258,10 @@ shared layout still constructs a shared basis and is not this baseline.
 
 The independent factorization and per-readout NUFFT sums follow the
 [MAXGIRF author's encoding implementation](https://github.com/usc-mrel/lowfield_maxgirf/blob/637719ce1d96e26323803c0abe7607e8d598d3c0/src/encoding_lowrank_maxgirf.m).
-This switch retains HighOrderMRI's spherical-harmonic phase model and local
-rSVD implementation. It does not add the author's concomitant-field model
-or promise bitwise reproduction of the MATLAB reconstruction.
+This switch retains HighOrderMRI's local rSVD implementation. Supply
+`concomitant` separately to include its phase; the layout does not estimate
+physical coefficients or promise bitwise reproduction of the MATLAB
+reconstruction.
 
 ## Global shared spatial basis
 
