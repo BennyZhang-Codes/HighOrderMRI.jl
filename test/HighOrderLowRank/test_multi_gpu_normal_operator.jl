@@ -53,6 +53,13 @@
             forward_reference = source_op * x
             adjoint_reference = adjoint(source_op) * forward_reference
 
+            data = CUDA.randn(Complex{T}, source_op.nSam, source_op.nDyn, source_op.nCha)
+            weighted_reference = vec(data) .* repeat(weights, source_op.nCha)
+            data_pointer = pointer(data)
+            data .*= reshape(weights, source_op.nSam, source_op.nDyn, 1)
+            @test pointer(data) == data_pointer
+            @test Array(vec(data)) == Array(weighted_reference)
+
             kspace = source_op * x
             kspace .*= repeat(abs2.(weights), source_op.nCha)
             reference = adjoint(source_op) * kspace

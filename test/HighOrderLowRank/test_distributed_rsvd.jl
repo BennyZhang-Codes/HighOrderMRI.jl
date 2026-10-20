@@ -151,6 +151,16 @@
                 )
                 v_multi = HighOrderMRI.gather_distributed_v_scaled(workspace)
 
+                host_parts = HighOrderMRI.distributed_rsvd_host_buffers(workspace)
+                gathered = fill(Complex{T}(13, -7), data.nVox, data.L_rank + 2)
+                HighOrderMRI.gather_distributed_v_scaled!(
+                    view(gathered, :, 2:data.L_rank+1), workspace, host_parts)
+                @test gathered[:, 2:data.L_rank+1] == v_multi
+                @test all(==(Complex{T}(13, -7)), gathered[:, [1, end]])
+                HighOrderMRI.gather_distributed_v_scaled!(
+                    view(gathered, :, 2:data.L_rank+1), workspace, host_parts)
+                @test gathered[:, 2:data.L_rank+1] == v_multi
+
                 W_reference = data.E_ref * omega
                 qr_reference = qr(W_reference)
                 Q_seed = Matrix{Complex{T}}(I, data.nSam, data.L_total)

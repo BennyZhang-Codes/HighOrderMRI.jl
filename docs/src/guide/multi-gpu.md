@@ -5,7 +5,8 @@ workload:
 
 - the explicit CUDA operator shards masked voxels;
 - distributed low-rank setup shards masked voxels;
-- the optional low-rank normal operator shards receive channels.
+- the optional low-rank normal operator shards receive channels, or independent
+  readouts with `basis_layout=:per_readout`.
 
 These choices are complementary. Multi-GPU partitioning changes execution and
 communication, not the intended numerical approximation.
@@ -89,6 +90,16 @@ large spatial factors and the shared basis remain voxel-sharded during setup,
 then the completed shared basis is gathered once to the primary operator
 device.
 
+For shared-basis setup with `Float32` and at least 256 samples per readout,
+the forward kernel partitions the masked voxels into smaller tiles and sums
+their sketch contributions on the GPU. Each worker retains at most 64 MiB of
+temporary partial sketches; small voxel shards use the original forward kernel.
+The adjoint kernel uses two cooperating lanes per voxel and reuses each temporal
+load for a pair of voxels, keeping spatial coefficients in registers. These mappings retain
+all samples, voxels, sketch columns, and random seeds, while changing floating
+point summation order. `Float64`, single-GPU setup, and per-readout setup retain
+their previous mappings. Shared-basis Gram precision is unchanged.
+
 Voxel distribution currently requires:
 
 - `arrayType=CuArray`;
@@ -117,6 +128,36 @@ The backend is constructed lazily when `normalOperator(W ∘ op)` is first
 requested. Setup distribution and normal distribution are independent; the
 same operator may use voxel shards during rSVD setup and coil shards during
 iterative reconstruction.
+
+For the shared spatial basis, subsequent adjoint applications also reuse these
+channel workers, including the initial right-hand side in CG. Each worker
+computes its coils' adjoint contribution, and the image contributions are summed
+on the host. This evaluates the adjoint input directly; the normal backend's
+squared weights are not applied again. Standalone adjoints before backend setup
+retain single-GPU execution.
+
+## Readout-distributed normal operator
+
+For independent per-readout factors, select:
+
+```julia
+basis_layout=:per_readout
+normal_distribution=:readout
+```
+
+Each worker evaluates all coils for its assigned contiguous readout range.
+The contributions are summed in image space, including all cross-rank terms
+within each readout. This is the same weighted normal operator as channel
+distribution, with a different summation order.
+
+With `per_readout_storage=:cpu`, each spatial factor block is streamed once
+across the worker group per normal application. Channel distribution instead
+streams the whole bank to every worker. Readout distribution keeps all coil
+sensitivity maps on each GPU, which increases device storage. It uses at most
+one worker per readout and supports uneven readout counts. The shared layout
+continues to use `:channel`; `:readout` requires `basis_layout=:per_readout`.
+The default `normal_distribution=:single` and existing `:channel` behavior
+are unchanged.
 
 ## Resource lifecycle
 
