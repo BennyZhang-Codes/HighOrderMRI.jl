@@ -145,7 +145,7 @@ end
 
 function ExplicitMultiGPUOp(grid::Grid{T}, kspha::AbstractMatrix{T}, times::AbstractVector{T};
     gpus, fieldmap=zeros(T, grid.matrixSize...), csm=ones(Complex{T}, grid.matrixSize..., 1),
-    mask=trues(grid.matrixSize...), k_nominal=kspha[2:4, :], kwargs...,
+    mask=trues(grid.matrixSize...), concomitant=nothing, k_nominal=kspha[2:4, :], kwargs...,
 ) where {T<:AbstractFloat}
     ids = Int.(collect(gpus))
     isempty(ids) && throw(ArgumentError("gpus must not be empty"))
@@ -155,6 +155,8 @@ function ExplicitMultiGPUOp(grid::Grid{T}, kspha::AbstractMatrix{T}, times::Abst
     length(ids) <= nSam || throw(ArgumentError("each GPU requires at least one sample"))
     length(times) == nSam || throw(DimensionMismatch("times and kspha"))
     size(k_nominal, 2) == nSam || throw(DimensionMismatch("k_nominal and kspha"))
+    isnothing(concomitant) || size(concomitant) == (4, nSam) ||
+        throw(DimensionMismatch("concomitant must have size (4, $nSam)"))
     nGrid = prod(grid.matrixSize)
     nCha = size(csm, ndims(csm))
     ranges = [fld((i-1)*nSam, length(ids))+1:fld(i*nSam, length(ids)) for i in eachindex(ids)]
@@ -168,7 +170,8 @@ function ExplicitMultiGPUOp(grid::Grid{T}, kspha::AbstractMatrix{T}, times::Abst
         run_on_workers!(shards, workers; phase=:explicit_setup) do i
             rows = ranges[i]
             op = ExplicitGPUOp(grid, kspha[:, rows], times[rows];
-                fieldmap, csm, mask, k_nominal=k_nominal[:, rows], kwargs...)
+                fieldmap, csm, mask, k_nominal=k_nominal[:, rows],
+                concomitant=isnothing(concomitant) ? nothing : concomitant[:, rows], kwargs...)
             try
                 return ExplicitGPUShard(ids[i], rows, op,
                     CUDA.zeros(Complex{T}, nGrid), CUDA.zeros(Complex{T}, nGrid),

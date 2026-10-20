@@ -4,6 +4,7 @@ using LinearAlgebra
 
 include("test_HighOrderLowRank.jl")
 include("test_HighOrderExplicit.jl")
+include("test_Concomitant.jl")
 include("test_explicit_gpu.jl")
 include("test_explicit_multi_gpu.jl")
 include("test_explicit_phase_cache.jl")

@@ -40,6 +40,11 @@ LinearOperators.storage_type(op::HighOrderOp) = typeof(op.Mv)
 * `fieldmap::AbstractArray{T}`      - [nX, nY, nZ], fieldmap for off-resonance correction.
 * `csm::AbstractArray{Complex{T}}`  - [nX, nY, nZ, nCha], coil sensitivity map.
 * `mask::AbstractArray{Bool}`       - [nX, nY, nZ], mask for target reconstruction region.
+* `concomitant`                     - Optional [4, nSam] time-integrated phase
+  coefficients in cycles/m² for `z²`, `x²+y²`, `xz`, and `yz`. Coordinates
+  are in metres in the same frame and origin as the coefficients. The default
+  is `nothing`. Independent of `recon_terms`; ignored when `kspha_dt` is supplied
+  for delay estimation.
 * `recon_terms::String`             - digits flag (e.g. "1111") to indicate terms to be used in the HOOp.
 * `k_nominal::AbstractArray{T, 2}`  - [3, nSam], nominal k-space trajectory.
 * `kspha_dt`                        - [nTerm, nSam], time derivative of the field coefficients.
@@ -55,6 +60,7 @@ function HighOrderOp(
     fieldmap    :: AbstractArray{T}          = zeros(T, grid.matrixSize...)            , 
     csm         :: AbstractArray{Complex{T}} = ones(Complex{T}, grid.matrixSize..., 1) , 
     mask        :: AbstractArray{Bool}       = trues(grid.matrixSize...)               ,
+    concomitant                              = nothing                                 ,
     recon_terms :: Union{Nothing,AbstractString} = nothing                            ,
     k_nominal   :: AbstractArray{T, 2}       = kspha[2:4, :]                           ,
     kspha_dt                                 = nothing                                 ,
@@ -103,6 +109,7 @@ function HighOrderOp(
     
     # compute basis functions (spherical harmonics)
     bf = basisfunc_spha(grid.x[mask.!=0], grid.y[mask.!=0], grid.z[mask.!=0], collect(1:nTerm))
+    bf, kspha = prep_concomitant(bf, kspha, grid, mask; concomitant=isnothing(kspha_dt) ? concomitant : nothing)
 
     if is_gpu
         kspha    = arrayType(kspha)
