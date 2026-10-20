@@ -72,3 +72,27 @@ function prep_kspha(
     return kspha
 end
 
+
+# Append the concomitant phase after spherical-harmonic order selection.
+# Coefficients are time-integrated cycles/m² in the grid's frame and origin.
+function prep_concomitant(
+    bf          :: AbstractMatrix{T}                                                 ,
+    kspha       :: AbstractArray{T, N}                                                ,
+    grid        :: Grid{T}                                                            ,
+    mask        :: AbstractVector{Bool}                                               ;
+    concomitant                              = nothing                                 ,
+    ) where {T<:AbstractFloat, N}
+    isnothing(concomitant) && return bf, kspha
+
+    concomitant isa AbstractArray{<:Real} ||
+        throw(ArgumentError("concomitant must be a real array or nothing"))
+    dims = (4, size(kspha)[2:end]...)
+    single = N == 3 && size(kspha, 3) == 1 && size(concomitant) == dims[1:2]
+    size(concomitant) == dims || single ||
+        throw(DimensionMismatch("concomitant must have size $dims, got $(size(concomitant))"))
+
+    x, y, z = grid.x[mask], grid.y[mask], grid.z[mask]
+    bf_c = hcat(z .^ 2, x .^ 2 .+ y .^ 2, x .* z, y .* z)
+    kspha_c = reshape(Array{T}(concomitant), dims)
+    return hcat(bf, bf_c), cat(kspha, kspha_c; dims=1)
+end

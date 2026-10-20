@@ -163,6 +163,8 @@ dynamic dimension and are then passed to the full constructor.
 * `times::AbstractArray{T, 1}`         - [nSam], sampling time points.
 * `kwargs...`                          - Keywords accepted by the dynamic-data
   constructor below.
+
+For this single-profile overload, `concomitant` may have size `[4, nSam]`.
 """
 function HighOrderLowRankOp(
     grid        :: Grid{T}                                                             ,
@@ -241,6 +243,11 @@ the default rSVD path is unchanged.
 * `mask::AbstractArray{Bool}`           - [nX, nY, nZ], reconstruction mask.
   [nX, nY] is accepted when `nZ == 1`; only masked voxels enter the low-rank
   approximation.
+* `concomitant`                        - Optional [4, nSam, nDyn]
+  time-integrated phase coefficients in cycles/m² for `z²`, `x²+y²`, `xz`,
+  and `yz`. [4, nSam] is also accepted when `nDyn == 1`. Coordinates are in
+  metres in the same frame and origin as the coefficients. The default is
+  `nothing`. These terms enter the residual phase independently of `recon_terms`.
 * `recon_terms::Union{Nothing, AbstractString}` - Binary order-selection
   string. Use three digits for `nTerm == 9` and four digits for
   `nTerm == 16`; the digits select zeroth-, first-, second-, and third-order
@@ -398,6 +405,7 @@ function HighOrderLowRankOp(
     fieldmap          :: AbstractArray{T}          = zeros(T, grid.matrixSize...)            , 
     csm               :: AbstractArray{Complex{T}} = ones(Complex{T}, grid.matrixSize..., 1) , 
     mask              :: AbstractArray{Bool}       = trues(grid.matrixSize...)               ,
+    concomitant                                    = nothing                                 ,
     recon_terms       :: Union{Nothing,AbstractString} = nothing                            ,
     k_nominal         :: AbstractArray{T, 3}       = kspha[2:4, :, :]                        ,
     
@@ -546,6 +554,7 @@ function HighOrderLowRankOp(
         bf_err_host = zeros(T, nVox, 1)
     end
     @assert size(kspha_err_host, 1) == size(bf_err_host, 2)
+    bf_err_host, kspha_err_host = prep_concomitant(bf_err_host, kspha_err_host, grid, mask_host; concomitant)
 
     @info "nSam=$nSam, nVox=$nVox, nDyn=$nDyn, nTerm=$nTerm, nCha=$nCha"
 
