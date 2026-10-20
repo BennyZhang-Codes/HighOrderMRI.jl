@@ -4,6 +4,8 @@ HighOrderMRI uses different decompositions for different phases of the
 workload:
 
 - the explicit CUDA operator shards masked voxels;
+- `HighOrderExplicitMultiGPUOp` shards samples and retains solver vectors on
+  the primary GPU;
 - distributed low-rank setup shards masked voxels;
 - the optional low-rank normal operator shards receive channels, or independent
   readouts with `basis_layout=:per_readout`.
@@ -52,6 +54,50 @@ The operator partitions `nVox` into contiguous ranges. Each device owns its
 field map, basis rows, coil-map rows, and workspaces. Forward partial signals
 are reduced on the host; adjoint voxel results are gathered into their
 original mask positions.
+
+### GPU-resident sample-distributed explicit operator
+
+```julia
+op = HighOrderExplicitMultiGPUOp(grid, kspha, times;
+    fieldmap, csm, mask,
+    gpus=[0, 1, 2, 3, 4],
+    backend=:blocked,
+    phase_backend=:gemm,
+    gemm_backend=:cublas,
+    block_size=1024,
+)
+```
+
+Device IDs are relative to `CUDA_VISIBLE_DEVICES`. The first ID owns the CG
+vectors. With no visibility filter, `gpus=[1, 2, 4, 5, 6]` directly selects
+those CUDA device IDs. With `CUDA_VISIBLE_DEVICES=2,1,4,5,6`, use
+`gpus=[0, 1, 2, 3, 4]` to select the same devices with physical GPU 2 first.
+For a single GPU, `HighOrderExplicitGPUOp(...; gpus=[2])` selects device 2
+when no filter is set. Each persistent worker receives a contiguous sample range, the same
+masked voxels, and all coils. The weighted normal is the sum of the workers'
+local normal operators, with the same global voxel normalization as the
+single-GPU operator. Each complex phase block is generated once per local
+normal application and reused for the forward and adjoint products. Real and
+complex matrix products explicitly call cuBLAS.
+
+Reusable host buffers broadcast the image and reduce partial images. Forward
+and adjoint also assemble or split the sample-by-coil data in the original
+order. Communication does not transfer phase matrices and does not require
+peer access. Its measured cost belongs in reconstruction timing.
+
+`backend=:direct` uses the existing direct kernels on each sample shard.
+`backend=:cached` retains every local phase row, allowing a complete phase
+matrix to be distributed over several GPUs. `backend=:cached_full` retains the
+same phase matrix and uses a full sample-by-coil workspace to apply it with one
+GEMM per forward or adjoint, instead of several sample-block products. Matrix
+initialization remains blocked in both modes. Check each device's phase matrix,
+workspace, model, solver, and library memory before constructing this mode;
+aggregate memory alone does not establish feasibility.
+
+Pass GPU data and weights to `recon_HOOp`. After all reconstruction and normal
+applications finish, call `close(op)` to release the workers and device
+workspaces. Operators and their derived normal operators share mutable
+scratch space and must not be applied concurrently.
 
 ## Voxel-distributed rSVD setup
 

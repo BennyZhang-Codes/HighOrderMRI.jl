@@ -124,7 +124,7 @@ function CUDA_kernel_prod_HighOrderOp!(
         ϕ     = zero(T)
         ϕ_r   = zero(T)
         ϕ_i   = zero(T)
-        TWOPI = 2f0 * π
+        TWOPI = T(2π)
         @inbounds t = times[isam]
 
         sig_r1 = zero(T)
@@ -407,7 +407,7 @@ function CUDA_kernel_ctprod_HighOrderOp!(
         ϕ     = zero(T)
         ϕ_r   = zero(T)
         ϕ_i   = zero(T)
-        TWOPI = 2f0 * π
+        TWOPI = T(2π)
         @inbounds b0 = fieldmap[ivox]
 
         sig_r1 = zero(T)

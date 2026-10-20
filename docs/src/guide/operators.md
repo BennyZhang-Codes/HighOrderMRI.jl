@@ -16,6 +16,13 @@ size, required reference accuracy, and available hardware.
 | Main cost | Sample–voxel phase matrix blocks | Repeated sample–voxel phase evaluation | Setup plus ``R N_c`` NFFTs per forward/adjoint |
 | Recommended role | Debugging and small CPU/GPU work | Explicit numerical reference | Large iterative reconstruction |
 
+For iterative explicit reconstruction, [`HighOrderExplicitGPUOp`](@ref) and
+[`HighOrderExplicitMultiGPUOp`](@ref) also provide persistent GPU workspaces
+and GPU solver storage. They support direct kernels, cuBLAS sample blocks,
+and complete complex-phase caching. Select a backend from measurements at
+the actual voxel, sample, and coil counts; the low-rank path's speed advantage
+depends on the problem and the explicit reference used.
+
 ## Shared inputs
 
 For a grid of size `(nX,nY,nZ)`:
@@ -33,7 +40,7 @@ zeros by the adjoint.
 
 ## Shared coil compression
 
-All three operators accept compressed data and CSM without an
+All encoding operators accept compressed data and CSM without an
 operator-specific interface. First fit a [`CoilCompressionTransform`](@ref),
 then apply the same matrix along the data and CSM coil dimensions:
 
@@ -141,6 +148,56 @@ kernel encoding action described above. Use
 `HighOrderOp(...; arrayType=CuArray, kspha_dt=...)` when the derivative forward
 product must run on CUDA. The fused kernel path currently accelerates only the
 ordinary explicit encoding.
+
+## GPU-resident explicit reconstruction
+
+Construct spatial model inputs on the host, then keep data, weights, and
+solver vectors on the GPU selected during construction:
+
+```julia
+using CUDA
+
+op = HighOrderExplicitGPUOp(grid, kspha, times;
+    fieldmap, csm, mask,
+    gpus=[0],
+    backend=:blocked,
+    phase_backend=:gemm,
+    gemm_backend=:cublas,
+    block_size=1024,
+)
+try
+    image = recon_HOOp(op, CuArray(ComplexF32.(data_matrix)),
+        CuArray(ComplexF32.(weight_vector)), rec_params)
+finally
+    close(op)
+end
+```
+
+Use model and data precision consistently (`Float32`/`ComplexF32` above).
+`gpus=[id]` selects one CUDA device; omitting it uses the current device.
+IDs are zero-based and relative to `CUDA_VISIBLE_DEVICES` when that variable
+filters the device list. Use `HighOrderExplicitMultiGPUOp(...; gpus=[...])`
+to select multiple GPUs; its first ID owns solver vectors.
+`block_size` counts sample rows, whereas the older `nBlock` keyword counts
+blocks. The operator's specialized `normalOperator` generates each complex
+phase block once and reuses it for all coils and both matrix products.
+
+`backend=:direct` reuses the existing CUDA kernels. `:cached` retains the full
+complex ``P`` but applies it in sample blocks; `:cached_full` applies the same
+cached matrix with one full GEMM per forward or adjoint. Cache initialization
+is blocked in both modes. Include ``8N_tN_v`` bytes for ComplexF32 ``P`` plus
+the real phase block, model, coil buffers, solver, and library workspace when
+checking feasibility. Cached setup belongs in one-shot reconstruction timing.
+
+[`explicit_gpu_normal`](@ref) accepts raw weights and squares them once.
+`normalOperator(op, D)` expects the already squared diagonal ``D=W^H W``;
+`normalOperator(W ∘ op)` supplies it automatically. Regularization remains in
+the solver. Operators and their derived normals share mutable workspaces
+and must be used sequentially; close the operator after the final use.
+
+For sample-distributed execution on several GPUs, use
+[`HighOrderExplicitMultiGPUOp`](@ref) as described in
+[Multi-GPU execution](multi-gpu.md#GPU-resident-sample-distributed-explicit-operator).
 
 ## Low-rank operator
 

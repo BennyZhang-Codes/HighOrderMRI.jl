@@ -21,6 +21,9 @@ basisfunc_spha
 ```@docs
 HighOrderOp
 HighOrderKernelOp
+HighOrderExplicitGPUOp
+HighOrderExplicitMultiGPUOp
+explicit_gpu_normal
 HighOrderLowRankOp
 @rebuild_HOOp
 ```
