@@ -1,7 +1,8 @@
 # HighOrderMRI.jl
 
 [![CI](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/actions/workflows/ci.yml)
-[![Documentation](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/actions/workflows/documentation.yml/badge.svg?branch=main)](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/actions/workflows/documentation.yml)
+[![Documenter check](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/actions/workflows/documentation.yml/badge.svg?branch=main)](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/actions/workflows/documentation.yml)
+[![VitePress deployment](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/actions/workflows/documentation.yml/badge.svg?branch=docs)](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/actions/workflows/documentation.yml?query=branch%3Adocs)
 [![Dev docs](https://img.shields.io/badge/docs-dev-blue.svg)](https://bennyzhang-codes.github.io/HighOrderMRI.jl/dev/)
 
 HighOrderMRI.jl is a Julia toolbox for non-Cartesian MRI reconstruction with
@@ -34,6 +35,11 @@ contains:
 - the randomized SVD and global shared spatial-subspace derivation;
 - operator selection, reconstruction, multi-GPU, and synchronization guides;
 - the frozen reconstruction comparison protocol and generated API reference.
+
+The public website is built with VitePress from the
+[`docs` branch](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/tree/docs)
+and deployed directly through GitHub Actions. Documenter on `main` validates
+Julia docstrings and reference pages without publishing the website.
 
 ## Installation
 
