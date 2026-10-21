@@ -148,6 +148,13 @@
   width: 100%;
 }
 
+@media (max-width: 640px) {
+  .vp-doc table {
+    display: block;
+    overflow-x: auto;
+  }
+}
+
 /* Numbered literature citations. The link title contains the full reference. */
 .vp-doc a[href*="/references#ref-"][title] {
   position: relative;

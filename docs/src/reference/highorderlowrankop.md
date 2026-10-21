@@ -13,7 +13,7 @@ HighOrderLowRankOp(
 ) where T<:AbstractFloat
 ```
 
-The single-dynamic overload inserts a singleton dynamic dimension and delegates to the dynamic constructor.
+The single-dynamic overload inserts a singleton dynamic dimension and delegates to the dynamic constructor. It also accepts `concomitant` with shape `(4,nSam)`.
 
 ## Dynamic constructor
 
@@ -25,6 +25,7 @@ HighOrderLowRankOp(
     fieldmap=zeros(T, grid.matrixSize...),
     csm=ones(Complex{T}, grid.matrixSize..., 1),
     mask=trues(grid.matrixSize...),
+    concomitant=nothing,
     recon_terms=nothing,
     k_nominal=kspha[2:4, :, :],
     arrayType=Array,
@@ -36,6 +37,11 @@ HighOrderLowRankOp(
     rsvd_finalize=:svd,
     rsvd_backend=:auto,
     rsvd_distribution=:auto,
+    basis_layout=:shared,
+    per_readout_storage=:gpu,
+    per_readout_cache_size=5,
+    per_readout_gather=:pipeline,
+    per_readout_host_cache_bytes=0,
     shared_rank_max=128,
     shared_basis_tol=T(1e-2),
     global_basis_tol=nothing,
@@ -61,7 +67,8 @@ HighOrderLowRankOp(
 - `fieldmap`: static off-resonance map.
 - `csm`: complex coil-sensitivity maps.
 - `mask`: reconstruction mask; only masked voxels enter the low-rank setup.
-- `recon_terms`: order-selection string.
+- `concomitant`: optional `(4,nSam,nDyn)` time-integrated phase coefficients in cycles/m², ordered as `z²`, `x²+y²`, `xz`, `yz`; `(4,nSam)` is accepted for one dynamic. Coordinates must share the grid frame and physical origin. Terms are appended to the residual model before basis construction, independently of `recon_terms`; see [concomitant integration](/theory/low-rank#concomitant-phase-in-the-residual-model).
+- `recon_terms`: spherical-harmonic order-selection string.
 - `k_nominal`: nominal first-order trajectory `(3, nSam, nDyn)`.
 - `nfft_center_correction`: parity-aware correction aligning the NFFT grid with physical voxel centres.
 
@@ -82,6 +89,31 @@ For the default rSVD construction:
 The fused CUDA backend supports wide sketches in batches of at most 16
 columns. The matrix-dimension bound `L_rank + rsvd_oversample <= min(nSam,nVox)`
 still applies; this batch size does not truncate the final shared rank.
+
+## Per-readout parameters
+
+`basis_layout=:shared` is the default. Set `:per_readout` to retain the local
+rSVD factors without incremental sharing or final global recompression.
+
+| Keyword | Default | Meaning |
+|:--|:--|:--|
+| `basis_layout` | `:shared` | Shared spatial basis or independent `:per_readout` factors. |
+| `per_readout_storage` | `:gpu` | Materialize all independent factors on the selected array backend; CUDA also supports `:cpu` streaming and `:regenerate` on demand. |
+| `per_readout_cache_size` | `5` | Resident readouts per CUDA cache, capped at `nDyn`. Applies to `:cpu` and `:regenerate`; generation lookahead requires at least two slots. |
+| `per_readout_gather` | `:pipeline` | Two-buffer aggregation during voxel-distributed setup; `:synchronous` retains blocking downloads and host writes. |
+| `per_readout_host_cache_bytes` | `0` | Optional whole-readout host-factor budget for regeneration. Excludes Q/Z, model maps, staging, and workspaces. |
+
+Both `:cpu` and `:regenerate` require `basis_layout=:per_readout` and
+`arrayType=CuArray`. Regeneration additionally requires
+`rsvd_distribution=:voxel`, `rsvd_backend=:kernel`, and `rsvd_finalize=:gram`.
+It retains the original Q/Z factors and evaluates `(H_d' * Q_d) * Z_d` for
+uncached readouts without allocating the complete spatial bank.
+
+In the per-readout layout, `shared_rank_max` and `shared_basis_tol` are unused;
+`shared_basis_method` must remain `:rsvd` and `global_basis_tol` must be
+`nothing`. Setting `shared_basis_tol=0` in the shared layout does not bypass
+sharing. See [per-readout usage](/guide/operators#independent-per-readout-factors)
+and [storage and regeneration](/theory/low-rank#independent-per-readout-representation).
 
 ## Shared-basis parameters
 
@@ -134,14 +166,14 @@ and [mathematical scope](/theory/low-rank#direct-joint-shared-basis).
 
 - `arrayType`: `Array` or `CuArray`.
 - `gpus`: zero-based CUDA device IDs.
-- `normal_distribution`: `:single` or `:channel` for the weighted normal operator.
+- `normal_distribution`: `:single` (default), `:channel`, or `:readout` for the weighted normal operator. The distributed modes require CUDA and at least two GPUs; `:readout` additionally requires `basis_layout=:per_readout`. See [readout distribution](/guide/multi-gpu#iterative-reconstruction-readout-distributed-normal-operator).
 - `verbose`: report setup and resource information.
 
 ## Returns
 
-A `HighOrderLowRankOp` with dimensions `(nSam * nDyn * nCha, prod(grid.matrixSize))`, together with stored low-rank factors `q` and `basis` whose second dimension is the final shared rank `R`.
+A `HighOrderLowRankOp` with dimensions `(nSam * nDyn * nCha, prod(grid.matrixSize))`. In the shared layout, the stored `q` and `basis` have `R` columns. In the per-readout layout, `q` has shape `(nSam * nDyn, L_rank)` and the logical spatial bank has shape `(nVox, L_rank * nDyn)`; regeneration stores Q/Z and an optional host subset instead of materializing that bank.
 
-The default rSVD implementation uses streaming coefficient blocks: when later dynamics expand the shared basis, earlier coefficient blocks are zero-padded rather than recomputed. See [Low-rank shared subspace](/theory/low-rank) for the exact factorization and approximation-error interpretation.
+The shared rSVD implementation uses streaming coefficient blocks: when later dynamics expand the shared basis, earlier coefficient blocks are zero-padded rather than recomputed. See [Low-rank shared subspace](/theory/low-rank) for the exact factorization and approximation-error interpretation.
 
 ## Example
 
@@ -164,4 +196,4 @@ op = HighOrderLowRankOp(
 )
 ```
 
-[Source: `HighOrderLowRankOp.jl`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/dev_jinyuan/src/EncodingOperator/HighOrderLowRankOp.jl)
+[Source: `HighOrderLowRankOp.jl`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/main/src/EncodingOperator/HighOrderLowRankOp.jl)

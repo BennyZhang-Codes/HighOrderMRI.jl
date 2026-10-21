@@ -27,13 +27,15 @@ nSampleTotal = nSam * nDyn
 
 in the same ordering as `vec(data)` for data shaped `(nSam, nDyn, nCha)`.
 
+For a resident `HighOrderKernelOp`, supply data and weights as `CuArray`s on `first(gpus)` to keep CG vectors on that device. The resident operator provides a specialized weighted normal. Its host model inputs are prepared during construction; use matching real/complex precision. See [resident reconstruction](/guide/operators#gpu-resident-explicit-reconstruction).
+
 ## Keywords
 
-- `release_backend`: when `true` (default), release a channel-distributed `HighOrderLowRankOp` normal backend after reconstruction, including when the solve exits with an exception.
+- `release_backend`: when `true` (default), release a channel- or readout-distributed `HighOrderLowRankOp` normal backend after reconstruction, including when the solve exits with an exception.
 
 ## Returns
 
-The reconstructed image reshaped to `recParams[:reconSize]` and copied to a CPU `Array`.
+The reconstructed image reshaped to `recParams[:reconSize]` and copied to a CPU `Array`. Call `close(op)` after using a resident explicit operator; `release_backend` only handles the LowRank reconstruction backend.
 
 Internally, `weight` is applied to both data and encoding through the weighting operator, so the normal term is
 
@@ -54,4 +56,4 @@ image = recon_HOOp(
 
 See [Reconstruction workflow](/guide/reconstruction) for data layout, solver configuration, accuracy metrics, and reproducibility requirements.
 
-[Source: `recon_HOOp.jl`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/docs-modern-ui/src/Recon/recon_HOOp.jl)
+[Source: `recon_HOOp.jl`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/main/src/Recon/recon_HOOp.jl)

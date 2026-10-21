@@ -1,6 +1,6 @@
 # Resource lifecycle
 
-Large CUDA low-rank operators can own persistent workspaces and an optional channel-distributed normal backend. Release these resources explicitly when the operator is no longer required outside `recon_HOOp`.
+Resident explicit operators own CUDA workspaces and optional phase caches; CUDA low-rank operators can own persistent workspaces and an optional distributed normal backend. Release these resources explicitly when the operator is no longer required outside `recon_HOOp`.
 
 ## `close`
 
@@ -8,15 +8,21 @@ Large CUDA low-rank operators can own persistent workspaces and an optional chan
 close(op)
 ```
 
-For `HighOrderLowRankOp`, this releases the distributed normal backend when present.
+For resident `HighOrderKernelOp`, `close` synchronizes and releases its workspaces, phase caches, and multi-GPU workers. Derived normals share those resources and must no longer be used. Call it explicitly after `recon_HOOp`.
 
-Equivalent explicit call:
+For `HighOrderLowRankOp`, this releases the distributed normal backend and
+the source operator's streaming/regeneration queue when present. Stored
+factors and other operator arrays remain owned until their references are
+dropped. To release only the distributed normal backend, use:
 
 ```julia
 release_highorder_normal_backend!(op)
 ```
 
-`recon_HOOp` performs this release by default after reconstruction unless `release_backend=false` is requested.
+`recon_HOOp` releases only the LowRank distributed normal backend by default,
+unless `release_backend=false` is requested. Call `close(op)` after the final
+use to also close a per-readout source queue. The wrapper does not close
+resident explicit operators.
 
 ## `@rebuild_HOOp`
 
@@ -40,4 +46,4 @@ Releasing explicit workspaces does not guarantee that the reserved-memory value 
 
 See [Multi-GPU execution](/guide/multi-gpu#resource-lifecycle) and [Troubleshooting](/guide/troubleshooting) for lifecycle and environment-specific details.
 
-[Source: `HighOrderLowRankOp.jl`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/docs-modern-ui/src/EncodingOperator/HighOrderLowRankOp.jl)
+[Source: `multi_gpu_normal_operator.jl`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/main/src/EncodingOperator/LowRankApproximation/multi_gpu_normal_operator.jl)
