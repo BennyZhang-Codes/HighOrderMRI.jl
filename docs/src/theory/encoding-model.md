@@ -41,7 +41,8 @@ k_{0,d}(t)
 +t\,\Delta f_0(\mathbf r)
 +\mathbf k_d^{(1)}(t)^T\mathbf r
 +\sum_{\ell\in\mathcal R}
-k_{\ell,d}(t)b_\ell(\mathbf r).
+k_{\ell,d}(t)b_\ell(\mathbf r)
++\phi_{c,d}(\mathbf r,t).
 $$
 
 Here $k_{0,d}(t)$ is the zeroth-order accumulated phase, $\Delta f_0(\mathbf r)$ is the static off-resonance map, $\mathbf k_d^{(1)}(t)$ contains the first-order spatial coefficients, and $b_\ell(\mathbf r)$ is a real solid-harmonic basis function. The residual set $\mathcal R$ depends on whether the reconstruction is two- or three-dimensional, as specified below.
@@ -53,6 +54,21 @@ $$
 $$
 
 Accordingly, all terms inside $\Phi_d$ must be expressed in cycles. Field-camera phase supplied in radians must be divided by $2\pi$ before entering this convention.
+
+## Optional concomitant phase
+
+The `concomitant` keyword supplies four additional time-integrated coefficients,
+
+$$
+\phi_{c,d}(\mathbf r,t)=c_{1,d}(t)z^2+c_{2,d}(t)(x^2+y^2)
++c_{3,d}(t)xz+c_{4,d}(t)yz.
+$$
+
+Supply coefficients in cycles/m², with coordinates in metres in the same frame and physical origin as the coefficients. Use `(4,nSam)` for `HighOrderOp`, `HighOrderKernelOp`, or a single-dynamic LowRank problem; use `(4,nSam,nDyn)` for dynamic LowRank. Their row order is exactly `z²`, `x²+y²`, `xz`, `yz`.
+
+With `concomitant=nothing`, $\phi_{c,d}=0$. Otherwise add this phase to $\Phi_d$ and to the residual exponent in $H_d$ below. The coefficients are already integrated at the supplied sample times: they are neither inferred from gradients nor multiplied by `times` again. Divide coefficients expressed in rad/m² by $2\pi$ before supplying them.
+
+The original `kspha` retains its 9 or 16 spherical-harmonic rows. Concomitant coefficients are appended after `recon_terms` selection, so this string does not disable them. This augments the physical model, independently of choosing an explicit or low-rank representation. The explicit `kspha_dt` delay-estimation path ignores `concomitant` and keeps its existing derivative model.
 
 ## Discrete dynamic formulation
 
@@ -71,6 +87,7 @@ k_{0,jd}
 +\mathbf k_{jd}^{(1)T}\mathbf r_v
 +\sum_{\ell\in\mathcal R}
 k_{\ell,jd}b_{\ell,v}
++\phi_{c,d}(\mathbf r_v,t_{jd})
 \right]
 \right\}
 +
@@ -79,13 +96,14 @@ $$
 
 The factor $1/\sqrt{N_v}$ is a symmetric numerical normalization used by the forward and adjoint operators; it is not introduced as a spatial quadrature weight for the continuous signal integral. The adjoint conjugates the complete encoding phase and the receive sensitivity.
 
-In the explicit implementation, the phase contribution is evaluated as
+For one dynamic and the masked voxels, the explicit phase can be written as
 
 ```julia
-phase = times .* fieldmap + bf * kspha
+fieldmap_masked = vec(fieldmap)[vec(mask)]
+phase = fieldmap_masked .* transpose(times) .+ bf * kspha
 ```
 
-where the first row of `bf` is identically one. Thus, the spatially uniform dynamic term is included once through the first row of `bf * kspha`.
+where `bf` has shape `(nVox,nTerm)` and its first column is identically one. Thus, the spatially uniform dynamic term is included once through the first coefficient row of `kspha`. Optional concomitant basis columns and coefficient rows are appended before evaluating the same product.
 
 ## Matrix formulation
 
@@ -115,6 +133,7 @@ i2\pi\left[
 t_{jd}\Delta f_{0,v}
 +\sum_{\ell\in\mathcal R}
 k_{\ell,jd}b_{\ell,v}
++\phi_{c,d}(\mathbf r_v,t_{jd})
 \right]
 \right\}.
 $$
@@ -148,7 +167,7 @@ This factorization provides the common mathematical reference for the explicit a
 
 `HighOrderOp` is the array-based reference implementation and can execute on CPU or CUDA arrays. Sample-voxel phase blocks are evaluated explicitly, with `nBlock` controlling the temporary-memory/runtime trade-off.
 
-`HighOrderKernelOp` evaluates the same signal model using fused CUDA kernels. Its single- and multi-GPU paths change data placement and execution strategy, not the encoding equation. In the multi-GPU implementation, masked voxels are partitioned across devices; forward partial signals are reduced and adjoint voxel shards are gathered.
+`HighOrderKernelOp` evaluates the same signal model with legacy/direct kernels or resident cuBLAS backends. Legacy multi-GPU execution partitions masked voxels; resident backends partition samples. Blocked and cached representations retain the complete phase model, including supplied concomitant terms. Data placement and finite-precision reduction order change; the encoding equation does not.
 
 Agreement between the two explicit implementations is therefore an implementation-consistency test rather than an independent physical validation of the signal model. The validation hierarchy is described in [Scientific validation strategy](/guide/validation).
 

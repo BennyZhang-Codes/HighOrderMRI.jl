@@ -72,12 +72,14 @@ When representative noise-only samples are available, noise-whitened global SVD 
 Select the numerical implementation according to the calculation being performed:
 
 - `HighOrderOp` for array-based explicit evaluation and derivative products;
-- `HighOrderKernelOp` for fused explicit CUDA evaluation;
+- `HighOrderKernelOp` for legacy/direct CUDA evaluation or resident blocked/cached cuBLAS reconstruction;
 - `HighOrderLowRankOp` for repeated large-scale forward and adjoint evaluations using the residual-phase approximation.
 
 Constructor details and implementation differences are summarized in [Encoding operators](/guide/operators). The common physical and matrix formulation is given in [Expanded encoding model](/theory/encoding-model).
 
 For an operator comparison, first establish consistency between the explicit implementations and then quantify the low-rank approximation against a fixed explicit reference. Independent numerical or experimental validation of the physical signal model is a separate step; see [Scientific validation strategy](/guide/validation).
+
+Resident `HighOrderKernelOp` modes use GPU solver storage. Pass GPU data and weights to `recon_HOOp`, then close the operator after its final use. Legacy mode remains the default. See [resident explicit reconstruction](/guide/operators#gpu-resident-explicit-reconstruction) for construction and cleanup.
 
 ## Density weighting
 

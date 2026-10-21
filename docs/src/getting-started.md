@@ -85,7 +85,7 @@ Device identifiers supplied through `gpus` are zero based, for example `gpus=[0,
 julia --threads=auto --project=.
 ```
 
-The stage-specific voxel and channel decompositions are described in [Multi-GPU execution](/guide/multi-gpu).
+The stage-specific sample, voxel, channel, and independent-readout decompositions are described in [Multi-GPU execution](/guide/multi-gpu).
 
 ## Build the documentation locally
 
@@ -119,7 +119,7 @@ The generated site is written to `docs/src/.vitepress/dist/`.
 - [Field preprocessing](/guide/field-preprocessing): GIRF prediction, interpolation, and field/data synchronization.
 - [Coil compression](/guide/coil-compression): optional noise-whitened global SVD compression applied consistently to data and CSM.
 - [Reconstruction workflow](/guide/reconstruction): data layout, field preparation, density weighting, solver configuration, reconstruction, and metrics.
-- [Multi-GPU execution](/guide/multi-gpu): voxel- and channel-partitioned execution paths.
+- [Multi-GPU execution](/guide/multi-gpu): sample-, voxel-, channel-, and readout-partitioned execution paths.
 
 **Validation and reporting**
 

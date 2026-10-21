@@ -10,6 +10,7 @@ HighOrderOp(
     fieldmap=zeros(T, grid.matrixSize...),
     csm=ones(Complex{T}, grid.matrixSize..., 1),
     mask=trues(grid.matrixSize...),
+    concomitant=nothing,
     recon_terms=nothing,
     k_nominal=kspha[2:4, :],
     kspha_dt=nothing,
@@ -30,7 +31,8 @@ HighOrderOp(
 - `fieldmap`: static off-resonance map.
 - `csm`: complex coil-sensitivity maps.
 - `mask`: spatial reconstruction mask.
-- `recon_terms`: order-selection string.
+- `concomitant`: optional `(4,nSam)` integrated coefficients in cycles/m², ordered as `z²`, `x²+y²`, `xz`, `yz`. Coordinates use the grid frame and origin. See [concomitant phase](/theory/encoding-model#optional-concomitant-phase).
+- `recon_terms`: spherical-harmonic order selection; it does not disable supplied concomitant terms.
 - `k_nominal`: nominal first-order trajectory `(kx, ky, kz)`.
 - `kspha_dt`: optional time derivative of the field coefficients; when supplied, the forward action evaluates the derivative product used by `FindDelay`.
 - `nBlock`: number of sample blocks used to limit temporary memory.
@@ -42,7 +44,7 @@ HighOrderOp(
 A linear operator with `nSam * nCha` rows and `prod(grid.matrixSize)` columns. Forward and adjoint use the same explicit signal model and symmetric normalization described in [Expanded encoding model](/theory/encoding-model).
 
 ::: info Derivative path
-When `kspha_dt` is supplied, only the forward action represents the derivative product. The adjoint remains the ordinary encoding adjoint; this configuration should therefore not be interpreted as a general derivative operator for adjointness testing.
+When `kspha_dt` is supplied, `concomitant` is ignored and only the forward action represents the existing derivative product. The adjoint remains the ordinary encoding adjoint; this configuration should therefore not be interpreted as a general derivative operator for adjointness testing.
 :::
 
 ## Example
@@ -59,4 +61,4 @@ op = HighOrderOp(
 )
 ```
 
-[Source: `HighOrderOp.jl`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/docs-modern-ui/src/EncodingOperator/HighOrderOp.jl)
+[Source: `HighOrderOp.jl`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/main/src/EncodingOperator/HighOrderOp.jl)

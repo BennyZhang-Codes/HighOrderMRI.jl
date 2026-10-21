@@ -57,12 +57,33 @@ i2\pi\left[
 t_{jd}\Delta f_{0,v}
 +\sum_{\ell\in\mathcal R}
 k_{\ell,jd}b_{\ell,v}
++\phi_c(j,v,d)
 \right]\right\},
 \qquad
 H_d\in\mathbb C^{N_s\times N_v}.
 $$
 
 The zeroth-order temporal phase and the first-order Fourier terms are excluded from $H_d$. In 3D, $\mathcal R$ begins with the second-order terms. In 2D, the $z$ first-order term remains in $\mathcal R$ because only the $x$ and $y$ first-order terms are represented by the 2D NFFT. The full matrix $H_d$ is not explicitly materialized during low-rank setup.
+
+## Concomitant phase in the residual model
+
+The optional term in the residual exponent is zero when `concomitant=nothing`. For supplied coefficients,
+
+$$
+\phi_c(j,v,d)=c_1(j,d)z_v^2+c_2(j,d)(x_v^2+y_v^2)
++c_3(j,d)x_vz_v+c_4(j,d)y_vz_v.
+$$
+
+The four basis columns and corresponding coefficient rows are appended before residual basis construction. This applies to the selected shared or per-readout representation; the nominal first-order NFFT trajectory is unchanged. `recon_terms` selects only the original spherical-harmonic rows, and `kspha` still has 9 or 16 rows at the public interface.
+
+```julia
+op = HighOrderLowRankOp(grid, kspha_dynamic, times_dynamic;
+    fieldmap, csm, mask,
+    concomitant=concomitant_coefficients,  # (4,nSam,nDyn), cycles/m²
+)
+```
+
+A single-dynamic call also accepts `(4,nSam)`. With `concomitant=nothing`, no extra phase buffers are appended. Match the coefficient coordinate frame and physical origin to the grid, and convert rad/m² to cycles/m² by dividing by $2\pi$. Do not multiply these integrated coefficients by `times` again. See the [encoding model](/theory/encoding-model#optional-concomitant-phase) for the common convention.
 
 ## Per-dynamic randomized SVD
 
@@ -188,6 +209,156 @@ $$
 
 If $B_d=P_d\Sigma_d Z_d^H$, then $B_dZ_{d,L}=P_{d,L}\Sigma_{d,L}$; thus, in exact arithmetic, the Gram and direct-SVD routes produce the same retained factorization. The Gram formulation avoids a direct SVD of the tall $N_v\times\ell$ matrix but squares its condition number. The single-device implementation checks for non-finite values, significant negative eigenvalues, and degeneracy and can fall back to the direct SVD if the Gram result fails these checks.
 
+## Independent per-readout representation
+
+Set `basis_layout=:per_readout` to retain each local pair
+$U_d,\widetilde V_d$ directly, bypassing the shared-basis construction:
+
+```julia
+op = HighOrderLowRankOp(grid, kspha, times;
+    fieldmap, csm, mask,
+    basis_layout=:per_readout,
+    L_rank=6,
+    rsvd_oversample=5,
+)
+```
+
+For each readout and coil, the forward operation is
+
+$$
+A_{d,c}m \approx \sum_{\ell=1}^{L}
+\operatorname{diag}(u_{d,\ell})\mathcal F_d
+\left(m\odot C_c\odot\widetilde v_{d,\ell}^{*}\right).
+$$
+
+The same zeroth-order phase, centre correction, and normalization are folded
+into the temporal factors. One NFFT plan is cached per readout, giving
+$N_d L N_c$ transforms per forward or adjoint evaluation. The spatial
+factor bank has $N_v N_d L$ complex entries; cached plans also consume
+memory. This baseline can therefore require substantially more memory than
+the shared layout.
+
+### CPU storage and GPU lookahead
+
+To bound GPU memory for a large independent factor bank, keep the factors in
+host RAM and use a readout queue:
+
+```julia
+op = HighOrderLowRankOp(grid, kspha, times;
+    fieldmap, csm, mask,
+    arrayType=CuArray,
+    basis_layout=:per_readout,
+    per_readout_storage=:cpu,
+    per_readout_cache_size=5,
+    L_rank=6,
+    rsvd_oversample=5,
+)
+```
+
+Each normal-operator worker caches at most five readouts in this example. A
+separate CUDA stream copies future factors through one pinned host staging
+buffer. A single NFFT plan per worker updates its trajectory on the compute
+stream. Ready/consumed events prevent a slot from being used
+before its transfer completes or overwritten before its transforms finish.
+Completed slots are replenished while another slot computes. The same queue
+is used by the forward, adjoint, and multi-GPU normal operator. The
+source operator owns a separate queue for forward and standalone adjoint
+evaluations on the primary GPU.
+
+Once the multi-GPU normal backend
+has been initialized, adjoints reuse its workers and queues, distributing
+readouts and evaluating all coils for each readout together. Each spatial
+factor block is then transferred once across the worker group. This also
+parallelizes the solver's initial adjoint without changing its weights or
+independent spatial factors.
+
+For CG itself, select `normal_distribution=:readout` to assign disjoint
+readout ranges to workers, evaluating all coils for each assigned readout.
+Each factor block is then streamed once across the worker group per normal
+application, while all coil sensitivity maps are kept on each active GPU.
+`normal_distribution=:channel` retains the existing coil partition, with each
+worker traversing every readout. These compute the same weighted normal
+operator up to floating-point summation order.
+
+Only storage and scheduling change: the full independent spatial bank still
+occupies $N_v N_d L$ complex entries in host RAM. The default
+`per_readout_storage=:gpu` retains all independent factors and plans on the GPU.
+
+### Pipelined setup aggregation
+
+Voxel-distributed per-readout setup uses `per_readout_gather=:pipeline` by
+default. Each GPU has two pinned host buffers and a separate collector worker.
+Downloads and host writes can overlap later rSVD phases. A CUDA event delays
+the next overwrite of the spatial factor until its download finishes; a host
+buffer is reused only after its final write completes. The queue is bounded
+to two outstanding readouts. `per_readout_gather=:synchronous` retains the
+blocking gather for comparisons. The independent factors and their precision
+are unchanged, and the full host factor bank is still required.
+
+For five GPUs, twelve default Julia threads give the five compute workers,
+five collectors and coordinator room to run. With fewer threads the pipeline
+remains bounded, but overlap can be reduced. Pipeline worker times overlap
+the rSVD phases and must not be added to the total wall time.
+
+### On-demand regeneration
+
+When the independent spatial bank exceeds host RAM, use
+`per_readout_storage=:regenerate` with `rsvd_distribution=:voxel`,
+`rsvd_backend=:kernel` and `rsvd_finalize=:gram`. This retains each readout's
+original unmodulated $Q_d$ and Gram rotation $Z_d$ and generates
+
+$$
+V_d\Sigma_d = (H_d^H Q_d) Z_d
+$$
+
+with the existing matrix-free adjoint kernel. The complete phase matrix and
+spatial bank are never allocated. No additional singular-value truncation is
+introduced; GPU partition/GEMM geometry may change rounding, so validate the
+factor and operator errors for the workload. The temporal normalization and
+zeroth-order/centre phases remain in the operator's `q`, separately from Q/Z.
+
+`per_readout_cache_size=1` generates and consumes factors serially. Values of
+`2` or more enable an independent producer task/stream to prepare future
+readouts while the consumer evaluates all coils of the current readout.
+Each slot has ready/consumed events and is never overwritten while in use.
+Generation and NUFFT share GPU compute resources; lookahead is an opportunity
+to overlap work, not a guarantee that generation cost disappears.
+
+`per_readout_host_cache_bytes` sets an optional host factor budget (default
+zero). Whole factor blocks from a fixed, evenly spaced subset are materialized
+during setup; all GPU workers reuse the same bank. Fixed residency avoids
+evicting every cached readout during repeated sequential CG sweeps. The budget
+excludes Q/Z, field maps, workspaces and pinned staging. For example,
+`per_readout_host_cache_bytes=64 * 1024^3` reserves at most 64 GiB of host
+spatial factors. Start with zero or a small budget when measuring regeneration.
+The source operator and each normal worker own bounded GPU slots and a
+generator workspace; `close(op)` releases these workers/caches, which are
+recreated lazily if the operator is subsequently reused.
+
+Internal diagnostics include `HighOrderMRI.regenerated_basis_stats(op.basis)`, which reports
+logical bank bytes, Q/Z bytes, model bytes and resident host-factor bytes.
+`HighOrderMRI.per_readout_cache_stats(cache)` additionally records generation
+count/device time, host-cache hits and consumer ready-event wait time. Device
+times on different streams overlap and must not be summed as wall time.
+
+### Comparison scope
+
+Both layouts support the existing local rSVD backends, voxel-distributed
+setup, and channel-distributed normal operator. For a controlled comparison,
+hold the data, mask, field model, local rank, oversampling, seed, precision,
+backend, GPU partition, weights, and solver settings fixed. Only change
+`basis_layout`. `shared_rank_max` and `shared_basis_tol` are ignored in the
+per-readout layout; `global_basis_tol` must be `nothing` and
+`shared_basis_method` must be `:rsvd`. Setting `shared_basis_tol=0` in the
+shared layout still constructs a shared basis and is not this baseline.
+
+The independent factorization and per-readout NUFFT sums follow the
+[MAXGIRF author's encoding implementation](https://github.com/usc-mrel/lowfield_maxgirf/blob/637719ce1d96e26323803c0abe7607e8d598d3c0/src/encoding_lowrank_maxgirf.m).
+This switch retains HighOrderMRI's local rSVD implementation. Supply
+`concomitant` separately to include its phase; the layout does not estimate
+physical coefficients or promise bitwise reproduction of the MATLAB
+reconstruction.
+
 ## Incremental shared spatial basis
 
 Independent local factorizations would retain up to $N_dL$ spatial columns. HighOrderMRI instead constructs one orthonormal spatial basis sequentially across dynamics.
@@ -231,6 +402,13 @@ R_d^H R_d
 =
 T_d\Lambda_d^{(R)}T_d^H.
 $$
+
+The residual Gram is accumulated in ComplexF64 on both local and
+voxel-distributed paths, including for Float32 input factors. Its small
+eigendecomposition and spectral rank selection use Float64; stored basis
+vectors, coefficients, and NFFT products retain the requested precision.
+This behavior is automatic. It applies to the incremental shared residual
+Gram, separately from local rSVD finalization and the joint snapshot Gram.
 
 The minimum number $r_d$ of additional basis vectors is selected such that
 
@@ -637,6 +815,7 @@ For the default rSVD construction:
 
 | Parameter | Role | Recommended check |
 |---|---|---|
+| `basis_layout` | Shared or independent per-readout representation | Compare with identical local rSVD settings before tuning storage |
 | `L_rank` | Local truncation rank | Sweep against an explicit operator or independent dense reference |
 | `rsvd_oversample` | Additional random sketch directions | Verify `L_rank + rsvd_oversample ≤ min(nSam,nVox)` |
 | `rsvd_seed` | Reproducible random sketch schedule | Repeat with several seeds in a final sensitivity analysis |

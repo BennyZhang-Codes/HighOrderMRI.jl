@@ -6,11 +6,12 @@ Performance comparisons are interpretable only when the compared implementations
 
 ## CUDA kernel acceleration
 
-`HighOrderKernelOp` evaluates explicit high-order encoding using fused CUDA kernels. The implementation avoids materialization of a complete sample-by-voxel phase matrix and evaluates the encoding directly on the GPU.
+`HighOrderKernelOp` offers legacy/direct CUDA kernels and resident cuBLAS backends. `backend=:blocked` generates one complex phase block for both products of the weighted normal; `:cached` and `:cached_full` store the complete complex phase matrix. The default `:legacy` retains the original execution path.
 
 ```mermaid
 flowchart LR
-    A["Array-based explicit evaluation"] --> B["Fused CUDA evaluation"] --> C["Lower intermediate-memory traffic"]
+    A["Same complete explicit phase model"] --> B["Direct kernels or blocked cuBLAS"]
+    B --> C["Measure setup, normal, CG and complete reconstruction"]
 ```
 
 Runtime depends on matrix dimensions, sample count, receive-channel count, mask size, GPU hardware, numerical precision, and launch/transfer overhead. A speedup factor should therefore be reported only for a fully specified benchmark configuration.
@@ -23,16 +24,18 @@ Different workload decompositions are used for different computational stages:
 
 ```mermaid
 flowchart TB
-    A["Explicit CUDA operator"] --> A1["Voxel decomposition"]
+    A["Legacy explicit operator"] --> A1["Voxel decomposition"]
+    A2["Resident explicit operator"] --> A3["Sample decomposition"]
     B["Distributed low-rank setup"] --> B1["Voxel decomposition"]
-    C["Low-rank normal operator"] --> C1["Receive-channel decomposition"]
+    C["Low-rank normal operator"] --> C1["Channel or independent-readout decomposition"]
 
     A1 --> D["Fixed encoding / reconstruction objective"]
+    A3 --> D
     B1 --> D
     C1 --> D
 ```
 
-The explicit CUDA operator and distributed rSVD setup shard masked voxels. The optional low-rank normal backend shards receive channels. Forward-sample sharding is not used by the current explicit operator. See [Multi-GPU execution](/guide/multi-gpu) for the corresponding algebra and communication model.
+Legacy explicit kernels and distributed rSVD setup shard masked voxels. Resident explicit backends shard samples; the low-rank normal shards receive channels or independent readouts. See [Multi-GPU execution](/guide/multi-gpu) for the algebra and communication model.
 
 For a fixed problem, multi-GPU scaling can be summarized using
 
@@ -43,6 +46,38 @@ E_G = \frac{S_G}{G},
 $$
 
 where $T_1$ and $T_G$ are synchronized steady-state runtimes using one and $G$ GPUs, respectively. These quantities should be reported separately for setup and iterative reconstruction because the two stages use different decompositions and communication patterns.
+
+## Explicit phase storage and fair timing
+
+For `ComplexF32`, a complete complex phase matrix requires `8 * nSam * count(mask)` bytes. The per-block scratch also includes a real phase block for `phase_backend=:gemm`, complex phase storage, coil buffers, model, data, CG vectors, and library workspace. Verify the complete memory requirement on each GPU before choosing full caching.
+
+`phase_cache_bytes` is an existing per-GPU prefix-cache budget for `backend=:blocked`. It counts complex phase entries only and rounds down to complete sample blocks. Changing `block_size` changes both GEMM shapes and the number of cached rows that fit the budget. A comparison that changes block size and cache budget measures a joint configuration effect; a cache-only claim requires the same block size with and without caching.
+
+Include cache generation, setup, RHS, solver, and necessary transfers in one-shot reconstruction time. Report operator reuse separately. Synchronize every participating GPU, warm up compilation separately, interleave at least five complete trials, and report median/IQR with raw complex-image and weighted-residual checks. Local kernel time, launch count, or a phase-generation improvement alone does not establish a CG or end-to-end speedup. A single-GPU device trace cannot be presented as a multi-GPU time decomposition.
+
+The partial cache preserves the full encoding. Precision-controlled comparisons should set `CUDA.math_mode!(CUDA.PEDANTIC_MATH)` before constructing operators and record the effective mode in each worker. The blocked/cached phase kernels do not enable fast math themselves; cuBLAS precision follows its configured math mode. See [resident construction](/guide/operators#gpu-resident-explicit-reconstruction) and the [weighted normal interface](/reference/highorderkernelop#weighted-normal).
+
+### Relation to the non-Fourier SENSE preprint
+
+Bianchi and Pruessmann separate coil sensitivities from a reusable complex
+phase matrix. Their full-storage algorithm computes that matrix once; their
+split algorithm generates a sample block and reuses it in both products of
+the normal. These strategies motivate the resident explicit baseline here.
+[[24]](/references#ref-24 "Bianchi S, Pruessmann KP. A GPU-enhanced workflow for non-Fourier SENSE reconstruction. arXiv. 2026;2604.09233v1.")
+
+| Scope | Current HighOrderMRI implementation |
+|:--|:--|
+| Full phase storage, following the preprint | `:cached` and `:cached_full` generate the complex matrix during construction. |
+| Split phase reuse, following the preprint | `:blocked` reuses each block in `explicit_gpu_normal!`; coil products use native cuBLAS with `gemm_backend=:cublas`. |
+| Project-specific execution choices | A bounded prefix cache, sample-distributed multi-GPU workers, persistent solver storage, and the unified `gpus` interface. |
+| Separate approximation path | Local singular-vector factors and shared spatial compression belong to LowRank, not to the preprint's explicit phase-storage strategy. |
+
+This is an adaptation of the encoding operations, not reproduction of the
+paper's full mapping, intensity correction, filtering, or stopping workflow.
+The project-specific choices above are implementation contributions; the table
+does not assert that those general techniques are novel. Our positive phase,
+normalization, density weights, and regularization follow the fixed
+[reconstruction protocol](/guide/reconstruction-protocol).
 
 ## Low-rank acceleration
 
@@ -64,6 +99,15 @@ coefficients directly. This can reduce setup substantially when dynamics share
 a compact spatial subspace. It does not guarantee a smaller rank or faster
 reconstruction for every dataset. Increasing $R$ increases both factor storage
 and the number of NFFTs.
+
+For `basis_layout=:per_readout`, a forward or adjoint instead uses
+$N_d L N_c$ transforms and a logical spatial bank of $N_v N_d L$ complex
+entries. CPU streaming bounds device-factor storage but retains that bank in
+host RAM. Regeneration avoids the full bank at the cost of additional
+matrix-free adjoint products. Producer/consumer overlap and setup collectors
+share resources; their device/worker times cannot be added as elapsed wall
+time. Measure setup, host aggregation, transfers or regeneration, RHS, and CG
+separately. See [storage choices](/theory/low-rank#independent-per-readout-representation).
 
 ## Representative measurements
 

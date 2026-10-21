@@ -6,8 +6,9 @@ The API reference is organized as a set of short pages, following the same separ
 
 - [`Grid` and `basisfunc_spha`](/reference/grid-basis): physical reconstruction grid and real solid-harmonic basis evaluation.
 - [`HighOrderOp`](/reference/highorderop): array-based explicit field-aware encoding.
-- [`HighOrderKernelOp`](/reference/highorderkernelop): fused explicit CUDA encoding with optional multi-GPU voxel decomposition.
-- [`HighOrderLowRankOp`](/reference/highorderlowrankop): low-rank residual-phase representation with an incremental or joint shared spatial basis.
+- [`HighOrderKernelOp`](/reference/highorderkernelop): legacy/direct CUDA kernels and resident blocked/cached cuBLAS, with `gpus` selecting single- or multi-GPU execution.
+- [`explicit_gpu_normal`](/reference/highorderkernelop#weighted-normal): resident weighted normal from raw square-root weights; distinct from `normalOperator(op,D)` with an already squared diagonal.
+- [`HighOrderLowRankOp`](/reference/highorderlowrankop): low-rank residual-phase representation with shared or independent per-readout factors, including bounded streaming and regeneration.
 
 ## Reconstruction
 

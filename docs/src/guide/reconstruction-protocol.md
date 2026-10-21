@@ -18,7 +18,8 @@ $$
 t_j\,\Delta f_{0,v}
 +
 \sum_{p=1}^{N_{\mathrm{term}}}
-k_{p,j}\,b_{p,v},
+k_{p,j}\,b_{p,v}
++\phi_c(j,v),
 $$
 
 where Julia row $p=1$ is the spatially constant zeroth-order basis $b_{1,v}=1$. The forward model is
@@ -34,7 +35,13 @@ $$
 
 This expression mirrors the production `HighOrderOp` and `HighOrderKernelOp`: static off-resonance contributes `times .* fieldmap`, and all selected dynamic field terms contribute `bf * kspha`. The phase is in cycles before multiplication by $2\pi$. The forward sign is positive and the adjoint uses the conjugate phase and $C_{vc}^*$.
 
-`HighOrderLowRankOp` targets the same model. It sends the active first-order terms to AbstractNFFTs, approximates static off-resonance plus residual spatial phase with a shared spatial basis, and folds the spatially constant zeroth-order phase into the sample-domain factor `q`.
+`HighOrderLowRankOp` targets the same model. It sends the active first-order terms to AbstractNFFTs, approximates static off-resonance plus residual spatial phase with shared or independent per-readout factors, and folds the spatially constant zeroth-order phase into the sample-domain factor `q`.
+
+The optional $\phi_c$ is zero by default. When supplied, `concomitant`
+contains the integrated coefficients described in the
+[encoding model](/theory/encoding-model#optional-concomitant-phase).
+Record its source, coordinate frame, units, and presence in every compared
+operator. `recon_terms` controls only the original spherical-harmonic rows.
 
 ## 2. Spatial grid
 
@@ -171,6 +178,11 @@ For the default rSVD method, the following quantities must be reported separatel
 - `rsvd_finalize`;
 - `rsvd_backend`;
 - `rsvd_distribution`.
+
+Record `basis_layout` and `normal_distribution`. For independent factors,
+also record `per_readout_storage`, `per_readout_cache_size`,
+`per_readout_gather`, and `per_readout_host_cache_bytes`. The local rank is
+`L_rank` per readout; there is no shared-compression rank in this layout.
 
 Also record `shared_basis_method` and `global_basis_tol`. A final global
 truncation adds approximation error relative to the already compressed
