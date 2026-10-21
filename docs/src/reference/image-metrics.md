@@ -73,4 +73,4 @@ use **reference-first** argument order. Prefer the explicitly named functions ab
 
 See [Scientific validation strategy](/guide/validation) for the interpretation of raw, aligned, and magnitude-only metrics.
 
-[Source: `ImageMetrics.jl`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/docs-modern-ui/src/utils/ImageMetrics.jl)
+[Source: `ImageMetrics.jl`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/docs/src/utils/ImageMetrics.jl)

@@ -43,4 +43,4 @@ predicted = apply_girf(
 )
 ```
 
-[Source: `apply_girf.jl`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/docs-modern-ui/src/GIRF/apply_girf.jl)
+[Source: `apply_girf.jl`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/docs/src/GIRF/apply_girf.jl)

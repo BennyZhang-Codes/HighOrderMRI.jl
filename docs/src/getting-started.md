@@ -89,7 +89,8 @@ The stage-specific sample, voxel, channel, and independent-readout decomposition
 
 ## Build the documentation locally
 
-The documentation site uses VitePress. From the repository root:
+The documentation site uses VitePress. Run these commands from the repository
+root in a checkout of the `docs` branch:
 
 ```bash
 npm install --prefix docs
@@ -103,6 +104,32 @@ npm run docs:build --prefix docs
 ```
 
 The generated site is written to `docs/src/.vitepress/dist/`.
+
+### Website publication
+
+The `docs` branch owns the public website. Its Documentation workflow builds
+the site and uploads a Pages artifact; a separate deployment job publishes
+that artifact directly through GitHub Pages. Pull requests run the build
+without publishing. The repository's Pages source is **GitHub Actions** and
+the `github-pages` environment permits deployments from `docs`.
+
+To build the complete publication locally, run:
+
+```bash
+npm run docs:build-site --prefix docs
+```
+
+The result in `docs/.pages/` contains `/dev/` and a root redirect. It also
+includes up to eight release tags containing VitePress documentation and a
+separate `/stable/` build of the newest supported tag. Each version is built
+from its own tagged source with its own URL base. Tags without VitePress
+source are excluded from the version selector. After creating a documentation
+tag, run the Documentation workflow on `docs` to refresh the complete site.
+
+Every deployment replaces the complete site artifact. It does not read or
+write a generated-files branch. The `main` branch continues to run Documenter
+checks for Julia docstrings and reference pages, without publishing them.
+See [GitHub's custom-workflow deployment documentation](https://docs.github.com/en/pages/getting-started-with-github-pages/using-custom-workflows-with-github-pages).
 
 ## Reading paths
 

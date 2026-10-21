@@ -45,4 +45,4 @@ transform = fit_coil_compression(
 
 The truncated-SVD optimality statement applies to this single global linear transform in the whitened calibration space; it does not imply equivalence to spatially varying GCC. See [Coil compression](/guide/coil-compression) for the derivation and literature context.
 
-[Source: `CoilCompression.jl`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/docs-modern-ui/src/Recon/CoilCompression.jl)
+[Source: `CoilCompression.jl`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/docs/src/Recon/CoilCompression.jl)

@@ -3,25 +3,21 @@ name: Documentation
 on:
   push:
     branches:
-      - main
-      - docs-modern-ui
-    tags:
-      - 'v*'
+      - docs
   pull_request:
     branches:
-      - main
-      - docs-modern-ui
+      - docs
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: documentation-pages
   cancel-in-progress: false
 
 jobs:
-  docs:
+  build:
     name: Build versioned VitePress documentation
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -37,139 +33,30 @@ jobs:
       - name: Install documentation dependencies
         run: npm install --prefix docs --no-audit --no-fund
 
-      - name: Resolve documentation versions
-        id: versions
-        shell: bash
-        run: |
-          stable_tag="$(git tag --list 'v*' --sort=-v:refname | head -n 1)"
-          release_versions="$(git tag --list 'v*' --sort=-v:refname | head -n 8 | paste -sd, -)"
+      - name: Build complete Pages site
+        run: npm run docs:build-site --prefix docs
 
-          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            docs_version="${GITHUB_REF_NAME}"
-            docs_base="/HighOrderMRI.jl/${GITHUB_REF_NAME}/"
-            source_ref="${GITHUB_REF_NAME}"
-          else
-            docs_version="dev"
-            docs_base="/HighOrderMRI.jl/dev/"
-            source_ref="${GITHUB_REF_NAME}"
-          fi
-
-          echo "stable_tag=${stable_tag}" >> "$GITHUB_OUTPUT"
-          echo "release_versions=${release_versions}" >> "$GITHUB_OUTPUT"
-          echo "docs_version=${docs_version}" >> "$GITHUB_OUTPUT"
-          echo "docs_base=${docs_base}" >> "$GITHUB_OUTPUT"
-          echo "source_ref=${source_ref}" >> "$GITHUB_OUTPUT"
-
-      - name: Build documentation
-        env:
-          DOCS_VERSION: ${{ steps.versions.outputs.docs_version }}
-          DOCS_BASE: ${{ steps.versions.outputs.docs_base }}
-          DOCS_SOURCE_REF: ${{ steps.versions.outputs.source_ref }}
-          DOCS_STABLE_VERSION: ${{ steps.versions.outputs.stable_tag }}
-          DOCS_RELEASE_VERSIONS: ${{ steps.versions.outputs.release_versions }}
-        run: npm run docs:build --prefix docs
-
-      - name: Deploy development documentation
-        if: github.event_name != 'pull_request' && github.ref_type == 'branch'
-        uses: peaceiris/actions-gh-pages@v4
+      - name: Upload Pages artifact
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/docs'
+        uses: actions/upload-pages-artifact@v4
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: docs/src/.vitepress/dist
-          publish_branch: gh-pages
-          destination_dir: dev
-          keep_files: true
+          path: docs/.pages
 
-      - name: Deploy tagged documentation
-        if: github.event_name != 'pull_request' && github.ref_type == 'tag'
-        uses: peaceiris/actions-gh-pages@v4
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: docs/src/.vitepress/dist
-          publish_branch: gh-pages
-          destination_dir: ${{ github.ref_name }}
-          keep_files: true
+  deploy:
+    name: Deploy VitePress to GitHub Pages
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/docs'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
 
-      - name: Build stable alias
-        if: github.event_name != 'pull_request' && github.ref_type == 'tag'
-        env:
-          DOCS_VERSION: stable
-          DOCS_BASE: /HighOrderMRI.jl/stable/
-          DOCS_SOURCE_REF: ${{ github.ref_name }}
-          DOCS_STABLE_VERSION: ${{ github.ref_name }}
-          DOCS_RELEASE_VERSIONS: ${{ steps.versions.outputs.release_versions }}
-        run: |
-          rm -rf docs/src/.vitepress/dist
-          npm run docs:build --prefix docs
-
-      - name: Deploy stable documentation
-        if: github.event_name != 'pull_request' && github.ref_type == 'tag'
-        uses: peaceiris/actions-gh-pages@v4
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: docs/src/.vitepress/dist
-          publish_branch: gh-pages
-          destination_dir: stable
-          keep_files: true
-
-      - name: Rebuild development documentation after release
-        if: github.event_name != 'pull_request' && github.ref_type == 'tag'
-        env:
-          DOCS_VERSION: dev
-          DOCS_BASE: /HighOrderMRI.jl/dev/
-          DOCS_SOURCE_REF: main
-          DOCS_STABLE_VERSION: ${{ github.ref_name }}
-          DOCS_RELEASE_VERSIONS: ${{ steps.versions.outputs.release_versions }}
-        run: |
-          git checkout --detach origin/main
-          rm -rf docs/src/.vitepress/dist
-          npm install --prefix docs --no-audit --no-fund
-          npm run docs:build --prefix docs
-
-      - name: Refresh development documentation after release
-        if: github.event_name != 'pull_request' && github.ref_type == 'tag'
-        uses: peaceiris/actions-gh-pages@v4
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: docs/src/.vitepress/dist
-          publish_branch: gh-pages
-          destination_dir: dev
-          keep_files: true
-
-      - name: Create root documentation redirect
-        if: github.event_name != 'pull_request'
-        shell: bash
-        run: |
-          rm -rf docs-root-redirect
-          mkdir -p docs-root-redirect
-
-          if [[ -n "${{ steps.versions.outputs.stable_tag }}" ]]; then
-            target="stable"
-          else
-            target="dev"
-          fi
-
-          cat > docs-root-redirect/index.html <<EOF
-          <!doctype html>
-          <html lang="en">
-            <head>
-              <meta charset="utf-8">
-              <meta name="viewport" content="width=device-width, initial-scale=1">
-              <meta http-equiv="refresh" content="0; url=./${target}/">
-              <link rel="canonical" href="https://bennyzhang-codes.github.io/HighOrderMRI.jl/${target}/">
-              <title>HighOrderMRI.jl documentation</title>
-            </head>
-            <body>
-              <p>Redirecting to <a href="./${target}/">HighOrderMRI.jl ${target} documentation</a>.</p>
-              <script>location.replace('./${target}/' + location.search + location.hash)</script>
-            </body>
-          </html>
-          EOF
-
-      - name: Deploy root redirect
-        if: github.event_name != 'pull_request'
-        uses: peaceiris/actions-gh-pages@v4
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: docs-root-redirect
-          publish_branch: gh-pages
-          keep_files: true
+      - name: Deploy Pages artifact
+        id: deployment
+        uses: actions/deploy-pages@v4

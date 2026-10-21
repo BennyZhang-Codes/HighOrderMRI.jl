@@ -4,7 +4,7 @@ import { mermaidPlugin } from './plugins/vitepress-mermaid'
 const siteUrl = 'https://bennyzhang-codes.github.io/HighOrderMRI.jl'
 const docsVersion = process.env.DOCS_VERSION || 'dev'
 const docsBase = process.env.DOCS_BASE || '/HighOrderMRI.jl/dev/'
-const sourceRef = process.env.DOCS_SOURCE_REF || 'docs-modern-ui'
+const sourceRef = process.env.DOCS_SOURCE_REF || 'docs'
 const stableVersion = process.env.DOCS_STABLE_VERSION || ''
 const releaseVersions = (process.env.DOCS_RELEASE_VERSIONS || '')
   .split(',')

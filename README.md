@@ -1,7 +1,7 @@
 # HighOrderMRI.jl
 
 [![CI](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/actions/workflows/ci.yml)
-[![Documentation](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/actions/workflows/documentation.yml/badge.svg?branch=main)](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/actions/workflows/documentation.yml)
+[![VitePress deployment](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/actions/workflows/documentation.yml/badge.svg?branch=docs)](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/actions/workflows/documentation.yml?query=branch%3Adocs)
 [![Dev documentation](https://img.shields.io/badge/docs-dev-6366f1.svg)](https://bennyzhang-codes.github.io/HighOrderMRI.jl/dev/)
 
 HighOrderMRI.jl is a Julia toolbox for Cartesian and non-Cartesian MRI reconstruction with measured or predicted dynamic higher-order fields. It provides explicit encoding operators for numerical reference, fused CUDA implementations, and a matrix-free shared-subspace operator for large 2D and 3D reconstruction.
@@ -19,7 +19,7 @@ HighOrderMRI.jl is a Julia toolbox for Cartesian and non-Cartesian MRI reconstru
 
 ## Documentation
 
-The current development documentation is available at [HighOrderMRI.jl/dev](https://bennyzhang-codes.github.io/HighOrderMRI.jl/dev/). Once a tagged release is published, the latest released documentation will also be available through `/stable/`, with each tagged version retained under its own `/vX.Y.Z/` path.
+The current development documentation is available at [HighOrderMRI.jl/dev](https://bennyzhang-codes.github.io/HighOrderMRI.jl/dev/). The `docs` branch builds VitePress and deploys a complete Pages artifact directly through GitHub Actions. Up to eight tags containing VitePress source are published under their own version paths, with the newest also built at `/stable/`. Documenter on `main` remains a build check and does not publish the website.
 
 The documentation contains:
 

@@ -30,4 +30,4 @@ predicted = apply_girf(nominal_gradients, model)
 
 See [Field preprocessing and synchronization](/guide/field-preprocessing) for the physical interpretation and GIRF reference.
 
-[Source: `GIRF.jl`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/docs-modern-ui/src/GIRF/GIRF.jl)
+[Source: `GIRF.jl`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/docs/src/GIRF/GIRF.jl)

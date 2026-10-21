@@ -70,4 +70,4 @@ delay = FindDelay(
 )
 ```
 
-[Source: `FindDelay.jl`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/docs-modern-ui/src/Synchronization/FindDelay.jl)
+[Source: `FindDelay.jl`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/docs/src/Synchronization/FindDelay.jl)

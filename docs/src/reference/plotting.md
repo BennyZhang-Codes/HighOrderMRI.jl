@@ -24,4 +24,4 @@ plt_image(abs.(image); title="Reconstruction")
 plt_kspha(kspha)
 ```
 
-[Source: `src/plot`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/tree/docs-modern-ui/src/plot)
+[Source: `src/plot`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/tree/docs/src/plot)

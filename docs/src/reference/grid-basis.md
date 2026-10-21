@@ -43,4 +43,4 @@ terms = collect(1:9)
 bf = basisfunc_spha(grid.x, grid.y, grid.z, terms)
 ```
 
-[Source: `basisfunction.jl`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/docs-modern-ui/src/SphericalHarmonics/basisfunction.jl)
+[Source: `basisfunction.jl`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/docs/src/SphericalHarmonics/basisfunction.jl)
