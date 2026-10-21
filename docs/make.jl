@@ -39,8 +39,3 @@ makedocs(
         "References and source notes" => "references.md",
     ],
 )
-
-deploydocs(
-    repo="github.com/BennyZhang-Codes/HighOrderMRI.jl.git",
-    devbranch=DEVBRANCH,
-)
