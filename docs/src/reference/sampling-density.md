@@ -31,4 +31,4 @@ weight = samplingDensity(
 
 Use the same trajectory convention and the same returned weights when comparing encoding implementations.
 
-[Source: `SampleDensity.jl`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/docs-modern-ui/src/Recon/SampleDensity/SampleDensity.jl)
+[Source: `SampleDensity.jl`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/docs/src/Recon/SampleDensity/SampleDensity.jl)

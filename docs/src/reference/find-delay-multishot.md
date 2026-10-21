@@ -63,4 +63,4 @@ delay = FindDelay_multishot(
 
 See [Field preprocessing and synchronization](/guide/field-preprocessing#model-based-delay-estimation) for the shared-delay interpretation.
 
-[Source: `FindDelay_multishot.jl`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/docs-modern-ui/src/Synchronization/FindDelay_multishot.jl)
+[Source: `FindDelay_multishot.jl`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/docs/src/Synchronization/FindDelay_multishot.jl)

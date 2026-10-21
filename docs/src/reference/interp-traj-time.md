@@ -61,4 +61,4 @@ kspha_at_adc = InterpTrajTime(
 
 Inspect the requested interval explicitly because extrapolated leading or trailing values are zero.
 
-[Source: `InterpTraj.jl`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/docs-modern-ui/src/Synchronization/InterpTraj.jl)
+[Source: `InterpTraj.jl`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/docs/src/Synchronization/InterpTraj.jl)

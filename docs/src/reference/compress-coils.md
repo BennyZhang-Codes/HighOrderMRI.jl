@@ -50,4 +50,4 @@ data_cc, csm_cc, transform = compress_coils(
 
 For calibration-region fitting, call [`fit_coil_compression`](/reference/fit-coil-compression) on the calibration view and apply the result to the full arrays with [`apply_coil_compression`](/reference/apply-coil-compression).
 
-[Source: `CoilCompression.jl`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/docs-modern-ui/src/Recon/CoilCompression.jl)
+[Source: `CoilCompression.jl`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/docs/src/Recon/CoilCompression.jl)

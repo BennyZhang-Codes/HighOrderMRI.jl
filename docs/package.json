@@ -5,6 +5,7 @@
   "scripts": {
     "docs:dev": "vitepress src",
     "docs:build": "vitepress build src",
+    "docs:build-site": "node build-site.mjs",
     "docs:preview": "vitepress preview src"
   },
   "devDependencies": {

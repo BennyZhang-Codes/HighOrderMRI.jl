@@ -43,4 +43,4 @@ Utilities for centred array ranges/crops and integer-factor selection.
 
 For scientific reconstruction code, unit-sensitive trajectory conversion should be documented together with the phase convention described in [Symbols and notation](/theory/symbols).
 
-[Source: `src/utils`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/tree/docs-modern-ui/src/utils)
+[Source: `src/utils`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/tree/docs/src/utils)

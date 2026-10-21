@@ -34,4 +34,4 @@ noise_covariance = estimate_noise_covariance(
 )
 ```
 
-[Source: `CoilCompression.jl`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/docs-modern-ui/src/Recon/CoilCompression.jl)
+[Source: `CoilCompression.jl`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/docs/src/Recon/CoilCompression.jl)
