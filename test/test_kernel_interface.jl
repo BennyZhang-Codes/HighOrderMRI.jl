@@ -69,6 +69,7 @@ using LinearOperatorCollection, LinearOperators
             CUDA.device!(0)
             @test_throws ArgumentError HighOrderKernelOp(grid, kspha, times; backend=:invalid)
             @test_throws ArgumentError HighOrderKernelOp(grid, kspha, times; backend=:blocked, kspha_dt=kspha)
+            @test_throws DimensionMismatch HighOrderKernelOp(grid, kspha, times; backend=:blocked, concomitant=zeros(T,4,12))
             @test_throws ArgumentError HighOrderKernelOp(grid, kspha, times; phase_cache_bytes=1)
         end
     else

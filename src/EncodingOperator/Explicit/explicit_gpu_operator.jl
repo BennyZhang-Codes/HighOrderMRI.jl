@@ -78,7 +78,7 @@ vectors must belong to the GPU selected during construction. Applications and
 
 # Keywords
 
-- `fieldmap`, `csm`, `mask`, `recon_terms`, `k_nominal`: the same spatial
+- `fieldmap`, `csm`, `mask`, `concomitant`, `recon_terms`, `k_nominal`: the same spatial
   inputs and order-selection convention as [`HighOrderKernelOp`](@ref).
 - `backend`: `:direct`, `:blocked` (default), `:cached`, or `:cached_full`.
 - `gpus=nothing`: use the current GPU, or pass one visible CUDA ID such as
@@ -298,7 +298,7 @@ end
 
 function ExplicitGPUOp(grid::Grid{T}, kspha::AbstractMatrix{T}, times::AbstractVector{T};
     fieldmap=zeros(T, grid.matrixSize...), csm=ones(Complex{T}, grid.matrixSize..., 1),
-    mask=trues(grid.matrixSize...), recon_terms=nothing, k_nominal=kspha[2:4, :],
+    mask=trues(grid.matrixSize...), concomitant=nothing, recon_terms=nothing, k_nominal=kspha[2:4, :],
     backend::Symbol=:blocked, block_size::Int=320, phase_backend::Symbol=:kernel,
     gemm_backend::Symbol=:cublas, gpus=nothing, phase_cache_bytes::Integer=0,
     forward_threads::Int=256, adjoint_threads::Int=512,
@@ -344,7 +344,7 @@ function ExplicitGPUOp(grid::Grid{T}, kspha::AbstractMatrix{T}, times::AbstractV
         workspace_rows = backend === :cached_full ? nSam : B
         phase_elements = backend in (:cached, :cached_full) ? nSam*nVox : (B+cache_rows)*nVox
         complex_elements = phase_elements + 3*nVox*nCha + 2*nVox + workspace_rows*nCha
-        real_elements = nTerm*(nVox+nSam) + nSam + nVox
+        real_elements = (nTerm + (isnothing(concomitant) ? 0 : 4))*(nVox+nSam) + nSam + nVox
         phase_backend === :gemm && (real_elements += B*nVox)
         solver_elements = 8*length(mask) + 3*nSam*nCha
         estimate = sizeof(Complex{T})*(complex_elements+solver_elements) +
@@ -354,6 +354,7 @@ function ExplicitGPUOp(grid::Grid{T}, kspha::AbstractMatrix{T}, times::AbstractV
     end
     prepared = prep_kspha(kspha, k_nominal, nTerm; recon_terms)
     bf = basisfunc_spha(grid.x[indices], grid.y[indices], grid.z[indices], collect(1:nTerm))
+    bf, prepared = prep_concomitant(bf, prepared, grid, vec(mask); concomitant)
     nPad = backend === :direct ? 32*cld(nCha, 32) : nCha
     sensitivities = zeros(Complex{T}, nVox, nPad)
     sensitivities[:, 1:nCha] .= reshape(csm, :, nCha)[indices, :]

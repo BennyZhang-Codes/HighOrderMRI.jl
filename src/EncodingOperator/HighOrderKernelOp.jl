@@ -112,6 +112,11 @@ Fourier encoding operator.
   sensitivity maps. [nX, nY, nCha] is accepted when `nZ == 1`.
 * `mask::AbstractArray{Bool}`           - [nX, nY, nZ], reconstruction mask.
   [nX, nY] is accepted when `nZ == 1`.
+* `concomitant`                        - Optional [4, nSam] time-integrated
+  phase coefficients in cycles/m² for `z²`, `x²+y²`, `xz`, and `yz`.
+  Coordinates are in metres in the same frame and origin as the coefficients.
+  The default is `nothing`. Independent of `recon_terms`; ignored when
+  `kspha_dt` is supplied for delay estimation.
 * `recon_terms::Union{Nothing, AbstractString}` - Binary order-selection
   string. Use three digits for `nTerm == 9` and four digits for
   `nTerm == 16`; the digits select zeroth-, first-, second-, and third-order
@@ -153,7 +158,7 @@ Fourier encoding operator.
 Resident backends accept host model inputs. Pass GPU data and weights to
 `recon_HOOp`; the first entry of `gpus` owns the solver vectors. Call `close(op)`
 after all derived normal operators are no longer used. The workspaces are not
-reentrant. `kspha_dt` currently requires `backend=:legacy`.
+reentrant. `kspha_dt` requires `backend=:legacy`.
 """
 function HighOrderKernelOp(
     grid        :: Grid{T}                                                             ,
@@ -162,6 +167,7 @@ function HighOrderKernelOp(
     fieldmap    :: AbstractArray{T}          = zeros(T, grid.matrixSize...)            , 
     csm         :: AbstractArray{Complex{T}} = ones(Complex{T}, grid.matrixSize..., 1) , 
     mask        :: AbstractArray{Bool}       = trues(grid.matrixSize...)               ,
+    concomitant                              = nothing                                 ,
     recon_terms :: Union{Nothing,AbstractString} = nothing                            ,
     k_nominal   :: AbstractArray{T, 2}       = kspha[2:4, :]                           ,
     kspha_dt                                 = nothing                                 ,
@@ -188,7 +194,7 @@ function HighOrderKernelOp(
         isnothing(kspha_dt) || throw(ArgumentError("kspha_dt requires backend=:legacy"))
         constructor = length(gpus) == 1 ? ExplicitGPUOp : ExplicitMultiGPUOp
         op = constructor(grid, kspha, times; gpus, fieldmap, csm, mask,
-            recon_terms, k_nominal, backend, block_size, phase_backend,
+            concomitant, recon_terms, k_nominal, backend, block_size, phase_backend,
             gemm_backend, phase_cache_bytes, forward_threads, adjoint_threads)
         return HighOrderKernelOp(op)
     end
@@ -231,6 +237,8 @@ function HighOrderKernelOp(
     
     # compute basis functions (spherical harmonics)
     bf = basisfunc_spha(grid.x[mask.!=0], grid.y[mask.!=0], grid.z[mask.!=0], collect(1:nTerm))
+    bf, kspha = prep_concomitant(bf, kspha, grid, mask; concomitant=isnothing(kspha_dt) ? concomitant : nothing)
+    nTerm = size(kspha, 1)
 
     nVox > 0 || throw(ArgumentError("mask must contain at least one voxel"))
     nChaPad = 32 * cld(nCha, 32)

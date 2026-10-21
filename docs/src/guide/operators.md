@@ -147,8 +147,9 @@ The current `kspha_dt` forward path of `HighOrderKernelOp` falls back to the
 array-based CPU derivative implementation. Its adjoint retains the ordinary
 kernel encoding action described above. Use
 `HighOrderOp(...; arrayType=CuArray, kspha_dt=...)` when the derivative forward
-product must run on CUDA. Resident backends require ordinary encoding: `kspha_dt`
-currently requires `backend=:legacy`.
+product must run on CUDA. Resident backends require ordinary encoding:
+`kspha_dt` requires `backend=:legacy`. Optional `concomitant` phase is supported
+by both legacy and resident backends.
 
 ## GPU-resident explicit reconstruction
 
