@@ -318,6 +318,14 @@ the default rSVD path is unchanged.
 * `shared_basis_tol::T`                 - Relative approximation-error
   tolerance used while merging per-dynamic spatial bases. The final shared
   rank is adaptive and can be larger than `L_rank`.
+* `shared_noadd_check::Bool`             - For voxel-distributed shared rSVD,
+  test the FP64 energy of the original twice-orthogonalized residual before
+  constructing its Gram (default `false`). Clearly sub-threshold residuals
+  return without a Gram or eigensolve; all other cases use the original
+  update. Residuals and projection coefficients are still computed in full.
+  The reported error uses the full residual norm and can differ from the
+  original diagnostic after tiny residual eigenvalues are discarded. This
+  diagnostic difference does not enter the shared-factor construction.
 * `shared_basis_method::Symbol`         - `:rsvd` (default) merges local rSVD
   factors. `:joint` bypasses local rSVD and selects the final shared rank using
   `shared_basis_tol` as a per-profile sampled original-matrix error target,
@@ -425,6 +433,7 @@ function HighOrderLowRankOp(
     per_readout_host_cache_bytes:: Int             = 0                                       ,
     shared_rank_max   :: Int                       = 128                                     ,
     shared_basis_tol  :: T                         = T(1e-2)                                 , 
+    shared_noadd_check::Bool                       = false                                   ,
     global_basis_tol  :: Union{Nothing,T}          = nothing                                 ,
     shared_basis_method:: Symbol                    = :rsvd                                   ,
     joint_snapshots   :: Int                       = 256                                     ,
@@ -493,6 +502,11 @@ function HighOrderLowRankOp(
     rsvd_backend = rsvd_backend === :auto ? (is_gpu ? :kernel : :chunked) : rsvd_backend
     use_distributed_rsvd =
     !use_joint_basis && (rsvd_distribution === :voxel || (rsvd_distribution === :auto && is_gpu && length(gpus) > 1 && rsvd_finalize === :gram && rsvd_backend === :kernel))
+
+    if shared_noadd_check
+        use_distributed_rsvd && basis_layout === :shared || throw(ArgumentError(
+            "shared_noadd_check requires voxel-distributed shared rSVD"))
+    end
 
     if use_distributed_rsvd
         is_gpu || throw(ArgumentError("rsvd_distribution=:voxel requires arrayType=CuArray"))
@@ -642,7 +656,8 @@ function HighOrderLowRankOp(
                     @views u_host[:, :, dyn] .= u_trunc
 
                     t0 = time_ns()
-                    relative_error, n_added = update_distributed_shared_basis!(distributed_shared, distributed_workspace, dyn, total_energy)
+                    relative_error, n_added = update_distributed_shared_basis!(distributed_shared, distributed_workspace, dyn, total_energy;
+                        no_add_check=shared_noadd_check)
                     shared_time += (time_ns() - t0) * 1e-9
 
                     if verbose @info("Distributed shared spatial basis update", dyn=dyn, added=n_added, rank=distributed_shared.rank, relative_error=relative_error) end
