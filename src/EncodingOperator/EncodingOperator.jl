@@ -23,4 +23,5 @@ include("LowRankApproximation/per_readout_cache.jl")
 include("LowRankApproximation/streaming_nfft_plan.jl")
 include("HighOrderLowRankOp.jl")    # low rank approximation of temporal-spatial varing phase
 include("LowRankApproximation/multi_gpu_normal_operator.jl")
+include("LowRankApproximation/rank_sharded_shared.jl")
 include("Explicit/multi_gpu_operator.jl")
