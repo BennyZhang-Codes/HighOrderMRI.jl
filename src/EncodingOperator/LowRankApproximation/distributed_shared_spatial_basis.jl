@@ -126,7 +126,8 @@ function update_distributed_shared_basis!(
     shared        :: DistributedSharedSpatialBasis{T},
     rsvd_workspace:: DistributedRSVDWorkspace{T},
     dyn           :: Int,
-    total_energy  :: T,
+    total_energy  :: T;
+    no_add_check  :: Bool = false,
 ) where {T<:AbstractFloat}
 
     @assert 1 <= dyn <= size(shared.coeff, 3)
@@ -241,6 +242,39 @@ function update_distributed_shared_basis!(
         return zero(T), 0
     end
 
+    # A no-add decision needs only tr(R'R), not its full spectrum. Keep
+    # the original two-pass projection and exact residual, then reduce its
+    # norm in FP64. This avoids a cancellation-prone subtraction of energies.
+    residual_ready = false
+    if no_add_check && r > 0
+        partial_energy = Vector{Float64}(undef, nShard)
+        run_on_workers!(partial_energy, rsvd_workspace.workers) do i
+            shard = shared.shards[i]
+            small = @view shard.small[1:r, :]
+            copyto!(small, correction)
+            CUDA.@sync begin
+                mul!(shard.residual, view(shard.basis, :, 1:r), small,
+                    -one(Complex{T}), one(Complex{T}))
+                if T !== Float64
+                    shard.residual64 .= shard.residual
+                end
+            end
+            Float64(sum(abs2, shard.residual64))
+        end
+        residual_ready = true
+        residual_energy = sum(partial_energy)
+        allowed_energy = Float64(shared.tol)^2 * Float64(total_energy)
+        # Both the nonnegative FP64 sum and the original Gram/eigen trace
+        # have roundoff. Reject a conservative interval near the threshold.
+        guard = 64 * eps(Float64) * shared.nVox * L
+        if isfinite(residual_energy) && residual_energy >= 0 &&
+           guard < 0.01 && residual_energy <= allowed_energy * (1 - guard)
+            relative_error = T(sqrt(residual_energy / Float64(total_energy)))
+            shared.errors[dyn] = relative_error
+            return relative_error, 0
+        end
+    end
+
     # ----------------------------------------------------------
     # G = Σ_g R_gᴴR_g
     # ----------------------------------------------------------
@@ -255,16 +289,18 @@ function update_distributed_shared_basis!(
         # stream. The CPU only needs the completed Gram, not the residual.
         # Float32 Gram noise can hide energy below the shared tolerance.
         CUDA.@sync begin
-            if r == 0
-                copyto!(shared_shard.residual, rsvd_workspace.shards[i].v_scaled)
-            else
-                small = @view shared_shard.small[1:r, :]
-                copyto!(small, correction)
-                mul!(shared_shard.residual, view(shared_shard.basis, :, 1:r), small,
-                    -one(Complex{T}), one(Complex{T}))
-            end
-            if T !== Float64
-                shared_shard.residual64 .= shared_shard.residual
+            if !residual_ready
+                if r == 0
+                    copyto!(shared_shard.residual, rsvd_workspace.shards[i].v_scaled)
+                else
+                    small = @view shared_shard.small[1:r, :]
+                    copyto!(small, correction)
+                    mul!(shared_shard.residual, view(shared_shard.basis, :, 1:r), small,
+                        -one(Complex{T}), one(Complex{T}))
+                end
+                if T !== Float64
+                    shared_shard.residual64 .= shared_shard.residual
+                end
             end
             mul!(shared_shard.gram, adjoint(shared_shard.residual64), shared_shard.residual64)
         end

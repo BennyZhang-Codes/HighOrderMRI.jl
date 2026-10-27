@@ -80,7 +80,16 @@ mutable struct HighOrderNormalBackend
     verbose       :: Bool
     operator      :: Union{Nothing,AbstractLinearOperator}
     weights2      :: Union{Nothing,AbstractVector}
+    sample_batch_size :: Int
+    primary_gpu   :: Int
 end
+
+HighOrderNormalBackend(distribution, gpus, verbose, operator, weights2, sample_batch_size) =
+    HighOrderNormalBackend(distribution, gpus, verbose, operator, weights2, sample_batch_size,
+        isempty(gpus) ? 0 : first(gpus))
+
+HighOrderNormalBackend(distribution, gpus, verbose, operator, weights2) =
+    HighOrderNormalBackend(distribution, gpus, verbose, operator, weights2, 12_000_000)
 
 """
 High-order field encoding operator using a low-rank approximation of the
@@ -115,7 +124,7 @@ mutable struct HighOrderLowRankOp{
     basis      :: AB                     # shared columns or consecutive per-readout VΣ blocks
     csm        :: AC                     # [nVox, nCha]
     
-    nfftplan   :: P                      # one reusable CPU/GPU NFFT plan
+    nfftplan   :: Union{Nothing,P}       # rank-distributed plans live on the workers
     readout_plans :: Vector{P}           # per-readout plans; empty for :shared
     nfft_traj  :: Array{T,3}             # signed normalized NFFT nodes [nDim, nSam, nDyn]
     mask_idx   :: AbstractVector{Int32}  # Extracted 3D mask indices
@@ -318,6 +327,14 @@ the default rSVD path is unchanged.
 * `shared_basis_tol::T`                 - Relative approximation-error
   tolerance used while merging per-dynamic spatial bases. The final shared
   rank is adaptive and can be larger than `L_rank`.
+* `shared_noadd_check::Bool`             - For voxel-distributed shared rSVD,
+  test the FP64 energy of the original twice-orthogonalized residual before
+  constructing its Gram (default `false`). Clearly sub-threshold residuals
+  return without a Gram or eigensolve; all other cases use the original
+  update. Residuals and projection coefficients are still computed in full.
+  The reported error uses the full residual norm and can differ from the
+  original diagnostic after tiny residual eigenvalues are discarded. This
+  diagnostic difference does not enter the shared-factor construction.
 * `shared_basis_method::Symbol`         - `:rsvd` (default) merges local rSVD
   factors. `:joint` bypasses local rSVD and selects the final shared rank using
   `shared_basis_tol` as a per-profile sampled original-matrix error target,
@@ -345,8 +362,16 @@ the default rSVD path is unchanged.
   CG. `:single` uses the primary GPU; `:channel` partitions coil channels
   across `gpus`; `:readout` partitions independent readouts and keeps all coil
   sensitivity maps on each participating GPU. `:readout` requires
-  `basis_layout=:per_readout`. Both multi-GPU modes initialize lazily when
-  `normalOperator(W ∘ op)` is requested.
+  `basis_layout=:per_readout`. These two modes initialize lazily when
+  `normalOperator(W ∘ op)` is requested. `:rank` partitions shared temporal
+  and spatial columns across `gpus`, retaining host copies of the factors.
+  It combines rank contributions before the weighted adjoint to preserve
+  cross-rank terms. This mode requires voxel-distributed shared rSVD and
+  initializes worker plans on the first forward, adjoint, or normal request.
+* `normal_sample_batch_size::Int`       - Maximum samples per NFFT batch for
+  `normal_distribution=:rank` (default `12_000_000`, must be positive).
+  Smaller batches bound worker sample workspaces without dropping samples
+  or cross-rank terms. Other distributions do not use this batch size.
 * `nfft_center_correction::Bool`        - Apply the parity-aware NFFT centre
   correction that aligns AbstractNFFTs' integer-centred grid with `Grid`'s
   physical voxel centres. Even dimensions receive a half-voxel correction;
@@ -373,7 +398,8 @@ dimension. The operator normalization is `1 / sqrt(nVox)` and is folded into
 
 Voxel-distributed rSVD accelerates operator setup; multi-GPU normal
 evaluation accelerates CG iterations. They are independent and are controlled
-by `rsvd_distribution` and `normal_distribution`, respectively. Start Julia
+by `rsvd_distribution` and `normal_distribution`, respectively, except that
+rank distribution currently requires voxel-distributed shared rSVD. Start Julia
 with at least one default thread per participating GPU for effective
 concurrency. `recon_HOOp` releases its multi-GPU normal backend by
 default. After direct use of `normalOperator`, or when calling
@@ -425,6 +451,7 @@ function HighOrderLowRankOp(
     per_readout_host_cache_bytes:: Int             = 0                                       ,
     shared_rank_max   :: Int                       = 128                                     ,
     shared_basis_tol  :: T                         = T(1e-2)                                 , 
+    shared_noadd_check::Bool                       = false                                   ,
     global_basis_tol  :: Union{Nothing,T}          = nothing                                 ,
     shared_basis_method:: Symbol                    = :rsvd                                   ,
     joint_snapshots   :: Int                       = 256                                     ,
@@ -432,6 +459,7 @@ function HighOrderLowRankOp(
     joint_roi_tol     :: Union{Nothing,T}          = nothing                                 ,
     joint_basis_report:: Union{Nothing,Ref}        = nothing                                 ,
     normal_distribution:: Symbol                   = :single                                 ,
+    normal_sample_batch_size:: Int                 = 12_000_000                              ,
     nfft_center_correction :: Bool                 = true                                    ,
     verbose           :: Bool                      = false                                   ,   
     ) where T <: AbstractFloat
@@ -458,7 +486,8 @@ function HighOrderLowRankOp(
     rsvd_finalize in (:svd, :gram) || throw(ArgumentError("rsvd_finalize must be :svd or :gram, " * "got $rsvd_finalize"))
     rsvd_backend in (:auto, :chunked, :kernel) || throw(ArgumentError("Unsupported rsvd_backend=$rsvd_backend"))
     rsvd_distribution in (:auto, :single, :voxel) || throw(ArgumentError("Unsupported rsvd_distribution=$rsvd_distribution; " * "expected :auto, :single, or :voxel"))
-    normal_distribution in (:single, :channel, :readout) || throw(ArgumentError("Unsupported normal_distribution=$normal_distribution; expected :single, :channel, or :readout"))
+    normal_distribution in (:single, :channel, :readout, :rank) || throw(ArgumentError("Unsupported normal_distribution=$normal_distribution; expected :single, :channel, :readout, or :rank"))
+    normal_sample_batch_size > 0 || throw(ArgumentError("normal_sample_batch_size must be positive"))
     basis_layout in (:shared, :per_readout) || throw(ArgumentError("basis_layout must be :shared or :per_readout"))
     normal_distribution === :readout && basis_layout !== :per_readout &&
         throw(ArgumentError("normal_distribution=:readout requires basis_layout=:per_readout"))
@@ -486,13 +515,23 @@ function HighOrderLowRankOp(
         nCol <= typemax(Int32) || throw(ArgumentError("Joint operator grid indices exceed Int32"))
     end
     primary_gpu = first(gpus)
-    if normal_distribution in (:channel, :readout)
+    if normal_distribution in (:channel, :readout, :rank)
         is_gpu || throw(ArgumentError("normal_distribution=$normal_distribution requires arrayType=CuArray"))
         length(gpus) >= 2 || throw(ArgumentError("normal_distribution=$normal_distribution requires at least two GPUs"))
     end
     rsvd_backend = rsvd_backend === :auto ? (is_gpu ? :kernel : :chunked) : rsvd_backend
     use_distributed_rsvd =
     !use_joint_basis && (rsvd_distribution === :voxel || (rsvd_distribution === :auto && is_gpu && length(gpus) > 1 && rsvd_finalize === :gram && rsvd_backend === :kernel))
+
+    if normal_distribution === :rank
+        basis_layout === :shared && use_distributed_rsvd || throw(ArgumentError(
+            "normal_distribution=:rank requires shared, voxel-distributed rSVD"))
+    end
+
+    if shared_noadd_check
+        use_distributed_rsvd && basis_layout === :shared || throw(ArgumentError(
+            "shared_noadd_check requires voxel-distributed shared rSVD"))
+    end
 
     if use_distributed_rsvd
         is_gpu || throw(ArgumentError("rsvd_distribution=:voxel requires arrayType=CuArray"))
@@ -642,7 +681,8 @@ function HighOrderLowRankOp(
                     @views u_host[:, :, dyn] .= u_trunc
 
                     t0 = time_ns()
-                    relative_error, n_added = update_distributed_shared_basis!(distributed_shared, distributed_workspace, dyn, total_energy)
+                    relative_error, n_added = update_distributed_shared_basis!(distributed_shared, distributed_workspace, dyn, total_energy;
+                        no_add_check=shared_noadd_check)
                     shared_time += (time_ns() - t0) * 1e-9
 
                     if verbose @info("Distributed shared spatial basis update", dyn=dyn, added=n_added, rank=distributed_shared.rank, relative_error=relative_error) end
@@ -695,8 +735,8 @@ function HighOrderLowRankOp(
         end
         if verbose @info("Multi-GPU rSVD workspace released", setup_gpus=gpus, operator_gpu=primary_gpu) end
         CUDA.device!(primary_gpu)
-        q = arrayType(q_host)
-        basis = arrayType(basis_host)
+        q = normal_distribution === :rank ? q_host : arrayType(q_host)
+        basis = normal_distribution === :rank ? basis_host : arrayType(basis_host)
     else
         if is_gpu
             CUDA.device!(primary_gpu)
@@ -779,8 +819,8 @@ function HighOrderLowRankOp(
     end
 
     if is_gpu CUDA.device!(primary_gpu) end
-    csm = arrayType(csm_host)
-    mask_idx = arrayType(mask_idx_host)
+    csm = normal_distribution === :rank ? csm_host : arrayType(csm_host)
+    mask_idx = normal_distribution === :rank ? mask_idx_host : arrayType(mask_idx_host)
     
     if verbose && basis_layout === :shared
         @info("Shared spatial basis complete", rank=shared_rank, max_error=maximum(shared_errors), mean_error=sum(shared_errors) / length(shared_errors))
@@ -796,6 +836,11 @@ function HighOrderLowRankOp(
     # exp(+i2π k⋅r), so the physical first-order coefficients must be negated
     # and normalized independently by each voxel spacing.
     nfft_traj = -Array{T,3}(kspha[nfft_term_range, :, :]) .* reshape(voxel_spacing, :, 1, 1)
+    if normal_distribution === :rank
+        fold_rank_shared_phases!(q, kspha, nfft_traj, MatrixSize, nVox, nfft_center_correction)
+        return rank_shared_operator(q, basis, csm, mask_idx, nfft_traj, Tuple(MatrixSize), L_rank;
+            gpus, sample_batch_size=normal_sample_batch_size, verbose)
+    end
     nfft_nodes = reshape(nfft_traj, length(nfft_term_range), nSam * nDyn) # dyn1 [all samples]、dyn2 [all samples] ……
     readout_cache = nothing
     if basis_layout === :per_readout && per_readout_storage in (:cpu, :regenerate)
@@ -895,6 +940,7 @@ function ensure_per_readout_cache!(op::HighOrderLowRankOp)
 end
 
 function prod!(y::AbstractVector{Complex{T}}, op::HighOrderLowRankOp{T}, x::AbstractVector{Complex{T}}) where T
+    op.normal_backend.distribution === :rank && return rank_shared_forward!(y, op, x)
     ensure_per_readout_cache!(op)
 
     workspace  = op.workspace
@@ -953,6 +999,7 @@ function prod!(y::AbstractVector{Complex{T}}, op::HighOrderLowRankOp{T}, x::Abst
 end
 
 function ctprod!(x::AbstractVector{Complex{T}}, op::HighOrderLowRankOp{T}, y::AbstractVector{Complex{T}}) where T
+    op.normal_backend.distribution === :rank && return rank_shared_adjoint!(x, op, y)
     ensure_per_readout_cache!(op)
 
     # A solver normally builds the multi-GPU normal backend before its initial

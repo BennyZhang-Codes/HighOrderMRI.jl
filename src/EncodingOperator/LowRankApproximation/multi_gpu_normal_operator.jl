@@ -957,6 +957,7 @@ function ensure_highorder_normal_backend!(
     weights2 :: Vector{T},
 ) where {T<:AbstractFloat}
     backend = op.normal_backend
+    backend.distribution === :rank && return ensure_rank_shared_backend!(op, weights2)
     backend.distribution in (:channel, :readout) || error("ensure_highorder_normal_backend! requires normal_distribution=:channel or :readout")
 
     cached = backend.operator
