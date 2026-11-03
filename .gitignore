@@ -3,5 +3,5 @@
 debug
 results
 
-# Documenter.jl build products
-docs/build/
+# Local research, review snapshots and generated artifacts
+research_notes/

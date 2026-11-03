@@ -1,15 +1,13 @@
 export HighOrderKernelOp
 
 """
-Kernel-based implementation of the explicit high-order signal encoding model.
+    HighOrderKernelOp
 
-The forward phase convention is `exp(+2πim * phase)`, the operator
-normalization is `1 / sqrt(nVox)`, and the vectorized output ordering is
-samples first and then channels.
-
-- Supports 2D or 3D reconstruction with up to third-order dynamic fields.
-- Supports CUDA kernel acceleration and multiple GPUs.
-- Supports multiple receive channels, static off-resonance, and masking.
+CUDA kernel implementation of the explicit MRI encoding model. Its ordinary
+forward/adjoint use the same phase, normalization, mask and sample/coil ordering
+as [`HighOrderOp`](@ref). `backend=:legacy` keeps solver vectors on the host;
+resident backends keep them on the primary GPU and own reusable workspaces.
+See the constructor for backend-specific restrictions.
 """
 mutable struct HighOrderKernelOp{T,F1,F2,S<:AbstractVector{T},O} <: HOOp{T}
     nrow       :: Int
@@ -28,6 +26,14 @@ mutable struct HighOrderKernelOp{T,F1,F2,S<:AbstractVector{T},O} <: HOOp{T}
 end
 LinearOperators.storage_type(op::HighOrderKernelOp) = typeof(op.Mv)
 
+"""
+    HighOrderKernelOp(op::HOOp{T}) where T
+
+Wrap an existing internal high-order operator, delegating forward, adjoint,
+normal construction and resource release to it. This is the adapter used by
+the resident constructors; ordinary callers should use the grid/trajectory
+constructor. The wrapper shares its operand's storage and lifetime.
+"""
 function HighOrderKernelOp(op::HOOp{T}) where {T}
     return HighOrderKernelOp{T,typeof(op.prod!),typeof(op.ctprod!),typeof(op.Mv),typeof(op)}(
         op.nrow, op.ncol, op.symmetric, op.hermitian,
@@ -89,7 +95,27 @@ end
 
 
 """
-    HighOrderKernelOp(grid::Grid{T}, kspha::AbstractArray{T, 2}, times::AbstractVector{T}; kwargs...)
+    HighOrderKernelOp(grid::Grid{T},
+        kspha::AbstractArray{T, 2},
+        times::AbstractVector{T};
+        fieldmap::AbstractArray{T} = zeros(T, grid.matrixSize...),
+        csm::AbstractArray{Complex{T}} = ones(Complex{T}, grid.matrixSize..., 1),
+        mask::AbstractArray{Bool} = trues(grid.matrixSize...),
+        concomitant = nothing,
+        recon_terms::Union{Nothing, AbstractString} = nothing,
+        k_nominal::AbstractArray{T, 2} = kspha[2:4, :],
+        kspha_dt = nothing,
+        nBlock::Int64 = 50,
+        arrayType::Type{<:AbstractArray} = CuArray,
+        gpus::Vector{Int} = [0],
+        backend::Symbol = :legacy,
+        block_size::Int = 320,
+        phase_backend::Symbol = :kernel,
+        gemm_backend::Symbol = :cublas,
+        phase_cache_bytes::Integer = 0,
+        forward_threads::Int = 256,
+        adjoint_threads::Int = 512,
+        verbose::Bool = false) where T <: AbstractFloat
 
 # Description
 
@@ -154,6 +180,17 @@ Fourier encoding operator.
   defaults `256` and `512`. Float64 adjoints are capped at `128`.
 * `verbose::Bool`                       - Print progress information; default
   is `false`.
+
+The ordinary operator has size `(nSam*nCha, prod(grid.matrixSize))` and
+complex element type `Complex{T}`. Use metres, seconds, Hz and integrated
+cycles/m^p coefficients, as for [`HighOrderOp`](@ref).
+
+With `kspha_dt`, only the forward callback evaluates the derivative model;
+the adjoint remains the ordinary encoding adjoint. Do not use that object for
+adjoint-based solves or normal products. The legacy Float64 adjoint can exceed
+the CUDA register budget with its fixed launch configuration; resident direct
+Float64 adjoints use the stated 128-thread cap. This is a current implementation
+limitation, not a guarantee that legacy Float64 works on every GPU.
 
 Resident backends accept host model inputs. Pass GPU data and weights to
 `recon_HOOp`; the first entry of `gpus` owns the solver vectors. Call `close(op)`

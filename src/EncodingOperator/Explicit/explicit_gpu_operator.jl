@@ -416,7 +416,8 @@ function LinearOperatorCollection.normalOperator(op::ExplicitGPUOp{T}, weights=n
 end
 
 """
-    explicit_gpu_normal(op; weights=nothing)
+    explicit_gpu_normal(op::ExplicitGPUOp;
+        weights = nothing)
 
 Create the data normal operator `Aᴴ * D * A` for a resident
 `HighOrderKernelOp` (`backend=:direct`, `:blocked`, `:cached`, or `:cached_full`), with `D = abs2.(weights)`. Raw sample weights may have one
@@ -444,6 +445,17 @@ function Base.close(op::ExplicitGPUOp)
     return nothing
 end
 
+"""
+    explicit_gpu_normal(op::HighOrderKernelOp{T, F1, F2, S, O};
+        weights = nothing) where {T, F1, F2, S, O <: HOOp}
+
+Construct the resident wrapped operator's data normal `Aᴴ D A`, where
+`D = abs2.(weights)` and `nothing` means unit weights. The wrapper must own a
+resident backend. Raw weights may be sample-wise or sample-and-coil-wise.
+The result shares its parent's workspace and lifetime; regularization remains
+the solver's responsibility. `normalOperator(op, D)` instead accepts the
+already squared real nonnegative diagonal.
+"""
 function explicit_gpu_normal(op::HighOrderKernelOp{T,F1,F2,S,O}; weights=nothing) where {T,F1,F2,S,O<:HOOp}
     return LinearOperatorCollection.normalOperator(op, weights === nothing ? nothing : abs2.(weights))
 end

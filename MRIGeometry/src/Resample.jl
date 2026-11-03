@@ -1,12 +1,24 @@
 """
-    resample(src_data::AbstractArray{T, 3}, geo_src::Geometry, geo_tgt::Geometry; kwargs...) where T
+    resample(src_data::AbstractArray{T, 3}, geo_src::Geometry, geo_tgt::Geometry; oversample::AbstractVector{<:Integer} = [1, 1, 1], space::Symbol = :PCS, is_mask::Bool = false) where T
 
-Accurately resamples 3D source data to match the target sequence geometry using Sub-voxel Volumetric Integration.
+Sample a 3D source array on a target Geometry in patient (:PCS) or device
+(:DCS) space. Source shape must match geo_src.MatrixSize. Use positive
+three-element oversample counts. Continuous signals use linear interpolation
+with zero extrapolation; oversample averages equally weighted interior
+sub-voxel sample points. The default [1,1,1] evaluates voxel centres only.
+This is numerical point averaging, not exact volume-overlap integration.
 
-# Arguments
-- `oversample::AbstractVector{<:Integer}`: Sub-voxel integration points along `[Readout, Phase, Slice]`. Default `[1, 1, 1]`.
-- `space::Symbol`: Target registration space. `:PCS` (default) or `:DCS`.
-- `is_mask::Bool`: Set to `true` if resampling categorical labels (e.g., phantoms, segmentations). Uses Nearest Neighbor interpolation, disables oversampling, and returns an `Int` array. Default `false`.
+With is_mask=true, use nearest interpolation, force [1,1,1] sampling and
+return integer labels. Otherwise the result has the target spatial shape and
+the source type (integer sources are temporarily converted to Float32 and
+rounded back). Geometric transforms assume orthogonal rotations and consistent
+metre units. Nonpositive oversample values and inconsistent shapes are not
+fully guarded and can fail inside the computation.
+
+Current limitation: a source with a singleton spatial axis can fail while
+building the interpolation object. The later Nz==1 coordinate shortcut does
+not fix that failure or define a finite slice-thickness support. Do not treat
+this implementation as validated single-slice-to-volume resampling.
 """
 function resample(
     src_data   :: AbstractArray{T, 3}, 
@@ -110,10 +122,15 @@ function resample(
 end
 
 """
-    resample(src_data::AbstractArray{T, 4}, geo_src::Geometry, geo_tgt::Geometry; kwargs...) where T
+    resample(src_data::AbstractArray{T, 4}, geo_src::Geometry, geo_tgt::Geometry; normalize_csm::Bool = false, kwargs...) where T
 
-Wrapper for resampling multi-channel (4D) data.
-If `normalize_csm=true`, applies Root-Sum-of-Squares (RSS) normalization across the 4th dimension (coils) to preserve energy for SENSE reconstruction.
+Apply the 3D resampler independently to each channel on axis four. Keyword
+arguments are forwarded to it, including its singleton-axis limitation.
+Return `(target_nX,target_nY,target_nZ,nCha)`. `normalize_csm=true` divides
+each channel vector by its RSS plus 1e-8 and replaces NaNs with zero; use it
+only for floating-point coil maps, not categorical labels or integer data.
+This sets a local sensitivity convention and does not establish physical
+energy conservation or automatically transform acquisition data.
 """
 function resample(
     src_data :: AbstractArray{T, 4}, 
@@ -161,7 +178,9 @@ end
 """
     resample(src_data::AbstractArray{T, 3}, geo_src::Geometry, geo_tgts::Vector{<:Geometry}; kwargs...) where T
 
-Resamples source data for multiple target geometries independently (Multi-slice / Multi-slab).
+Return a vector of 3D arrays by resampling the same source independently to
+each target Geometry, using threaded work. Target ordering is preserved.
+All restrictions of the single-target 3D method apply.
 """
 function resample(
     src_data :: AbstractArray{T, 3}, 
@@ -181,10 +200,12 @@ function resample(
 end
 
 """
-    resample(src_data::AbstractArray{T, 4}, geo_src::Geometry, geo_tgts::Vector{<:Geometry}; kwargs...) where T
+    resample(src_data::AbstractArray{T, 4}, geo_src::Geometry, geo_tgts::Vector{<:Geometry}; normalize_csm::Bool = false, kwargs...) where T
 
-Multi-geometry resampling wrapper for 4D data.
-Automatically propagates `normalize_csm` logic for per-slice / per-slab RSS preservation.
+Return a vector of four-dimensional channel arrays, one per target Geometry.
+Forward normalize_csm and other keywords to each single-target call. The
+singleton-axis, interpolation and RSS-normalization limitations are unchanged;
+the wrapper does not assemble the targets into a common volume.
 """
 function resample(
     src_data :: AbstractArray{T, 4}, 

@@ -1,12 +1,13 @@
 export HighOrderOp
 
 """
-# Array-based implementation of the expanded signal encoding model.
-- support 2D or 3D reconstruction with up to third-order high-order dynamic field changes.
-- support GPU acceleration: Array-based programming in CUDA.jl.
-- support multiple coil channels.
-- support off-resonance correction.
-- support masking of target reconstruction region.
+    HighOrderOp
+
+Explicit array-based MRI encoding operator on CPU or CUDA. It evaluates the
+selected field phase directly, with forward sign `exp(+2πim * phase)` and
+normalization `1/sqrt(count(mask))`. Input vectors span the full image grid;
+output vectors order samples first and receive coils second. The ordinary
+adjoint conjugates both phase and coil sensitivities.
 """
 mutable struct HighOrderOp{T,F1,F2,S<:AbstractVector{T}} <: HOOp{T}
     nrow       :: Int
@@ -26,32 +27,59 @@ LinearOperators.storage_type(op::HighOrderOp) = typeof(op.Mv)
 
 
 """
-    HighOrderOp(grid::Grid{T}, kspha::AbstractArray{T, 2}, times::AbstractVector{T}; kwargs...)
+    HighOrderOp(grid::Grid{T},
+        kspha::AbstractArray{T, 2},
+        times::AbstractVector{T};
+        fieldmap::AbstractArray{T} = zeros(T, grid.matrixSize...),
+        csm::AbstractArray{Complex{T}} = ones(Complex{T}, grid.matrixSize..., 1),
+        mask::AbstractArray{Bool} = trues(grid.matrixSize...),
+        concomitant = nothing,
+        recon_terms::Union{Nothing, AbstractString} = nothing,
+        k_nominal::AbstractArray{T, 2} = kspha[2:4, :],
+        kspha_dt = nothing,
+        nBlock::Int64 = 50,
+        arrayType::Type{<:AbstractArray} = CuArray,
+        verbose::Bool = false) where T <: AbstractFloat
 
-# Description
-    Generates a `HighOrderOp` that explicitly evaluates the MRI high-order encoding operator.
+Construct an explicit encoding operator from integrated field coefficients
+`kspha` of size `(9,nSam)` or `(16,nSam)`, and `times` of length `nSam`.
+Use metres for grid coordinates, seconds for times, Hz for `fieldmap`, and
+cycles/m^p for order-p coefficients (cycles for the constant term). The
+constructor does not integrate fields or convert radians to cycles.
 
-# Arguments:
-* `grid::Grid{T}`                   - grid object.
-* `kspha::AbstractArray{T, 2}`      - [nTerm, nSam], coefficients of field dynamics.
-* `times::AbstractVector{T}`        - [nSam], time points for trajectory.
+`fieldmap` and `mask` match `grid.matrixSize`; `csm` has an additional final
+coil dimension. For `nZ == 1`, 2D maps/masks and `(nX,nY,nCha)` coil maps are
+accepted. The mask must contain at least one voxel. Both precision and device
+placement of solver inputs must match the chosen backend.
 
-# Keywords:
-* `fieldmap::AbstractArray{T}`      - [nX, nY, nZ], fieldmap for off-resonance correction.
-* `csm::AbstractArray{Complex{T}}`  - [nX, nY, nZ, nCha], coil sensitivity map.
-* `mask::AbstractArray{Bool}`       - [nX, nY, nZ], mask for target reconstruction region.
-* `concomitant`                     - Optional [4, nSam] time-integrated phase
-  coefficients in cycles/m² for `z²`, `x²+y²`, `xz`, and `yz`. Coordinates
-  are in metres in the same frame and origin as the coefficients. The default
-  is `nothing`. Independent of `recon_terms`; ignored when `kspha_dt` is supplied
-  for delay estimation.
-* `recon_terms::String`             - digits flag (e.g. "1111") to indicate terms to be used in the HOOp.
-* `k_nominal::AbstractArray{T, 2}`  - [3, nSam], nominal k-space trajectory.
-* `kspha_dt`                        - [nTerm, nSam], time derivative of the field coefficients.
-* `nBlock::Int64`                   - split trajectory into `nBlock` blocks to avoid memory overflow.
-* `arrayType::Type{<:AbstractArray}` - Operator storage and execution backend:
-  `CuArray` (default) or `Array`.
-* `verbose::Bool`                   - print progress information(default: `false`).
+`recon_terms=nothing` selects all orders (`"111"` for 9 terms, `"1111"` for
+16). A zero disables its order; disabling first-order error substitutes the
+three rows of `k_nominal` rather than setting the Fourier trajectory to zero.
+The default nominal rows are copied from `kspha`, so a distinct nominal
+trajectory must be supplied for this replacement to change the model.
+
+`concomitant`, when supplied, has shape `(4,nSam)` and contains integrated
+coefficients in cycles/m² for `z²`, `x²+y²`, `xz`, `yz`, in the same frame and
+origin as the grid. It is independent of `recon_terms` and ignored when
+`kspha_dt` is supplied.
+
+`nBlock` is a positive block count, capped at `nSam`; a remainder uses an
+additional final block. `arrayType=Array` selects CPU computation; `CuArray`
+selects CUDA. `verbose=false` does not suppress every setup message.
+
+With `kspha_dt`, the forward product evaluates the trajectory-derivative
+expression used for delay estimation. The current adjoint still evaluates the
+ordinary encoding adjoint: do not use this derivative object for adjoint-based
+solves or normal products. The derivative does not include a concomitant
+coefficient derivative.
+
+Known precision limitation: the array-based CUDA product helpers use `gpu`,
+which can downcast Float64 input vectors to Float32 internally. Use the CPU
+path when an independently checked Float64 explicit reference is required.
+
+The returned operator has size `(nSam*nCha, prod(grid.matrixSize))` and complex
+element type `Complex{T}`. It represents the full image grid, including zero
+columns outside the mask; the adjoint is a backprojection, not an inverse.
 """
 function HighOrderOp(
     grid        :: Grid{T}                                                             ,

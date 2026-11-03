@@ -1,28 +1,53 @@
 """
-    recon_HOOp(
-        HOOp::HOOp{Complex{T}},
-        Data::AbstractArray{Complex{T},2},
+    recon_HOOp(HOOp::HOOp{Complex{T}},
+        Data::AbstractArray{Complex{T}, 2},
         weight::AbstractVector{Complex{T}},
         recParams::Dict;
-        release_backend=true,
-    ) where T<:AbstractFloat
+        release_backend::Bool = true) where T <: AbstractFloat
 
 Reconstruct an image with a high-order encoding operator.
 
-For a `HighOrderLowRankOp` using `normal_distribution=:channel` or `:readout`,
-`normalOperator` lazily creates persistent multi-GPU workers and one NFFT plan
-per participating GPU. By default, those reconstruction-only resources are
-released in a `finally` block after `solve!`, including when reconstruction
-throws an exception.
+`Data` has one row per sample/dynamic point and one column per receive coil.
+For dynamic low-rank encoding, reshape `(nSam, nDyn, nCha)` data to
+`(nSam * nDyn, nCha)` without permuting axes. `weight` contains one raw
+complex sample weight per row, repeated identically for all coils. Match the
+floating-point precision of the operator, data, and weights.
 
-Before the normal backend is constructed, GPU execution is synchronized and a
-single full Julia GC is performed. This collects an older `HighOrderLowRankOp`
-that may have become unreachable after replacing a global `HOOp` variable,
-without trimming CUDA.jl's reusable memory pools.
+The wrapper weights both the data and encoding operator: with `A = HOOp`
+and diagonal `W` formed from the repeated raw weights, it passes `W * A` and
+`W * vec(Data)` to the solver. The data normal is `Aᴴ Wᴴ W A`, so a raw
+weight contributes `abs2(weight)` to the normal. Do not square the weights
+before passing them here. [`samplingDensity`](@ref) already returns
+square-root density weights for this convention.
 
-Set `release_backend=false` only when the same `HighOrderLowRankOp`, weights,
-and multi-GPU normal backend will be reused for another reconstruction. The
-caller must then invoke `close(HOOp)` when the final reconstruction finishes.
+`recParams` must explicitly contain `:solver`, `:reg`, and `:reconSize`.
+Remaining solver settings are merged with MRIReco's `defaultRecoParams()`;
+select a solver and regularizer that are compatible. The returned image is
+a CPU `Array` reshaped to `recParams[:reconSize]`.
+
+For CUDA low-rank reconstruction and resident explicit backends, pass data
+and weights as CUDA arrays on the primary GPU to match the solver's CUDA
+storage. This wrapper does not move those inputs to the GPU automatically.
+
+For `HighOrderLowRankOp`, channel/readout backends initialize on a normal
+request; rank execution can initialize on a forward, adjoint, or normal
+request. By default, the wrapper releases the owned distributed backend in a
+`finally` block, including when reconstruction throws an exception.
+
+Set `release_backend=false` to retain that backend for another reconstruction
+with the same operator and weights. Call `close(HOOp)` after its final use.
+Backend release retains the parent's factor arrays and per-readout source
+queue; `close(HOOp)` also releases that queue. Later use of the parent can
+recreate these resources lazily. To change normal weights while retaining
+a distributed parent (`:channel`, `:readout`, or `:rank`), release the old
+backend first and obtain a fresh normal view. The `:single` path has no such
+owned distributed backend.
+
+Resident explicit operators require a separate `close(HOOp)` after their
+final use; this keyword handles only low-rank distributed backends.
+
+See [Reconstruction workflow](/guide/reconstruction) for solver configuration
+and [Multi-GPU execution](/guide/multi-gpu) for execution strategies and cleanup.
 """
 function recon_HOOp(
     HOOp      :: HOOp{Complex{T}},

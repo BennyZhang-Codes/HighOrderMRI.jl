@@ -2,21 +2,27 @@ import MRIReco.MRIBase: samplingDensity
 export samplingDensity
 
 """
-    samplingDensity(tr::AbstractArray{T,2}, shape::Tuple) where T
-    returns the sampling density for non-Cartersian trajectories.
+    samplingDensity(tr::AbstractArray{T, 2},
+        shape::Tuple) where T
 
-# Arguments
-- `tr::AbstractArray{T,2}`: 2D k-space trajectory.
-- `shape::Tuple`: Shape of the image to reconstruct.
+Compute square-root sampling-density weights for a non-Cartesian trajectory.
+`tr` must be dimension-by-sample `(length(shape), nSam)`, with real floating-point
+coordinates and at least one nonzero finite value. `shape` is the Cartesian
+reconstruction size, with positive dimensions. This overload normalizes all
+trajectory coordinates by `2*maximum(abs.(tr))`, constructs a CPU Float64 NFFT
+plan (`m=2`, `σ=2`), and uses 10 density-compensation iterations.
 
-# Returns
-- `weights::Vector{Complex{T}}`: Sample density function (SDF) of the k-space trajectory.
+Return `Vector{Complex{T}}` of length `nSam`, containing the square root of the
+computed density. Pass these weights once to [`recon_HOOp`](@ref), which applies
+them to both data and encoding. They are not the already squared normal
+weights. An all-zero trajectory has undefined normalization in the current
+implementation; anisotropic physical coordinates must be prepared consistently
+before calling this helper. It is a convenience estimate, not an absolute
+physical quadrature normalization.
 
-# Example
 ```julia
-julia> tr = randn(100,2);
-julia> shape = (128,128);
-julia> weights = samplingDensity(tr, shape);
+tr = [collect(range(-0.45, 0.45; length=32))'; zeros(1, 32)]
+weights = samplingDensity(tr, (8, 8))
 ```
 """
 function samplingDensity(tr::AbstractArray{T,2}, shape::Tuple) where T

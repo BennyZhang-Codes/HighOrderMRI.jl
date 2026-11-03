@@ -4,18 +4,36 @@ export basisfunc_spha
 
 export spha_color, spha_basis, spha_basis_latex
 export SphericalHarmonics
+"""
+    spha_color
+
+Sixteen plotting colour strings in the order of the order-zero through order-three solid harmonics.
+This exported array is display metadata; it does not configure numerical encoding.
+"""
 spha_color = [
         "#5f4690", 
         "#1d6996", "#38a6a5", "#0f8554", 
         "#73af48", "#edad08", "#e17c05", "#cc503e", "#94346e", 
         "#6f4070", "#666666", "#527f99", "#6db88c", "#b6890e", "#a85144", "#875573"
     ];
+"""
+    spha_basis
+
+Sixteen unnormalized polynomial labels in the order used by the first sixteen columns of `basisfunc_spha`.
+This exported array is display metadata; it does not configure numerical encoding.
+"""
 spha_basis = [
         "1", 
         "x", "y", "z", 
         "xy", "zy", "3z²-(x²+y²+z²)", "xz", "x²-y²",
         "3yx²-y³", "xzy", "(5z²-(x²+y²+z²))y", "5z³-3z(x²+y²+z²)", "(5z²-(x²+y²+z²))x", "x²z-y²z", "x³-3xy²"
     ];
+"""
+    spha_basis_latex
+
+Sixteen LaTeX labels matching `spha_basis`, for plotting and display.
+This exported array is display metadata; it does not configure numerical encoding.
+"""
 spha_basis_latex = [
         L"1", 
         L"x", L"y", L"z", 

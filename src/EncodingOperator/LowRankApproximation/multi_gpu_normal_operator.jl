@@ -1002,6 +1002,25 @@ function LinearOperatorCollection.normalOperator(
 end
 
 
+"""
+    release_highorder_normal_backend!(op::HighOrderLowRankOp)
+
+Release a low-rank parent's owned distributed backend and clear its cached
+normal weights. This applies to `:channel`, `:readout`, and `:rank`; the
+`:single` path has no such owned distributed backend. Return `nothing`.
+Repeated calls after release are harmless.
+
+Complete factor arrays remain owned by `op`; this function also retains the
+parent's per-readout streaming/regeneration queue. Use `close(op)` to close
+that queue as well. A later use of the parent can recreate resources lazily.
+Derived normal views share the backend: stop using old views before release
+and obtain a fresh view afterwards. Release before changing distributed normal
+weights. Workspaces are not reentrant; do not release during an active product.
+
+This is explicit lifecycle management, not an assurance that every allocation
+failure during construction is recoverable. CUDA memory pools may retain freed
+capacity for reuse.
+"""
 function release_highorder_normal_backend!(op::HighOrderLowRankOp)
     backend = op.normal_backend
     normal_op = backend.operator

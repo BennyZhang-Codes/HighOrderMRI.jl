@@ -1,7 +1,9 @@
 """
-    HighOrderMRI.jl
+    HighOrderMRI
 
-A Julia package for high-order MRI reconstruction.
+Field-aware MRI encoding, reconstruction and preprocessing. The module re-exports
+MRIGeometry and provides explicit and low-rank encoding operators. Input shapes,
+phase conventions and backend restrictions are documented at each interface.
 """
 module HighOrderMRI
 

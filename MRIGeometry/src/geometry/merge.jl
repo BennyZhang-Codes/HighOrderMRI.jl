@@ -2,11 +2,21 @@ import Base: merge
 
 export merge
 """
-    merge(geos::AbstractVector{<:Geometry{T, D}}) where {T, D}
+    Base.merge(geos::AbstractVector{<:Geometry{T, D}}) where {T <: AbstractFloat, D <: Integer}
 
-Merge a vector of 2D multi-slice geometries into a single 3D global geometry.
-Automatically sorts the slices by their physical spatial positions along the slice normal 
-to correctly handle arbitrary acquisition orders (e.g., interleaved).
+Construct one nominal 3D Geometry from a nonempty vector of slice geometries.
+It sorts centres along the first geometry's slice normal, uses their midpoint
+as the new centre, and sets the third count to the number of entries. This
+method returns only geometry; it does not reorder an image array for you.
+
+Current limitation: the third FOV is centre-span plus the first slice's FOV.
+For gapped slices this changes the implied centre spacing and does not preserve
+the original centres. Restrict use to mutually aligned, uniformly spaced,
+single-plane geometries whose slice thickness equals centre spacing. A single
+entry is promoted with a third count of one, so this is not a general slab
+merge. Heterogeneous orientation, spacing and thickness are not validated.
+Use explicit physical geometry rather than this shortcut for gapped or
+nonuniform slice stacks.
 """
 function Base.merge(geos::AbstractVector{<:Geometry{T, D}}) where {T <: AbstractFloat, D <: Integer}
     n_slices = length(geos)

@@ -1,17 +1,15 @@
 """
-    grad2traj(x::AbstractArray{Real}, dt::Real; dim::Int=1)
+    grad2traj(x::AbstractArray{T}, dt::S; dim::Int = 1) where {T <: Real, S <: Real}
 
-Trapezoidal cumulative integration over time.
+Cumulatively integrate `x` by the trapezoidal rule along `dim`, prepending a
+zero sample. For a nonempty selected axis, the output has the input shape.
+The accumulated increments are `(x[j+1] + x[j]) * dt / 2`; arithmetic determines
+the result precision, so it need not equal the input element type.
 
-# Arguments
-- `x::AbstractArray{<:Real}`: Input data (gradient)
-- `dt::<:Real`: Time interval between two samples
-
-# Keywords
-- `dim::Int`: Dimension along which to integrate
-
-# Returns
-- `y::AbstractArray{<:Real}`: Cumulative integral over time, same size as `x`
+Use a valid dimension and floating-point host arrays. No gyromagnetic ratio,
+unit conversion, or initial trajectory offset is applied. For example, Hz/m
+integrated over seconds gives cycles/m; a magnetic gradient in T/m requires the
+appropriate gyromagnetic conversion before this helper represents k-space.
 """
 function grad2traj(x::AbstractArray{T}, dt::S; dim::Int=1) where {T<:Real, S<:Real}
     # Create an output array with the same type and shape as x
@@ -45,19 +43,13 @@ end
 
 
 """
-    traj2grad(x::AbstractArray{T}, dt::S; dim::Int=1) where {T<:Real, S<:Real}
+    traj2grad(x::AbstractArray{T}, dt::S; dim::Int = 1) where {T <: Real, S <: Real}
 
-Compute time derivative (gradient) of input trajectory using backward difference.
-
-# Arguments
-- `x::AbstractArray{<:Real}`: Input data (trajectory)
-- `dt::<:Real`: Time interval between samples
-
-# Keywords
-- `dim::Int`: Dimension along which to compute the gradient
-
-# Returns
-- `dx::AbstractArray{<:Real}`: same size as `x`
+Compute adjacent finite differences `(x[j+1] - x[j]) / dt` along `dim`.
+The selected output axis is shorter by one; other dimensions are unchanged.
+There is no padded endpoint or differentiation of a separately supplied time
+vector. Use a nonzero dwell and compatible physical units. No gyromagnetic
+conversion is applied, and arithmetic determines the output precision.
 """
 function traj2grad(x::AbstractArray{T}, dt::S; dim::Int=1) where {T<:Real, S<:Real}
     # Build slice templates for previous and current

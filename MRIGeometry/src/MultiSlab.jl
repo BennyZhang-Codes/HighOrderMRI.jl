@@ -29,9 +29,19 @@ function _compute_global_geometry(
 end
 
 """
-    merge_multislabs(slabs_data, geos, overlap_slices; dim_z=3)
+    merge_multislabs(slabs_data::Vector{<:AbstractArray{Complex{T}}}, geos::AbstractVector{<:Geometry{TReal, D}}, overlap_slices::Int; dim_z::Int = 3) where {T <: AbstractFloat, TReal <: AbstractFloat, D <: Integer}
 
-Generic multi-slab merger. Drops the overlapping edge slices and concatenates.
+Sort slabs by centre along the first geometry's normal, discard half of each
+overlap from the adjoining slab edges, and concatenate along dim_z. Return
+`(merged_data, global_geometry)`. overlap_slices must be even, nonnegative,
+and smaller than the slab length; only evenness is explicitly asserted.
+
+Use nonempty equally aligned slabs with matching data/geometries, in-plane
+shape, slice spacing and an actual overlap consistent with overlap_slices.
+The returned geometry uses the first slab's spacing and the outer slab bounds;
+it does not register, resample or validate heterogeneous acquisitions. Complex
+values are copied without intensity or phase harmonization. Keep dim_z=3
+when using the returned Geometry to describe the conventional spatial layout.
 """
 function merge_multislabs(
     slabs_data     :: Vector{<:AbstractArray{Complex{T}}}, 
@@ -67,14 +77,20 @@ end
 
 
 """
-    merge_motsa(slabs_data, geometries, overlap_slices; dim_z=3, method=:mip)
+    merge_motsa(slabs_data::Vector{<:AbstractArray{T}}, geos::AbstractVector{<:Geometry{TReal, D}}, overlap_slices::Int; dim_z::Int = 3, method::Symbol = :mip) where {T <: Number, TReal <: AbstractFloat, D <: Integer}
 
-Merge overlapping 3D slabs for TOF-MRA (MOTSA).
+Merge overlapping slabs after sorting their centres along the first normal.
+Returns `(merged_data, global_geometry)`. `:discard` removes the adjoining
+half overlaps; `:blend` cross-fades their samples linearly; `:mip` chooses the
+sample with larger magnitude and retains its original value/phase (ties keep
+the earlier slab). This is not a separate 2D maximum-intensity projection.
 
-# Supported Methods for Overlap Region:
-- `:mip`     : Maximum Intensity Projection (Best for TOF vessels).
-- `:blend`   : Linear cross-fade blending (Smooth background transitions).
-- `:discard` : Hard crop of the overlap halves.
+Supply nonempty, equally sized and aligned slabs, matching geometries and a
+nonnegative even overlap smaller than each slab. These conditions and allowed
+method symbols are not comprehensively validated. Unknown method symbols can
+leave overlap data uncombined; use only :mip, :blend or :discard. No registration,
+physical energy guarantee or optimal vessel contrast is implied by the method.
+The geometry assumes the first slab's slice spacing and aligned physical bounds.
 """
 function merge_motsa(
     slabs_data     :: Vector{<:AbstractArray{T}}, 

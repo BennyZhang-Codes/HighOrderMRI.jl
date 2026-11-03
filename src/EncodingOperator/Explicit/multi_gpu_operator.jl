@@ -237,6 +237,17 @@ function LinearOperatorCollection.normalOperator(op::ExplicitMultiGPUOp{T}, weig
         normal, nothing, normal; S=CuVector{Complex{T}})
 end
 
+"""
+    explicit_gpu_normal(op::ExplicitMultiGPUOp;
+        weights = nothing)
+
+Construct the sample-distributed explicit GPU data normal `Aᴴ D A`, with
+`D = abs2.(weights)`. `nothing` selects unit weights. Raw weights have one
+entry per sample or per sample and coil. Workers operate on disjoint sample
+rows and their image contributions are summed. The result shares the parent
+operator's workers and workspaces; finish using it before `close(op)`.
+Regularization is applied separately by the solver.
+"""
 function explicit_gpu_normal(op::ExplicitMultiGPUOp; weights=nothing)
     return LinearOperatorCollection.normalOperator(op, weights===nothing ? nothing : abs2.(weights))
 end

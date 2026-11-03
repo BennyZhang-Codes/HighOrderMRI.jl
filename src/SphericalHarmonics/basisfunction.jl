@@ -1,24 +1,27 @@
 
 """
-    bfuncOut = basisfunc_spha(x::AbstractVector{T}, y::AbstractVector{T}, z::AbstractVector{T}, terms::AbstractVector{Int}) where {T<:AbstractFloat}
-    Outputs basis function for index terms of spherical harmonics.
+    basisfunc_spha(x::AbstractVector{T},
+        y::AbstractVector{T},
+        z::AbstractVector{T},
+        terms::AbstractVector{Int}) where T <: AbstractFloat
 
-# Arguments
-- `x::AbstractVector{T}`: x-coordinates of imaging object.
-- `y::AbstractVector{T}`: y-coordinates of imaging object.
-- `z::AbstractVector{T}`: z-coordinates of imaging object.
-- `terms::AbstractVector{Int}`: Indices for basis functions.
+Evaluate unnormalized real solid-harmonic polynomials at matching floating-point
+coordinate vectors. `terms` uses one-based indices `1:36` (orders zero through
+five); columns follow the requested order. Return a `(length(x), length(terms))`
+matrix of element type `T`. A `CuArray` input `x` selects CUDA allocation;
+all coordinate arrays must be on a compatible device/backend.
 
-# Returns
-- `bfuncOut::Array{T, 2}`: Basis function for each index in terms.
+Coordinates are physical lengths, so a polynomial of order p has units m^p
+when coordinates are in metres. These are Cartesian solid harmonics without
+angular or unit-sphere normalization. MRI encoding constructors currently use
+only the first 9 or 16 terms. See [`SphericalHarmonics`](@ref) for metadata
+through order three.
 
-# Example
 ```julia
-julia> x = [1, 2, 3]
-julia> y = [4, 5, 6]
-julia> z = [7, 8, 9]
-julia> terms = [1, 2, 3, 4, 5, 6, 7, 8, 9]
-julia> bfuncOut = basisfunc_spha(x, y, z, terms)
+x = [1.0, 2.0, 3.0]
+y = [4.0, 5.0, 6.0]
+z = [7.0, 8.0, 9.0]
+basis = basisfunc_spha(x, y, z, [1, 2, 3, 4])
 ```
 """
 function basisfunc_spha(x::AbstractVector{T}, y::AbstractVector{T}, z::AbstractVector{T}, terms::AbstractVector{Int}) where {T<:AbstractFloat}
@@ -123,6 +126,17 @@ function basisfunc_spha(x::AbstractVector{T}, y::AbstractVector{T}, z::AbstractV
 end
 
 
+"""
+    basisfunc_spha(x::AbstractVector{T},
+        y::AbstractVector{T},
+        z::AbstractVector{T},
+        term::Int64) where T <: AbstractFloat
+
+Evaluate one solid-harmonic term and return a vector with the same element type
+as the coordinate inputs. `term` uses the same one-based `1:36` ordering as
+the matrix overload. Terms 2, 3 and 4 return the input `x`, `y` and `z` vectors
+themselves, so those results alias their respective inputs.
+"""
 function basisfunc_spha(x::AbstractVector{T}, y::AbstractVector{T}, z::AbstractVector{T}, term::Int64) where {T<:AbstractFloat}
     # Switch-case equivalent for selecting basis function
     if term == 1

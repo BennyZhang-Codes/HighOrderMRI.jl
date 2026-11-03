@@ -1,8 +1,28 @@
 """
-    _plot_girf_engine(G_input, G_act; kwargs...)
+    _plot_girf_engine(
+        G_input::AbstractMatrix,
+        G_act::AbstractMatrix;
+        dt::Float64 = 1.0e-5,
+        t::Union{Nothing, AbstractVector} = nothing,
+        boundaries::Vector{Int} = Int[],
+        gamma::Float64 = 42.575575,
+        title = "",
+        width = 24,
+        height = 10,
+        fontsize_title = 13,
+        fontsize_label = 12,
+        color_facecolor = "#FFFFFF",
+        color_label = "#000000",
+        color_grid = "#E0E0E0")
 
-Internal pure plotting engine. Handles 2D matrices (3, nPoint) and visualizes 
-them with boundaries, dynamic local times, and premium aesthetics.
+Internal plotting engine for nominal and predicted matrices shaped `(3,nPoint)`
+in Hz/m. Divide values by `gamma*1000` for mT/m labels, where gamma is in MHz/T.
+Use `dt` or explicit `t` in seconds; the default time vector starts at zero.
+Valid entries of `boundaries` mark the last point of a segment; the next point
+starts a new local-time label sequence. Input arrays are not modified.
+
+Width/height are approximately centimetres and font sizes are points. Return a
+Matplotlib figure. This unexported helper performs no GIRF prediction itself.
 """
 function _plot_girf_engine(
     G_input::AbstractMatrix, 
@@ -135,9 +155,18 @@ end
 # 2D Matrix Overload (Single Segment)
 # ==============================================================================
 """
-    plt_grad(G_DCS_Nominal::AbstractMatrix, model::GIRFModel; kwargs...)
+    plt_grad(G_DCS_Nominal::AbstractMatrix, model::GIRFModel; rbw::Float64 = 1.0, kwargs...)
 
-Visualizes the Gradient Impulse Response Function (GIRF) prediction results.
+Predict a nominal device-coordinate gradient with `apply_girf`, then plot its
+first-order predicted channels against the input. Accept `(3,nPoint)` or
+`(nPoint,3)`; a first dimension of three is selected as the spatial axis.
+Input gradient values are in Hz/m. `rbw` is passed to GIRF prediction.
+
+Remaining keywords reach the internal plotting engine: `dt::Float64=1e-5`
+seconds or explicit `t` controls display time, `gamma::Float64=42.575575`
+MHz/T converts Hz/m to mT/m, and width/height are approximately centimetres.
+The display dwell is not inferred from the model's frequency labels. Return a
+Matplotlib figure; it does not provide a numerical validation of the GIRF.
 """
 function plt_grad(
     G_DCS_Nominal::AbstractMatrix, 
@@ -163,11 +192,25 @@ end
 # 3D Array Overload (Multi-Segment: Predict FIRST, Concatenate LATER)
 # ==============================================================================
 """
-    plt_grad(G_DCS_Nominal::AbstractArray{T, 3}, model::GIRFModel; dim_dynamic::Int=1, kwargs...) where T
+    plt_grad(
+        G_DCS_Nominal::AbstractArray{T, 3},
+        model::GIRFModel;
+        dim_dynamic::Int = 1,
+        rbw::Float64 = 1.0,
+        kwargs...) where T
 
-Overload for 3D nominal gradient arrays.
-Predicts each physical shot independently using multi-threading to prevent Gibbs 
-ringing at dead-time boundaries, and then concatenates them for a seamless visualization.
+Predict shots/readouts independently, then concatenate them for plotting.
+`dim_dynamic` selects the shot axis. Supply an unambiguous spatial axis of size
+three distinct from that axis; the remaining axis holds time samples. A separate
+prediction is performed before concatenation, not a filter over artificial
+between-shot joins. This does not remove the GIRF convolution's own boundary
+assumptions.
+
+Input values are in Hz/m; `rbw` is passed to `apply_girf`. Remaining keywords
+reach the plotting engine, including Float64 `dt` in seconds (default 1e-5),
+optional `t` for the complete concatenated display, and `gamma` in MHz/T
+(default 42.575575). Display labels convert values to mT/m. Each shot receives
+a local-time origin; width/height are approximately centimetres. Return the figure.
 """
 function plt_grad(
     G_DCS_Nominal::AbstractArray{T, 3}, 

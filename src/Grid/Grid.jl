@@ -2,22 +2,18 @@
 export Grid
 
 """
-    Grid(nX, nY, nZ, Δx, Δy, Δz;
-         exchange_xy=false,
-         reverse_x=false,
-         reverse_y=false,
-         reverse_z=false)
+    Grid{T}
 
-Create the physical Cartesian reconstruction grid used by the high-order
-encoding operators.
+Physical Cartesian reconstruction grid with floating-point coordinates. Fields
+store the three axis sizes and spacings, flattened coordinate vectors, and
+`matrixSize`/`resolution` tuples. Use the dimension-and-spacing constructor
+for a centred grid. The keyword field constructor does not validate consistency
+between manually supplied coordinates and metadata.
 
-Voxel centres along an axis of length `N` and spacing `Δ` follow
-`r[i] = (i - (N + 1) / 2) * Δ`. Odd dimensions therefore contain a voxel at
-zero, while even dimensions are centred on half-voxel coordinates.
-
-`exchange_xy` and the `reverse_*` keywords transform the coordinate vectors
-only. Apply the same transformations to images, masks, field maps, and coil
-sensitivity maps before constructing an encoding operator.
+Coordinates are in metres when used with phase coefficients in cycles/m^p.
+Low-rank NFFT execution requires the default centred Cartesian geometry on
+its active Fourier axes; changing `x`, `y`, or `z` alone does not change the
+NFFT plan. Explicit operators evaluate the supplied coordinates directly.
 """
 Base.@kwdef struct Grid{T<:AbstractFloat}
     nX::Int64 = 0
@@ -43,6 +39,29 @@ Base.show(io::IO, b::Grid) = begin
 end
 
 
+"""
+    Grid(nX::Int64,
+        nY::Int64,
+        nZ::Int64,
+        Δx::T,
+        Δy::T,
+        Δz::T;
+        exchange_xy::Bool = false,
+        reverse_x::Bool = false,
+        reverse_y::Bool = false,
+        reverse_z::Bool = false) where T <: AbstractFloat
+
+Create a centred Cartesian grid. All spacings must have the same floating-point
+precision `T`. Axis centres follow `r[j] = (j - (N + 1)/2) * Δ`; even sizes use
+half-voxel centres. The x index varies fastest in the flattened coordinate arrays.
+
+`exchange_xy` swaps coordinate vectors; each `reverse_*` reverses that flattened
+coordinate vector. These switches do not permute image, mask, field-map or
+coil-map arrays and do not update grid dimensions/spacings. Supply all physical
+inputs in a consistent coordinate frame. For low-rank NFFT use the default
+untransformed active axes. Positive dimensions/spacings are caller requirements;
+the constructor does not enforce them.
+"""
 function Grid(
     nX::Int64, 
     nY::Int64, 
@@ -91,6 +110,19 @@ struct_to_dict(grid::Grid) = Dict(
     "resolution" => collect(grid.resolution),
 )
 
+"""
+    Grid(d::AbstractDict;
+        T::Type{<:AbstractFloat} = Float64)
+
+Restore a grid from a dictionary using the fields written by
+`struct_to_dict(grid)`: `nX`, `nY`, `nZ`, `delta_x`, `delta_y`, `delta_z`,
+`x`, `y`, and `z`. Scalars may also be one-element arrays. Coordinates and
+spacings are converted to the requested floating-point type `T`; size and
+resolution tuples are reconstructed from those scalar fields.
+
+The dictionary must contain consistent full-length coordinate vectors. This
+constructor does not validate a schema version or the Cartesian NFFT geometry.
+"""
 function Grid(
     d::AbstractDict;
     T::Type{<:AbstractFloat}=Float64,

@@ -1,33 +1,27 @@
 """
-    fig = plt_bfield(bfield::AbstractArray{<:Real, 2}, dt::Float64; kwargs...)
+    plt_bfield(
+        bfield::AbstractArray{<:Real, 2},
+        dt::Float64;
+        width = 15,
+        height = 7,
+        fontsize_label = 7,
+        fontsize_legend = 7,
+        fontsize_ticklabel = 6,
+        color_facecolor = "#1F1F1F",
+        color_label = "#CCCCCC",
+        linewidth = 0.5,
+        ticklength = 1.5,
+        pad_label = 2,
+        pad_labeltick = 2)
 
-# Description
-    Plots k coefficients of spherical harmonic terms using matplotlib 
+Plot the first nine columns of a real `(nSample, nTerm)` field-coefficient
+matrix, with `nTerm >= 9`. The fixed legend order is 1, x, y, z, xy, zy,
+2z^2-(x^2+y^2), xz, x^2-y^2. Additional columns are ignored.
 
-# Arguments
-- `bfield::AbstractArray{<:Real, 2}`: `[nSample, nTerms]` coefficients in units of rad, rad/m and rad/m^2.
-- `dt::Float64`: sampling time in seconds.
-
-# Keywords
-- `width`: (`::Real`, `=15`) figure's width
-- `height`: (`::Real`, `=7`) figure's height
-- `fontsize_label`: (`::Real`, `=7`) font size of labels
-- `fontsize_legend`: (`::Real`, `=7`) font size of legend
-- `fontsize_ticklabel`: (`::Real`, `=6`) font size of tick labels
-- `color_facecolor`: (`::String`, `="#1F1F1F"`) background color of the figure  
-- `color_label`: (`::String`, `="#CCCCCC"`) color of labels and tick labels
-- `linewidth`: (`::Real`, `=0.5`) line width
-- `ticklength`: (`::Real`, `=1.5`) length of ticks
-- `pad_label`: (`::Real`, `=2`) padding between labels and tick labels
-- `pad_labeltick`: (`::Real`, `=2`) padding between tick labels and axis
-
-# Returns
-- `Figure`: a PyObject representing the figure
-
-# Examples
-```julia-repl
-julia> fig = plt_bfield(bfield, dt)
-```
+Values are plotted unchanged; axis labels assume mT, mT/m and mT/m^2, not phase
+in radians or cycles. No gyromagnetic or phase-to-field conversion is performed.
+`dt` must be Float64 seconds. Display times start at `dt` and are shown in ms.
+Width/height are approximately centimetres. Return the Matplotlib figure.
 """
 function plt_bfield(
     bfield::AbstractArray{<:Real, 2},
@@ -95,35 +89,29 @@ end
 
 
 """
-    fig = plt_bfield_com(bfield1::AbstractArray{<:Real, 2}, bfield2::AbstractArray{<:Real, 2}, dt::Float64; kwargs...)
+    plt_bfield_com(
+        bfield1::AbstractArray{<:Real, 2},
+        bfield2::AbstractArray{<:Real, 2},
+        dt::Float64;
+        width = 15,
+        height = 8,
+        fontsize_label = 7,
+        fontsize_legend = 7,
+        fontsize_ticklabel = 6,
+        color_facecolor = "#1F1F1F",
+        color_label = "#CCCCCC",
+        linewidth = 0.5,
+        ticklength = 1.5,
+        pad_label = 2,
+        pad_labeltick = 2)
 
-# Description
-    Plots k coefficients of spherical harmonic terms using matplotlib 
+Compare the first nine field-coefficient columns in two sample-first real
+matrices. Both must provide the same sample count and at least nine columns;
+the implementation derives its time axis from `bfield1`. The fixed legend and
+units match `plt_bfield`: values are unchanged and labels assume mT/m^p.
 
-# Arguments
-- `bfield1::AbstractArray{<:Real, 2}`: `[nSample, nTerms]` coefficients in units of rad, rad/m and rad/m^2.
-- `dt::Float64`: sampling time in seconds.
-
-# Keywords
-- `width`: (`::Real`, `=15`) figure's width
-- `height`: (`::Real`, `=7`) figure's height
-- `fontsize_label`: (`::Real`, `=7`) font size of labels
-- `fontsize_legend`: (`::Real`, `=7`) font size of legend
-- `fontsize_ticklabel`: (`::Real`, `=6`) font size of tick labels
-- `color_facecolor`: (`::String`, `="#1F1F1F"`) background color of the figure  
-- `color_label`: (`::String`, `="#CCCCCC"`) color of labels and tick labels
-- `linewidth`: (`::Real`, `=0.5`) line width
-- `ticklength`: (`::Real`, `=1.5`) length of ticks
-- `pad_label`: (`::Real`, `=2`) padding between labels and tick labels
-- `pad_labeltick`: (`::Real`, `=2`) padding between tick labels and axis
-
-# Returns
-- `Figure`: a PyObject representing the figure
-
-# Examples
-```julia-repl
-julia> fig = plt_bfield_com(bfield1, bfield2, dt)
-```
+`dt` must be Float64 seconds; display times start at one dwell and are shown in
+ms. Width/height are approximately centimetres. Return the Matplotlib figure.
 """
 function plt_bfield_com(
     bfield1::AbstractArray{<:Real, 2},

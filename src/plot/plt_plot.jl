@@ -1,38 +1,34 @@
 
 
 """
-    fig = plt_plot(ys::Vector{AbstractArray{Float64}}; labels=nothing, xs=nothing, xlabel="", ylabel="", width=15, height=8, fontsize_label=7, fontsize_legend=7, fontsize_ticklabel=6, color_facecolor="#1F1F1F", color_label="#CCCCCC", linewidth=0.5, ticklength=1.5, pad_label=2, pad_labeltick=2)
+    plt_plot(
+        ys::AbstractVector{T};
+        xs = nothing,
+        labels = nothing,
+        xlabel = "",
+        ylabel = "",
+        width = 15,
+        height = 8,
+        axis_equal = false,
+        fontsize_label = 7,
+        fontsize_legend = 7,
+        fontsize_ticklabel = 6,
+        color_facecolor = "#1F1F1F",
+        color_label = "#CCCCCC",
+        linewidth = 0.5,
+        ticklength = 1.5,
+        pad_label = 2,
+        pad_labeltick = 2) where T <: AbstractVector{<:Real}
 
-# Description
-    Plots multiple curves on the same figure.
+Plot a vector of real-valued vectors using Matplotlib and return the figure.
+`xs` is a collection of x-coordinate vectors: use one per curve, or a single
+vector wrapped in a collection to reuse it. Coordinate vectors are sliced to
+the y length and must be long enough. Without `xs`, Matplotlib supplies its
+zero-based index coordinates. Missing/short `labels` are replaced with blanks.
 
-# Arguments
-- `ys::Vector{AbstractArray{Float64}}`: a vector of arrays of y-values to plot
-
-# Keywords
-- `xs`: a vector of arrays of x-values to plot. If `nothing`, the x-values are assumed to be the same for all curves.
-- `labels`: a vector of labels for each curve. If `nothing`, the labels are not shown.
-- `xlabel`: the label for the x-axis.
-- `ylabel`: the label for the y-axis.
-- `width`: the width of the figure in inches.
-- `height`: the height of the figure in inches.
-- `fontsize_label`: the font size for the labels.
-- `fontsize_legend`: the font size for the legend.
-- `fontsize_ticklabel`: the font size for the tick labels.
-- `color_facecolor`: the background color of the figure.
-- `color_label`: the color of the labels.
-- `linewidth`: the width of the curves.
-- `ticklength`: the length of the ticks.
-- `pad_label`: the padding for the labels.
-- `pad_labeltick`: the padding for the tick labels.
-
-# Returns
-- `Figure`: a PyObject representing the figure
-
-# Examples
-```julia-repl
-julia> fig = plt_plot([rand(100), rand(100)])
-```
+`width` and `height` are approximately centimetres: the implementation divides
+by 2.53999863 before passing inches to Matplotlib. Font sizes are points.
+Use `PyPlot.close(fig)` after saving when creating many figures.
 """
 function plt_plot(
     ys::AbstractVector{T};

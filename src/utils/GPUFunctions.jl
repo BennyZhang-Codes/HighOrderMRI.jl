@@ -6,7 +6,8 @@ const use_cuda = Ref{Union{Nothing,Bool}}(nothing)
 """
     print_gpus()
 
-Simple function to print the CUDA devices available in the host.
+Internal diagnostic: check cached CUDA availability and log visible devices.
+The listed IDs are zero based. This helper is not exported.
 """
 function print_gpus()
     check_use_cuda()
@@ -20,7 +21,11 @@ function print_gpus()
 end
 
 """
-Checks if the PC has a functional CUDA installation. Inspired by Flux's `check_use_cuda` funciton.
+    check_use_cuda()
+
+Internal helper that initializes the cached result of `CUDA.functional()` on
+first use. Later calls reuse that result. It is not exported and does not
+transfer arrays or select a device.
 """
 function check_use_cuda()
 	if use_cuda[] === nothing
@@ -43,20 +48,16 @@ struct CUDAAdaptor end
 adapt_storage(to::CUDAAdaptor, x) = CUDA.cu(x)
 
 """
-	gpu(x)
+    gpu(x)
 
-Tries to move `x` to the current GPU device. Inspired by Flux's `gpu` function.
+Move supported numeric leaves to the current CUDA device using the package's
+Functors/Adapt traversal. If CUDA is unavailable, return `x` unchanged and cache
+that availability result. This fallback is not an explicit device-selection API.
 
-This works for functions, and any struct marked with `@functor`.
-
-Use [`cpu`](@ref) to copy back to ordinary `Array`s.
-
-See also [`f32`](@ref) and [`f64`](@ref) to change element type only.
-
-# Examples
-```julia
-x = x |> gpu
-```
+The adaptor calls `CUDA.cu`, which can convert floating-point precision. Use an
+explicit `CuArray` conversion when preserving a chosen element type matters.
+Traversal follows Functors support; it is not an unconditional deep copy of an
+arbitrary object. No GPU is selected by this function.
 """
 function gpu(x)
 	check_use_cuda()
@@ -70,18 +71,12 @@ adapt_storage(to::CPUAdaptor, x::AbstractRange) = x
 
 # To CPU
 """
-	cpu(x)
+    cpu(x)
 
-Tries to move object to CPU. Inspired by Flux's `cpu` function.
-
-This works for functions, and any struct marked with `@functor`.
-
-See also [`gpu`](@ref).
-
-# Examples
-```julia
-x = x |> cpu
-```
+Adapt supported array leaves to ordinary CPU arrays through Functors/Adapt.
+Ranges are retained. The result follows the input object's supported traversal;
+already-host storage need not be copied independently. This function does not
+change numeric precision deliberately.
 """
 cpu(x) = fmap(x -> adapt(CPUAdaptor(), x), x)
 
@@ -95,20 +90,20 @@ adapt_storage(T::Type{<:Real}, xs::AbstractArray{<:Bool}) = xs #Type piracy
 """
     f32(m)
 
-Converts the `eltype` of model's parameters to `Float32`
-Recurses into structs marked with `@functor`.
-
-See also [`f64`](@ref).
+Convert supported real numeric array leaves to `Float32` and complex leaves to
+`ComplexF32` through Functors/Adapt. Boolean arrays remain unchanged. This is a
+precision conversion, not a CPU/GPU transfer; traversal follows the supported
+object structure.
 """
 f32(m) = paramtype(Float32, m)
 
 """
     f64(m)
 
-Converts the `eltype` of model's parameters to `Float64`..
-Recurses into structs marked with `@functor`.
-
-See also [`f32`](@ref).
+Convert supported real numeric array leaves to `Float64` and complex leaves to
+`ComplexF64` through Functors/Adapt. Boolean arrays remain unchanged. This is a
+precision conversion, not a CPU/GPU transfer; traversal follows the supported
+object structure.
 """
 f64(m) = paramtype(Float64, m)
 

@@ -1,19 +1,18 @@
 """
-    plt_geometry(geos::Vector{<:Geometry}; space::Symbol=:DCS, kwargs...)
+    plt_geometry(geos::Vector{<:Geometry}; space::Symbol = :DCS, plot_RPS_vectors = false, title = "", width = 18, height = 15, fontsize_title = 12, fontsize_label = 10, fontsize_tick = 8, color_facecolor = "#FFFFFF", color_label = "#000000", color_pane = "#FFFFFF", vol_alpha = 0.15, colors = ["#00A8E8", "#FF6B6B", "#06D6A0", "#FFD166", "#8A4FFF", "#F38181"], elev = 15, azim = 135)
 
-Visualize the macroscopic 3D Field of View (FOV) Bounding Boxes for an array of `Geometry` objects.
-Highly optimized: Computes only the 8 extreme corner points per geometry instead of generating full dense grids.
+    plt_geometry(geo::Geometry; kwargs...)
 
-# Arguments
-- `geos`: A single `Geometry` or a Vector of `Geometry` objects.
-- `space`: Symbol. Target coordinate space (`:DCS`, `:PCS`, or `:RPS`). Default is `:DCS`.
-
-# Keyword Arguments
-- `plot_RPS_vectors`: Boolean. Draws the RPS physical spanning vectors (default: false).
-- `vol_alpha`: Float. Transparency of the volume faces (default: 0.15).
-- `colors`: Vector of Strings. Palette used for different geometries.
-- `elev`: Float. Initial camera elevation angle in degrees (default: 15).
-- `azim`: Float. Initial camera azimuth angle in degrees (default: 135).
+Plot physical FOV boxes for a vector of Geometry objects and return a PyPlot
+figure. The single-Geometry overload wraps its argument in a vector and
+forwards keywords to the vector method.
+space may be :PCS, :DCS or :RPS (also :rps); RPS boxes remain local and do not
+show relative patient positions. The function uses extreme voxel centres and
+half-spacing extensions rather than a full dense grid. Internal coordinates
+are metres; the plotted coordinates are millimetres. width and height are
+centimetres, view angles are degrees, and vol_alpha controls face opacity.
+plot_RPS_vectors adds logical spans. A plausible plot does not validate the
+vendor transform tables or an exported NIfTI affine.
 """
 function plt_geometry(geos::Vector{<:Geometry}; 
     space::Symbol      = :DCS,

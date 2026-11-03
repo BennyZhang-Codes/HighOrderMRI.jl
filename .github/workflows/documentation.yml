@@ -1,49 +1,65 @@
-name: Documentation
+name: API documentation checks
 
 on:
   push:
-    branches:
-      - main
-    tags:
-      - "v*"
+    branches: [main, dev_jinyuan]
   pull_request:
-    branches:
-      - main
+    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: docs-${{ github.ref }}
+  group: docs-contract-${{ github.ref }}
   cancel-in-progress: true
 
 env:
-  JULIA_NUM_THREADS: auto
-  JULIA_PKG_PRECOMPILE_AUTO: "0"
-  DOCUMENTER_DEVBRANCH: main
+  CUDA_VISIBLE_DEVICES: ''
+  MPLBACKEND: Agg
+  JULIA_LOAD_PATH: '@:@stdlib'
+  JULIA_NUM_THREADS: '1'
+  JULIA_PKG_PRECOMPILE_AUTO: '0'
 
 jobs:
   docs:
-    name: Build Documenter reference
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          ref: docs
+          path: _website
       - uses: julia-actions/setup-julia@v3
         with:
-          version: "1"
-          show-versioninfo: "true"
-      - uses: julia-actions/cache@v3
-        with:
-          delete-old-caches: false
-      - name: Instantiate documentation environment
-        shell: julia --color=yes --project=docs {0}
+          version: '1.12'
+      - name: Prepare isolated Julia environment
+        shell: bash
+        run: |
+          echo "JULIA_DEPOT_PATH=$RUNNER_TEMP/docs-julia-depot" >> "$GITHUB_ENV"
+      - name: Instantiate package dependencies
+        shell: julia --startup-file=no --project=. {0}
         run: |
           using Pkg
           Pkg.instantiate(; allow_autoprecomp=false)
-          Pkg.build("Conda")
           ENV["PYTHON"] = ""
           Pkg.build("PyCall")
-      - name: Build documentation
-        run: julia --color=yes --project=docs docs/make.jl
+          @assert Base.find_package("Documenter") === nothing
+      - name: Record website snapshot
+        run: git -C _website rev-parse HEAD
+      - name: Check contracts and generator
+        env:
+          DOCS_API_MAP: ${{ github.workspace }}/_website/docs/api-map.toml
+        run: |
+          julia --startup-file=no scripts/docs/test_contract_check.jl
+          julia --startup-file=no --project=. scripts/docs/test_export_api.jl
+      - name: Generate all mapped interfaces
+        run: >-
+          julia --startup-file=no --project=. scripts/docs/export_api.jl
+          --map _website/docs/api-map.toml --output "$RUNNER_TEMP/api-reference"
+          --code-root "$GITHUB_WORKSPACE" --code-sha "$(git rev-parse HEAD)" --mode preview
+      - name: Run CPU documentation examples
+        env:
+          DOCS_SITE_PATH: ${{ github.workspace }}/_website/docs
+        run: julia --startup-file=no --project=. scripts/docs/check_examples.jl

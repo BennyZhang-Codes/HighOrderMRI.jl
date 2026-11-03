@@ -1,8 +1,17 @@
 """
     export_nifti(x::AbstractArray{<:Real}, geo::Geometry, outpath::String, name::String)
 
-Base method: Exports a single 3D/4D REAL array based on a single Geometry object.
-Calculates the NIfTI standard (RAS) affine matrix and exports as .nii.gz.
+Write a real 3D or 4D image as `joinpath(outpath,name*".nii.gz")` using a
+single regular Geometry. The first three array dimensions must match
+geo.MatrixSize; this precondition is not explicitly checked. Create outpath
+before calling. Non-spatial dimensions are retained, but temporal metadata
+is not provided (`time_step=0`).
+
+The affine uses voxel-centre spacing FOV/MatrixSize, the centre T_PCS and
+R_RPS_PCS; LPS coordinates are converted to NIfTI RAS and metres to millimetres.
+Returns the Float32 3×4 affine passed to the writer. This does not validate
+vendor mapping or modify the input image. Check the resulting affine against
+known physical landmarks independently of an implementation round-trip.
 """
 function export_nifti(x::AbstractArray{<:Real}, geo::Geometry, outpath::String, name::String)
     # 1. Extract basic geometry information and convert to millimeters (mm)
@@ -40,8 +49,11 @@ end
 """
     export_nifti(x::AbstractArray{<:Complex}, geo::Geometry, outpath::String, name::String)
 
-Overload for COMPLEX arrays: Automatically splits into magnitude (_mag) and phase (_pha) 
-and delegates directly to the Real array base method via multiple dispatch.
+Write magnitude and principal phase as separate real NIfTI files named
+`name_mag.nii.gz` and `name_pha.nii.gz`; phase values are in radians. Return
+the magnitude file's affine. The single-geometry shape, units and output-folder
+requirements apply to both files. No complex-valued NIfTI or phase unwrapping
+is performed.
 """
 function export_nifti(x::AbstractArray{<:Complex}, geo::Geometry, outpath::String, name::String)
     mat_mag = export_nifti(abs.(x), geo, outpath, "$(name)_mag")
@@ -52,9 +64,20 @@ end
 """
     export_nifti(x::AbstractArray{<:Real}, geos::AbstractVector{<:Geometry}, outpath::String, name::String)
 
-Overload for multi-slice / multi-slab REAL data (Single Array, Vector of Geometries).
-Automatically sorts the 3rd dimension (Z-axis) of the array based on the physical `Idx_Slice` 
-to handle interleaved or out-of-order acquisitions natively.
+Write a slice stack using a vector of geometries. The implementation sorts
+by Idx_Slice and uses that permutation directly on array axis three. It then
+constructs an affine from the first geometry and the unsigned distance between
+the first two centres. It does not validate regular spacing or orientations.
+
+Known limitations: one geometry must represent one plane (`MatrixSize[3]==1`)
+for this indexing scheme. Supplying multi-plane slabs can silently drop planes.
+Descending physical centres can produce an affine pointing in the wrong
+direction. Nonuniform spacing and in-plane offsets are not represented safely.
+Do not use this overload for those cases. Prefer an explicitly validated
+single regular Geometry and correctly ordered complete image array. A safe
+slice-only case needs Idx_Slice order to match increasing positions along a
+common normal, uniform spacing and consistent in-plane geometry. Output and
+return conventions follow the real single-geometry overload.
 """
 function export_nifti(x::AbstractArray{<:Real}, geos::AbstractVector{<:Geometry}, outpath::String, name::String)
     # 1. Absolute Physical Sorting based on Idx_Slice
@@ -112,8 +135,10 @@ end
 """
     export_nifti(x::AbstractArray{<:Complex}, geos::AbstractVector{<:Geometry}, outpath::String, name::String)
 
-Overload for multi-slice / multi-slab COMPLEX data.
-Automatically splits into magnitude (_mag) and phase (_pha) and delegates to the Real multi-slice method.
+Split a complex stack into magnitude and principal phase and delegate to the
+vector-of-geometries real overload. Its plane-loss, sorting and affine
+limitations apply unchanged. Returns the magnitude affine; this wrapper does
+not make multi-slab export safe.
 """
 function export_nifti(x::AbstractArray{<:Complex}, geos::AbstractVector{<:Geometry}, outpath::String, name::String)
     mat_mag = export_nifti(abs.(x), geos, outpath, "$(name)_mag")

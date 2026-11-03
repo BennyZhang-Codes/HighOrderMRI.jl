@@ -1,7 +1,7 @@
 # HighOrderMRI.jl
 
 [![CI](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/actions/workflows/ci.yml)
-[![Documenter check](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/actions/workflows/documentation.yml/badge.svg?branch=main)](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/actions/workflows/documentation.yml)
+[![API documentation check](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/actions/workflows/documentation.yml/badge.svg?branch=main)](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/actions/workflows/documentation.yml)
 [![VitePress deployment](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/actions/workflows/documentation.yml/badge.svg?branch=docs)](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/actions/workflows/documentation.yml?query=branch%3Adocs)
 [![Dev docs](https://img.shields.io/badge/docs-dev-blue.svg)](https://bennyzhang-codes.github.io/HighOrderMRI.jl/dev/)
 
@@ -19,8 +19,8 @@ operator for large 2D and 3D reconstruction.
   caching; `gpus` selects one or more GPUs through the same interface.
 - `HighOrderLowRankOp`: per-dynamic matrix-free rSVD, adaptive global shared
   spatial basis, and a global-trajectory NFFT.
-- Optional voxel-distributed multi-GPU rSVD setup and channel-distributed
-  multi-GPU normal operators.
+- Optional voxel-distributed multi-GPU rSVD setup and channel-, readout-,
+  or shared-rank-distributed execution; see the multi-GPU guide for restrictions.
 - GIRF-based field prediction and model-based field/data synchronization
   ([Dubovan and Baron, 2023](https://doi.org/10.1002/mrm.29460)).
 - Raw complex reconstruction metrics and encoding-convention regression tests.
@@ -34,18 +34,19 @@ contains:
 - the expanded signal model, units, basis order, and NFFT convention;
 - the randomized SVD and global shared spatial-subspace derivation;
 - operator selection, reconstruction, multi-GPU, and synchronization guides;
-- the frozen reconstruction comparison protocol and generated API reference.
+- reconstruction conventions and source-generated API reference.
 
 The public website is built with VitePress from the
 [`docs` branch](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/tree/docs)
-and deployed directly through GitHub Actions. Documenter on `main` validates
-Julia docstrings and reference pages without publishing the website.
+and deployed through GitHub Actions. Source docstrings supply the API reference;
+interface and CPU example checks run on the code branch. The website records
+the code revision it documents.
 
 ## Installation
 
 HighOrderMRI.jl requires Julia 1.12 or later. CI tests both the minimum
 supported Julia 1.12 release and the latest stable Julia 1.x release; the
-documentation is also built with the latest stable release. The repository
+documentation checks use Julia 1.12. The repository
 currently carries `MRIGeometry` as a local subpackage, so clone the complete
 repository:
 
