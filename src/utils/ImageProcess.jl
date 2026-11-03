@@ -1,36 +1,48 @@
 # Normalization
+"""
+    normalization(img::AbstractArray{T, 2}) where T <: Real
+
+Apply min-max normalization `(img - minimum(img)) / (maximum(img) - minimum(img))`
+to a real matrix. This rescales image intensity; it does not preserve absolute
+quantitative calibration. A constant image has a zero denominator and produces
+nonfinite values in the current implementation. Empty/nonfinite inputs are not
+handled by a separate validation policy.
+"""
 function normalization(img::AbstractArray{T,2}) where T<:Real
     return (img.- minimum(img))./ (maximum(img) .- minimum(img))
 end
 
 # Standardization
+"""
+    standardization(img::AbstractArray{T, 2}) where T <: Real
+
+Subtract the mean and divide by the population standard deviation
+`std(img; corrected=false)` of a real matrix. A constant image has zero standard
+deviation and produces nonfinite values in the current implementation.
+This helper does not preserve absolute intensity or perform robust outlier handling.
+"""
 function standardization(img::AbstractArray{T,2}) where T<:Real
     return (img.- mean(img))./ std(img; corrected=false)
 end
 
 """
-MSE
+    mymse(img::AbstractArray{T, 2}, ref::AbstractArray{T, 2}) where T <: Real
+
+Internal, unexported mean squared difference for two real matrices. The
+implementation uses broadcasting and does not provide the explicit input checks
+of the public reconstruction metrics.
 """
 function mymse(img::AbstractArray{T,2}, ref::AbstractArray{T,2}) where T<:Real
     return mean((img.- ref).^2)
 end
 
 """
-    out = get_center_range(x::Int64, x_range::Int64)
+    get_center_range(x::Int64, x_range::Int64)
 
-# Description
-    This function returns the range of the center of the input range.
-
-# Arguments
-- `x`: (Int64) center of the range
-- `x_range`: (Int64) range of the center
-
-# Returns
-- `out`: range of the center
-
-```julia-repl
-julia> out = get_center_range(200, 100)
-```
+Return `floor(x/2) - floor(x_range/2) + 1 : floor(x/2) + ceil(x_range/2)`
+as an `Int64` unit range. Here `x` is the full axis length and `x_range` is the
+requested length, not a centre coordinate. Use positive lengths; containment
+and bounds are not validated. Even/odd cases follow this exact index convention.
 """
 function get_center_range(x::Int64, x_range::Int64)
     center = Int64(floor(x/2))
@@ -39,23 +51,19 @@ end
 
 
 """
-    out = get_center_crop(image::AbstractArray{T, 3}, out_x::Int64, out_y::Int64) where T <: Real
+    get_center_crop(image::AbstractArray{T}, out_x::Int64, out_y::Int64) where T <: Number
 
-# Description
-    This function crops the center of the input image to the specified size. If the input image is smaller than the output size, the output image will be padded with zeros.
+Centre-crop or zero-pad the first two axes of a 2D or 3D numeric array.
+The requested sizes must be positive `Int64` values. The third axis, when
+present, is retained, and the output has the input element type.
 
-# Arguments
-- `image`: (AbstractArray{<:Number, 2}) input image array
-- `out_x`: (Int64) output image width
-- `out_y`: (Int64) output image height
+# Current limitation
 
-# Returns
-- `out`: croped image array
-
-# Examples
-```julia-repl
-julia> out = get_center_crop(img, 100, 100)
-```
+If either requested spatial size equals the corresponding input size, none of
+the four copy branches executes: the result is all zeros. This includes an
+unchanged requested size. Do not use this helper for that case without an
+explicit caller-side alternative. The limitation is documented here, not fixed
+by this documentation change.
 """
 function  get_center_crop(image::AbstractArray{T}, out_x::Int64, out_y::Int64) where T <: Number
     nDim = ndims(image)

@@ -1,31 +1,11 @@
 """
-    mosaic(imgs; dim=1, nRow=4, nCol=4)
+    mosaic(imgs; dim = 1, nRow = 4, nCol = 4)
 
-Create a 2D mosaic (tiled grid) from a 3D image volume or image sequence.
-
-# Description
-This function extracts 2D slices from the specified dimension of a 3D array 
-and arranges them into a 2D grid. 
-- If the grid size (`nRow * nCol`) is larger than the number of slices, the remaining spaces are padded with zeros (black boxes). 
-- If the grid size is smaller, the image sequence is truncated to fit the grid.
-
-# Arguments
-- `imgs::AbstractArray{T, 3}`: The input 3D image volume.
-- `dim::Int`: The dimension along which the image sequence/slices are stacked. 
-  Must be 1, 2, or 3. Default is `1`.
-- `nRow::Int`: The number of rows in the output mosaic grid. Default is `4`.
-- `nCol::Int`: The number of columns in the output mosaic grid. Default is `4`.
-
-# Returns
-- `show_res::Matrix{T}`: A 2D matrix containing the tiled images.
-
-# Example
-```julia
-# Create a dummy 3D volume (e.g., 16 slices of 128x128 images stacked along Z)
-volume = rand(128, 128, 16)
-
-# Create a 4x4 mosaic of the slices
-grid_img = mosaic(volume; dim=3, nRow=4, nCol=4)
+Arrange slices of a three-dimensional array as a row-major 2D tile grid. `dim`
+selects the slice axis (1, 2 or 3); use positive integer `nRow` and `nCol`.
+Too few slices are padded with zeros; excess slices are truncated. The output
+has the input element type and tile height times nRow by tile width times nCol.
+This function returns an array and does not create a figure.
 """
 function mosaic(imgs; dim=1, nRow=4, nCol=4)
     @assert dim in [1, 2, 3] "dim of image sequence should be 1, 2, or 3"
@@ -64,10 +44,12 @@ end
 
 
 """
-    mosaic(imgs::Vector{<:AbstractArray}; nRow=4, nCol=4)
+    mosaic(imgs::Vector{<:AbstractArray}; nRow = 4, nCol = 4)
 
-Overloads the `mosaic` function to support a vector of images.
-Automatically handles strict 2D matrices as well as 3D arrays with a singleton third dimension (e.g., NxMx1).
+Tile a nonempty vector of identically sized images. Each element must be a
+2D array or a 3D array with a singleton third axis, which is dropped. The
+images are stacked and passed to the array `mosaic` method with `dim=3`.
+Positive `nRow`/`nCol` control padding or truncation; return a 2D array.
 """
 function mosaic(imgs::Vector{<:AbstractArray}; nRow=4, nCol=4)
     # 1. Safety check: Ensure the image vector is not empty

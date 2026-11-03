@@ -1,35 +1,35 @@
 """
-    fig = plt_scatter(ys::Vector{AbstractArray{Float64}}; labels=nothing, xs=nothing, xlabel="", ylabel="", width=15, height=8, fontsize_label=7, fontsize_legend=7, fontsize_ticklabel=6, color_facecolor="#1F1F1F", color_label="#CCCCCC", linewidth=0.5, ticklength=1.5, pad_label=2, pad_labeltick=2)
+    plt_scatter(
+        ys::AbstractVector{T};
+        xs = nothing,
+        labels = nothing,
+        xlabel = "",
+        ylabel = "",
+        width = 15,
+        height = 8,
+        axis_equal = false,
+        fontsize_label = 7,
+        fontsize_legend = 7,
+        fontsize_ticklabel = 6,
+        color_facecolor = "#1F1F1F",
+        color_label = "#CCCCCC",
+        linewidth = 0.5,
+        ticklength = 1.5,
+        pad_label = 2,
+        pad_labeltick = 2,
+        marker = "o",
+        marker_size = 1.0,
+        marker_linewidth = 0.5) where T <: AbstractVector{<:Real}
 
-# Description
-    Plots multiple scatter plots on the same figure.
+Plot a vector of real-valued vectors as scatter series and return the Matplotlib
+figure. Without `xs`, coordinates are Julia indices `1:length(y)`; with `xs`,
+provide one coordinate vector per series or a singleton collection reused for
+all series. Each x/y pair must have matching lengths.
 
-# Arguments
-- `ys::Vector{AbstractArray{Float64}}`: a vector of arrays of y-values to plot
-
-# Keywords
-- `xs`: a vector of arrays of x-values to plot. If `nothing`, the x-values are assumed to be the same for all scatter plots.
-- `labels`: a vector of labels for each scatter plot. If `nothing`, the labels are not shown.
-- `xlabel`: the label for the x-axis.
-- `ylabel`: the label for the y-axis.
-- `width`: the width of the figure in inches.
-- `height`: the height of the figure in inches.
-- `fontsize_label`: the font size for the labels.
-- `fontsize_legend`: the font size for the legend.
-- `fontsize_ticklabel`: the font size for the tick labels.
-- `color_facecolor`: the background color of the figure.
-- `color_label`: the color of the labels.
-- `linewidth`: the width of the markers.
-- `ticklength`: the length of the ticks.
-- `pad_label`: the padding for the labels.
-- `pad_labeltick`: the padding for the tick labels.
-
-# Returns
-- `Figure`: a PyObject representing the figure
-
-# Examples
-```julia-repl
-julia> fig = plt_scatter([rand(100), rand(100)])
+`width` and `height` are approximately centimetres; font sizes are points.
+Currently `marker`, `marker_size`, and `marker_linewidth` are accepted but not
+passed to `scatter`. The general `linewidth` is passed. Do not rely on the
+three marker-specific keywords changing the figure.
 """
 function plt_scatter( 
     ys::AbstractVector{T};

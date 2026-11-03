@@ -1,18 +1,37 @@
 """
-    apply_girf(G_DCS_nom::AbstractArray{T, N}, Hw::AbstractArray; dim_spatial::Int=1, dim_time::Int=2, rbw::Float64=1.0) where {T, N}
+    apply_girf(G_DCS_nom::AbstractArray{T, N}, Hw::AbstractArray; dim_spatial::Int = 1, dim_time::Int = 2, rbw::Float64 = 1.0) where {T, N}
 
-Applies the Gradient Impulse Response Function (GIRF) model in the frequency domain 
-to predict actual waveforms. 
+Apply a frequency-domain linear, time-invariant gradient response model.
+Use real floating-point nominal gradients with three physical DCS channels
+along `dim_spatial` and waveform samples along the distinct `dim_time` axis.
+`Hw` has shape `(nFreq,3,nOut)` with DC centred (`fftshift` ordering).
+Other input dimensions are processed independently. The output preserves
+their order and replaces the three-channel dimension by nOut. Its element
+type follows the nominal waveform; the inverse transform's real part is used.
 
-# Arguments
-- `G_DCS_nom`: N-dimensional nominal physical gradient array.
-- `Hw`: Frequency-domain GIRF model array (e.g., [nFreq, 3, nOut]). Assumes DC component is centered (fftshift-ed).
-- `dim_spatial`: Dimension corresponding to the spatial gradient axes (X, Y, Z). Default is 1.
-- `dim_time`: Dimension corresponding to the time points (nPoint). Default is 2.
-- `rbw`: Relative bandwidth (0 to 1.0). Nulls high-frequency components outside this ratio to prevent noise amplification (Default: 1.0, no filtering).
+The frequency response and input waveform must use matching sample intervals
+and compatible physical units. `rbw` is intended in `(0,1]`; below one, the
+outer frequency bins of the waveform spectrum are set to zero. This keyword
+is not a calibrated anti-aliasing or noise model, and its range is not checked.
+The function does not insert gamma, integrate fields or convert to cycles.
 
-# Returns
-- `G_act_all`: Predicted array replacing the size of `dim_spatial` with `nOut` (e.g., 16 SH channels).
+# Current FFT boundary and response-expansion limits
+
+The FFT length is `nextprod([2,3,5],max(nPoint,nFreq))`. The waveform is padded
+with trailing zeros to that length, multiplied by the transfer matrix, and
+the first nPoint real output samples are returned. This is circular FFT
+convolution; this padding alone does not guarantee finite-record linear
+convolution or prevent a response from wrapping into the beginning.
+
+When the FFT length exceeds nFreq, the implementation expands the response
+in the time domain. Its current split omits index `fld(nFreq,2)+1`, which can
+discard a valid impulse-response coefficient even for odd nFreq. This is a
+known numerical limitation, not safe general-purpose impulse padding. Prefer
+an already matched response length and assess the input/output boundary
+support explicitly; no padding fix is performed by this API.
+
+`apply_girf(nominal, model::GIRFModel; ...)` delegates here and does not use
+the model's stored frequency vector to resample the response.
 """
 function apply_girf(
     G_DCS_nom   :: AbstractArray{T, N}, 
@@ -82,9 +101,12 @@ function apply_girf(
 end
 
 """
-    _apply_girf_core(...)
+    _apply_girf_core(G_2d::AbstractMatrix, Hw_work::AbstractArray, nPoint::Int, N_fft::Int, nOut::Int, rbw::Float64)
 
-(Internal) Core 2D thread-safe kernel for applying GIRF computation over frequency.
+Internal per-waveform FFT evaluation for a three-channel matrix. The caller
+provides the chosen FFT length and response array. Returns the first nPoint
+samples of the real inverse transform; the finite FFT implies periodic
+convolution. This helper does not add a separate linear-convolution guard.
 """
 function _apply_girf_core(G_2d::AbstractMatrix, Hw_work::AbstractArray, nPoint::Int, N_fft::Int, nOut::Int, rbw::Float64)
     # Safely pad gradient to N_fft 
@@ -123,10 +145,14 @@ function _apply_girf_core(G_2d::AbstractMatrix, Hw_work::AbstractArray, nPoint::
 end
 
 """
-    unpack_girf_channels(G_act_all::AbstractArray{T, N}; dim_spatial::Int=1) where {T, N}
+    unpack_girf_channels(G_act_all::AbstractArray{T, N}; dim_spatial::Int = 1) where {T, N}
 
-Separates the 0th order (B0), 1st order (X, Y, Z), and higher-order Spherical Harmonic (SH) components 
-from the multi-dimensional output of the GIRF model.
+Internal output-layout helper. For at least four output channels, return
+`(linear, zeroth, higher)` by selecting channels 2:4, 1:1 and 5:end along
+`dim_spatial`; higher is `nothing` when exactly four channels are present.
+With fewer than four channels, return all channels as linear, a same-shaped
+single-channel zero zeroth term, and `nothing`, with a warning. This convention
+does not verify the physical order or units of a supplied model.
 """
 function unpack_girf_channels(G_act_all::AbstractArray{T, N}; dim_spatial::Int=1) where {T, N}
     nOut = size(G_act_all, dim_spatial)

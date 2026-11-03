@@ -1,17 +1,12 @@
 """
-    extract_unique_geometries(raw; decimals=4)
+    extract_unique_geometries(raw; decimals::Int = 4)
 
-Extract all unique geometric configurations (Position and Read/Phase/Slice directions) 
-from MRI raw data profiles, while rigorously tracking the original ADC profile indices 
-that belong to each unique geometry.
-
-# Arguments
-- `raw`: RawAcquisitionData object (from MRIReco.jl / ISMRMRD format).
-- `decimals`: Integer. Precision used to round floats before determining uniqueness. 
-
-# Returns
-A Vector of NamedTuples, where each element represents a unique slab/slice:
-`[(geometry = (position=..., read_dir=...), indices = [1, 2, 5, ...]), ...]`
+Internal grouping helper for profile positions and read/phase/slice direction
+vectors, rounded to decimals places for equality. Each returned NamedTuple
+contains `geometry` (the first unrounded record) and `idx_slice` (the first
+profile's zero-based slice label). Groups follow first occurrence. Original
+ADC profile index lists are computed internally but are not included in the
+returned records. This function is not re-exported as a public package API.
 """
 function extract_unique_geometries(raw; decimals::Int=4)
     unique_geos  = []                    # Track the unique geometric NamedTuples

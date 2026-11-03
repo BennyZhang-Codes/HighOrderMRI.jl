@@ -1,23 +1,17 @@
 """
-    plt_grid(grid::Array{<:Real,4}; step::Int=4, space::Symbol=:DCS, kwargs...)
+    plt_grid(grid::Array{T, 4}; step::Int = 4, space::Symbol = :DCS, title = "", width = 18, height = 15, fontsize_title = 12, fontsize_label = 10, fontsize_tick = 8, color_facecolor = "#1F1F1F", color_label = "#CCCCCC", plot_RPS_vectors = true, elev = 15, azim = 135) where T <: Real
 
-Visualize a 3D voxel grid with subsampling using PyPlot. The color gradients
-automatically map to the Readout (Red), Phase (Green), and Slice (Blue) logical dimensions.
+Plot an `(nR,nP,nS,3)` coordinate grid with every step-th voxel, coloured by
+its logical index. Input coordinates are in metres and displayed in millimetres.
+The space keyword selects labels, not a coordinate transformation; transform
+the grid before plotting. width and height are in centimetres. Returns a
+PyPlot figure; step must be positive.
 
-# Arguments
-- `grid`: 4D array of shape (nRead, nPhase, nSlice, 3) containing the absolute physical coordinates of the voxels.
-- `step`: Integer. Subsampling step to reduce plotted points and save memory (default: 4).
-- `space`: Symbol. The coordinate space type for axis labels. Choose from `:xyz`, `:RPS`, `:DCS` (default), or `:PCS`.
-
-# Keyword Arguments
-- `title`: String. Title of the plot.
-- `width`, `height`: Plot dimensions in inches.
-- `fontsize_*`: Font sizes for title, labels, and ticks.
-- `color_facecolor`: Background color of the plot (default: "#1F1F1F").
-- `color_label`: Color for axes, ticks, and labels (default: "#CCCCCC").
-- `plot_RPS_vectors`: Boolean. If true, draws the true 3D bounding vectors for the Readout (Red), Phase (Green), and Slice (Blue) directions starting from the matrix origin (1,1,1).
-- `elev`: Float. Initial camera elevation angle in degrees (default: 15).
-- `azim`: Float. Initial camera azimuth angle in degrees (default: 135).
+Current label branches :PCS and :DCS are usable. The :RPS branch currently
+raises an unsupported-space error after setting labels; :XYZ/:xyz do not have
+an implemented labelling branch. Do not advertise these as working modes.
+DCS labels assume the documented device convention and do not verify vendor
+mapping. plot_RPS_vectors visualizes grid spans, not a calibration result.
 """
 function plt_grid(grid::Array{T,4}; step::Int=4, space::Symbol=:DCS,
     title              = ""       ,

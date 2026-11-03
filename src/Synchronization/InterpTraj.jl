@@ -1,31 +1,19 @@
 """
-    traj_shifted = InterpTrajTime(traj::AbstractArray{<:Real, 2}, dt::Float64, delTime::Float64)
-# Description
-    Interpolates trajectory along the 1st dimension using Akima interpolation.
+    InterpTrajTime(traj::AbstractArray{T, 2}, dt::Real, delTime::Real, datatime::AbstractVector{T}; intermode::Interpolations.InterpolationType = AkimaMonotonicInterpolation()) where T <: Real
 
-# Arguments
-- `traj::AbstractArray{<:Real, 2}`: trajectory data (2D array, where each row is a point in the trajectory)
-- `dt::Float64`: time delay between input samples
-- `delTime::Float64`: time delay to be added or subtracted from time
+Interpolate field coefficients from equally spaced field samples to requested
+acquisition times. `traj` is `(nFieldSample,nTerm)` and `datatime` is an ADC
+time vector of the same element type `T`; the result is a host matrix
+`(length(datatime),nTerm)` converted to `T`.
 
-# Keywords
-- `intermode::Interpolations.InterpolationType`: interpolation mode (default is AkimaMonotonicInterpolation). 
-        other Monotonic methods from Interpolations.jl are:
-    1. LinearMonotonicInterpolation
-    2. FiniteDifferenceMonotonicInterpolation
-    3. CardinalMonotonicInterpolation
-    4. AkimaMonotonicInterpolation
-    5. FritschCarlsonMonotonicInterpolation
-    6. FritschButlandMonotonicInterpolation
-    7. SteffenMonotonicInterpolation
-
-# Returns
-- `traj_interp::Array{Float64, 2}`: interpolated trajectory data (2D array, where each row is a point in the interpolated trajectory)
-
-# Examples
-```julia-repl
-julia> traj_shifted = InterpTrajTime(traj, dt, delTime)
-```
+Sample j is assigned time `(j-1)*dt-delTime`. Therefore a positive `delTime`
+evaluates the unshifted field at `datatime+delTime`. Use one consistent time
+unit; seconds are appropriate when these times multiply a field map in Hz.
+Outside the shifted measured interval, the result is zero, not extrapolated
+field dynamics. The default is Akima monotonic interpolation applied to each
+column. Use a floating-point `T`, a positive interval and enough field samples
+for the selected interpolation method. This function does not integrate the
+coefficients or convert their physical units.
 """
 function InterpTrajTime(
     traj      ::AbstractArray{T, 2}      , 
@@ -52,8 +40,17 @@ function InterpTrajTime(
 end
 
 """
-    If dwell time is equal between trajectories and the sampling points.
-    You can use this method.
+    InterpTrajTime(traj::AbstractArray{T, 2}, dt::Real, delTime::Real; intermode::Interpolations.InterpolationType = AkimaMonotonicInterpolation()) where T <: Real
+
+Convenience overload that requests the original equally spaced times
+`dt*(0:nFieldSample-1)`. It retains the zero-extrapolation and positive-delay
+convention of the explicit-time overload.
+
+The generated time vector inherits the arithmetic type of `dt`. Currently a
+Float32 trajectory with Float64 `dt` can fail dispatch to the explicit-time
+overload, which requires matching trajectory/time element types. Use `dt` of
+the trajectory's floating-point type, or pass an explicit same-type ADC vector.
+The return shape is the input trajectory shape.
 """
 function InterpTrajTime(
     traj      ::AbstractArray{T, 2}      , 
@@ -69,13 +66,15 @@ end
 
 
 """
-    For multishot cases, you can use this method.
-    traj 
-# Arguments
-- `traj::AbstractArray{<:Real, 3}`: [nShot, nSample, nTerm], trajectory data (2D array, where each row is a point in the trajectory)
-- `dt::Float64`: time delay between input samples
-- `delTime::Float64`: [nShot], time delay to be added or subtracted from time
+    InterpTrajTime(traj::AbstractArray{T, 3}, dt::Real, delTime::AbstractVector{T}, datatime::AbstractArray{T, 2}; intermode::Interpolations.InterpolationType = AkimaMonotonicInterpolation()) where T <: Real
 
+Interpolate each shot independently. `traj` is `(nShot,nFieldSample,nTerm)`,
+`delTime` has one offset per shot, and `datatime` is `(nShot,nADCSample)`.
+Offsets and ADC times must share the trajectory element type `T`; the result
+is a host array `(nShot,nADCSample,nTerm)` of that type. Each shot uses the
+two-dimensional helper, including its sign convention and zero extrapolation.
+Different field and ADC sample counts are permitted by this interpolation API.
+This is independent of the more restrictive current multishot delay estimator.
 """
 function InterpTrajTime(
     traj      ::AbstractArray{T, 3}      , 

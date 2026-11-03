@@ -1,33 +1,28 @@
 """
-    fig = plt_kspha(kspha::AbstractArray{<:Real, 2}, dt::Real; kwargs...)
+    plt_kspha(
+        kspha::AbstractArray{<:Real, 2},
+        dt::Real;
+        width = 15,
+        height = 7,
+        fontsize_label = 7,
+        fontsize_legend = 7,
+        fontsize_ticklabel = 6,
+        color_facecolor = "#1F1F1F",
+        color_label = "#CCCCCC",
+        linewidth = 0.5,
+        ticklength = 1.5,
+        pad_label = 2,
+        pad_labeltick = 2)
 
-# Description
-    Plots k coefficients of spherical harmonic terms using matplotlib 
+Plot coefficient columns grouped by spherical-harmonic order and return the
+Matplotlib figure. Input shape is `(nSample, 9)` or `(nSample, 16)`, unlike the
+term-first encoding-operator input. Axis labels assume rad, rad/m, rad/m^2 and
+rad/m^3; the values are plotted unchanged. Convert cycle-based encoding
+coefficients explicitly when using these labels.
 
-# Arguments
-- `kspha::AbstractArray{<:Real, 2}`: `[nSample, nTerm]` coefficients in units of rad, rad/m and rad/m^2.
-- `dt::Real`: sampling time in seconds.
-
-# Keywords
-- `width`: (`::Real`, `=15`) figure's width
-- `height`: (`::Real`, `=7`) figure's height
-- `fontsize_label`: (`::Real`, `=7`) font size of labels
-- `fontsize_legend`: (`::Real`, `=7`) font size of legend
-- `fontsize_ticklabel`: (`::Real`, `=6`) font size of tick labels
-- `color_facecolor`: (`::String`, `="#1F1F1F"`) background color of the figure  
-- `color_label`: (`::String`, `="#CCCCCC"`) color of labels and tick labels
-- `linewidth`: (`::Real`, `=0.5`) line width
-- `ticklength`: (`::Real`, `=1.5`) length of ticks
-- `pad_label`: (`::Real`, `=2`) padding between labels and tick labels
-- `pad_labeltick`: (`::Real`, `=2`) padding between tick labels and axis
-
-# Returns
-- `Figure`: a PyObject representing the figure
-
-# Examples
-```julia-repl
-julia> fig = plt_kspha(kspha, dt)
-```
+`dt` is in seconds. Display times are `(1:nSample)*dt` in milliseconds, so the
+first point is at one dwell, not zero. Width and height are approximately
+centimetres; font sizes are points.
 """
 function plt_kspha(
     kspha  :: AbstractArray{<:Real, 2} ,
@@ -112,35 +107,31 @@ end
 
 
 """
-    fig = plt_ksphas(ksphas::AbstractVector{T};, kspha2::AbstractArray{<:Real, 2}, dt::Float64; kwargs...)
+    plt_ksphas(
+        ksphas::AbstractVector{T},
+        dt::Real;
+        labels = nothing,
+        width = 15,
+        height = 8,
+        fontsize_label = 7,
+        fontsize_legend = 7,
+        fontsize_ticklabel = 6,
+        color_facecolor = "#1F1F1F",
+        color_label = "#CCCCCC",
+        linewidth = 0.5,
+        ticklength = 1.5,
+        pad_label = 2,
+        pad_labeltick = 2) where T <: AbstractArray{<:Real, 2}
 
-# Description
-    Plots k coefficients of spherical harmonic terms using matplotlib 
+Compare coefficient matrices, one per acquisition/readout, in a grid of terms.
+Use sample-first real matrices with 9 or 16 columns and a consistent term count;
+labels, when supplied, must match the number of matrices. Samples need not have
+the same count. Return the Matplotlib figure.
 
-# Arguments
-- `ksphas::AbstractVector{T};`: `[nSpha]` coefficients in units of rad, rad/m, rad/m^2 and rad/m^3.
-- `dt::Real`: sampling time in seconds.
-
-# Keywords
-- `width`: (`::Real`, `=15`) figure's width
-- `height`: (`::Real`, `=7`) figure's height
-- `fontsize_label`: (`::Real`, `=7`) font size of labels
-- `fontsize_legend`: (`::Real`, `=7`) font size of legend
-- `fontsize_ticklabel`: (`::Real`, `=6`) font size of tick labels
-- `color_facecolor`: (`::String`, `="#1F1F1F"`) background color of the figure  
-- `color_label`: (`::String`, `="#CCCCCC"`) color of labels and tick labels
-- `linewidth`: (`::Real`, `=0.5`) line width
-- `ticklength`: (`::Real`, `=1.5`) length of ticks
-- `pad_label`: (`::Real`, `=2`) padding between labels and tick labels
-- `pad_labeltick`: (`::Real`, `=2`) padding between tick labels and axis
-
-# Returns
-- `Figure`: a PyObject representing the figure
-
-# Examples
-```julia-repl
-julia> fig = plt_kspha_com(kspha1, kspha2, dt)
-```
+Values are unchanged and axes assume rad/m^p, with the zeroth term in rad.
+Convert cycle-based coefficients yourself. `dt` is seconds; each series starts
+at display time `dt`, and the horizontal axis is milliseconds. Width/height
+are approximately centimetres.
 """
 function plt_ksphas(
     ksphas  :: AbstractVector{T}       ,

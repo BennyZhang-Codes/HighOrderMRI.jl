@@ -1,46 +1,66 @@
 """
-    τ = FindDelay_multishot(gridding, data, kspha, datatime, StartTime, dt, ...)
+    FindDelay_multishot(gridding::Grid{T}, data::AbstractArray{Complex{T}, 2}, kspha::AbstractArray{T, 3}, datatime::AbstractArray{T, 2}, StartTime::AbstractVector{T}, dt::T; JumpFact::Int64 = 3, Δτ_min::T = 0.005, intermode::Interpolations.InterpolationType = AkimaMonotonicInterpolation(), fieldmap::AbstractArray{T, 2} = zeros(T, (gridding.nX, gridding.nY)), csm::Array{Complex{T}, 3} = ones(Complex{T}, (gridding.nX, gridding.nY)..., 1), recon_terms::String = "111", nBlock::Int64 = 50, arrayType::Type{<:AbstractArray} = Array, solver::Type{<:AbstractLinearSolver} = CGNR, reg::AbstractParameterizedRegularization = L2Regularization(zero(T)), iter_max::Int64 = 10, verbose::Bool = false)::T where T <: AbstractFloat
 
-This is a modified version, minor differences are: 
-1. apply density weighting in the estimation of `x`; 
-2. final results are returned with (τ - Δτ / JumpFact * (JumpFact - 1)).
+    FindDelay_multishot(gridding::Grid{T}, data::AbstractArray{Complex{T}, 2}, kspha::AbstractArray{T, 3}, StartTime::AbstractVector{T}, dt::T; JumpFact::Int64 = 3, Δτ_min::T = 0.005, intermode::Interpolations.InterpolationType = AkimaMonotonicInterpolation(), fieldmap::AbstractArray{T, 2} = zeros(T, (gridding.nX, gridding.nY)), csm::Array{Complex{T}, 3} = ones(Complex{T}, (gridding.nX, gridding.nY)..., 1), recon_terms::String = "111", nBlock::Int64 = 50, arrayType::Type{<:AbstractArray} = Array, solver::Type{<:AbstractLinearSolver} = CGNR, reg::AbstractParameterizedRegularization = L2Regularization(zero(T)), iter_max::Int64 = 10, verbose::Bool = false)::T where T <: AbstractFloat
 
-# Description
-A Julia implementation of the model-based synchronization delay estimation algorithm.
-The algorithm is based on the paper "Model-based determination of the synchronization delay between MRI and trajectory data"
-by Paul Dubovan and Corey Baron (2022, https://doi.org/10.1002/mrm.29460).
+Estimate one scalar synchronization delay shared by all shots of a 2D image.
+The image update uses all shots; per-shot residual and derivative-forward
+products are stacked into one real scalar least-squares update. This is not
+an estimator of independent shot delays. The method follows the model-based
+synchronization framework of Dubovan and Baron (doi:10.1002/mrm.29460), with
+this package's density-weighted image update and JumpFact acceleration.
 
-This implementation utilizes our `HighOrderOp` to realize the expanded encoding model with dynamic fields.
+# Inputs and units
 
-# Arguments
-- `gridding::Grid{T}`: gridding object containing the grid parameters
-- `data::AbstractArray{T, 2} [nSample, nCha]`: signal data
-- `kspha::AbstractArray{T, 3} [nShot, nSamplePerInterleave, nTerm]`: coefficients of spherical harmonics basis functions
-- `datatime::AbstractArray{T, 2} [nShot, nSamplePerInterleave]`: sampling time points of the signal data
-- `StartTime::T`: the time point of the first sample
-- `dt::T`: sampling interval
+Use a `Grid{T}` with one z plane, complex data `(nShot*nADCSample,nCha)`,
+coefficients `(nShot,nFieldSample,nTerm)`, ADC times `(nShot,nADCSample)`, and
+`StartTime::AbstractVector{T}` of length nShot. Samples within each shot vary
+fastest in data. `fieldmap` is `(nX,nY)` and `csm` is `(nX,nY,nCha)`. Match
+the coefficient order and spatial units to the encoding basis. Nine terms
+with `recon_terms="111"` are the ordinary second-order configuration.
 
-# Keywords
-- `JumpFact::Int64 = 3`: scaling factor for acceleration of convergence
-- `Δτ_min::T = 0.005`: [us] minimum delay increment
-- `intermode::Interpolations.InterpolationType = AkimaMonotonicInterpolation()`: interpolation method
-- `fieldmap::AbstractArray{T, 2} [nX, nY]`: field map
-- `csm::Array{Complex{T}, 3} [nX, nY, nCha]`: coil sensitivity map
-- `recon_terms:: = "111"`: digits flag (e.g. "111") to indicate terms to be used in the HOOp.
-- `nBlock::Int64 = 50`: number of blocks for parallel processing
-- `arrayType::Type{<:AbstractArray} = Array`: array type for computation (e.g., `Array` or `CuArray`)
-- `solver::Type{<:AbstractLinearSolver} = CGNR`: solver for the inverse problem
-- `reg::AbstractParameterizedRegularization{T} = L2Regularization(zero(T))`: regularization method
-- `iter_max::Int64 = 10`: maximum number of iterations for the solver
-- `verbose::Bool = false`: whether to print verbose output
+Use seconds for `dt`, `datatime`, `StartTime`, `Δτ_min` and the returned delay
+when `fieldmap` is in Hz. Shot i is sampled as
+`k_i(t_ADC+StartTime[i]+τ)` under the interpolation convention. No integration
+or gyromagnetic-ratio conversion is performed by this estimator.
 
-# Returns
-- `τ::T`: synchronization delay
+# Options and iteration
 
-# Example
-```julia
-julia> τ = FindDelay_multishot(gridding, data, kspha, datatime, StartTime, dt, ...)
-```
+`arrayType=Array` selects CPU execution; `CuArray` selects the GPU path of the
+legacy explicit operator. `solver` is a solver type such as `CGNR`, and `reg`
+is a regularization object such as `L2Regularization(zero(T))`. There are no
+`use_gpu` or `λ` keywords. `iter_max` limits each inner image reconstruction,
+not the outer delay loop. `nBlock` is passed to `HighOrderOp`.
+
+At each step, `Δτ = J*real(b\\r)`, with residual r and derivative product b.
+The update is unweighted although image reconstruction uses density weights.
+J starts at `JumpFact`, is reduced after an update-sign change, and the loop
+tests `abs(Δτ)>Δτ_min`. The result is converted to `T` from
+`τ-Δτ/J*(J-1)` using the final J. It is a scalar without convergence status.
+The current log prints `Δτ/dt` and `τ/dt` labelled as microseconds; those ratios
+are sample offsets, not microseconds.
+
+# Current restrictions
+
+- The convenience overload without `datatime` constructs the wrong time-array
+  shape. Use the explicit-time overload; this documentation does not repair it.
+- The per-shot residual operators currently receive the complete concatenated
+  time vector and therefore reuse the first shot's times. Different shot ADC
+  time vectors with a nonzero field map can produce incorrect residuals. Do
+  not use this estimator for that case; identical per-shot times or a zero
+  field map avoid this specific defect, without guaranteeing convergence.
+- `Δτ_min::T=0.005` is the actual Float64 default literal and fails for
+  Float32 inputs when omitted. Supply a same-type threshold explicitly.
+  In seconds, 0.005 means 5 ms; `Float32(5e-9)` represents 0.005 microseconds.
+  A later JumpFact reduction can also promote Float32 delay state; Float64
+  is the conservative current choice for multishot estimator calls.
+- The outer loop has no iteration cap or reliable breakdown-status return.
+  Zero/poorly identifiable derivative information, extrapolated zeros and
+  noisy data require independent assessment. Initial τ is fixed at zero;
+  no caller-provided initial-delay keyword is available.
+
+See [Field preprocessing](/guide/field-preprocessing) for the update equations
+and [FindDelay](/reference/find-delay) for single-shot configuration.
 """
 function FindDelay_multishot(
     gridding    :: Grid{T}                                                                  ,
