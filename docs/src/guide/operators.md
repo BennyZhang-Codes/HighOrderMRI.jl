@@ -9,9 +9,9 @@ HighOrderMRI.jl provides three linear-operator implementations of the field-awar
 | Signal model | Explicit | Explicit | Residual-phase approximation |
 | Dynamics per object | One | One | One or many |
 | CPU | Yes | No | Yes |
-| CUDA | Array operations | Direct kernels or resident cuBLAS | NFFT + rSVD or joint setup |
+| CUDA | Array operations | Direct kernels or resident cuBLAS | NFFT + rSVD setup |
 | Multi-GPU | No | Legacy voxel shards or resident sample shards | Voxel-sharded rSVD; channel- or readout-sharded normal |
-| Dominant numerical cost | Sample–voxel phase blocks | Repeated sample–voxel phase evaluation | Setup plus $RN_c$ NFFTs for shared or $N_dLN_c$ for per-readout |
+| Dominant numerical cost | Sample–voxel phase blocks | Repeated sample–voxel phase evaluation | Setup plus $RN_c$ NFFTs for shared or $N_{\mathrm{ro}}LN_c$ for per-readout |
 | Typical numerical role | Small explicit calculations and derivative products | Explicit GPU reference and iterative reconstruction | Repeated large-scale forward/adjoint evaluations |
 
 The explicit operators target the same signal model. `HighOrderLowRankOp` changes only the numerical representation of the residual spatial phase term; the first-order Fourier trajectory remains in the NFFT.
@@ -93,7 +93,10 @@ op = HighOrderOp(
 
 `nBlock` divides the samples into explicit phase blocks. Increasing the number of blocks reduces peak temporary memory at the cost of additional launches and allocations.
 
-Supplying `kspha_dt` changes the forward action to the time-derivative product $Bx$ used internally by `FindDelay`. The adjoint remains the ordinary encoding adjoint. An operator constructed with `kspha_dt` should therefore not be interpreted as a general derivative linear operator, and its forward/adjoint pair is not intended for an adjointness test.
+Supplying `kspha_dt` changes the forward action to the time-derivative product $Bx$ used internally by `FindDelay`. The adjoint remains the ordinary encoding adjoint. An operator constructed with `kspha_dt` should therefore not be interpreted as a general derivative linear operator, and do not use that forward/adjoint pair in adjoint-based solves or normal products.
+
+The array-based CUDA helpers can downcast Float64 input vectors internally.
+For a Float64 explicit reference, use `arrayType=Array`.
 
 ## `HighOrderKernelOp`: explicit CUDA evaluation
 
@@ -119,6 +122,9 @@ For a controlled comparison with another implementation, the grid, mask, field c
 
 When `kspha_dt` is supplied, the current derivative forward path falls back to the array-based CPU derivative implementation. Its adjoint remains the ordinary kernel encoding adjoint. Use `HighOrderOp(...; arrayType=CuArray, kspha_dt=...)` when the derivative forward product itself must execute on CUDA. Derivative mode requires `backend=:legacy` and ignores `concomitant`; ordinary legacy and resident encoding support supplied concomitant phase.
 
+The legacy Float64 adjoint can exceed its fixed CUDA launch register budget.
+The resident direct backend caps Float64 adjoint threads separately.
+
 ## GPU-resident explicit reconstruction
 
 Use the same public `HighOrderKernelOp` with `backend=:direct`, `:blocked`, `:cached`, or `:cached_full`. `gpus=[id]` selects one GPU and multiple IDs select the internal multi-GPU implementation. The default remains `backend=:legacy`; choose a resident backend explicitly.
@@ -134,7 +140,7 @@ op = HighOrderKernelOp(grid, kspha, times;
     phase_backend=:gemm,
     gemm_backend=:cublas,
     block_size=1024,
-    phase_cache_bytes=8 * 2^30,
+    phase_cache_bytes=0,
 )
 try
     image = recon_HOOp(op, CuArray(ComplexF32.(data_matrix)),
@@ -244,71 +250,12 @@ parameters are inactive in the per-readout layout. See the
 [factorization](/theory/low-rank#independent-per-readout-representation), and
 [readout-distributed normal](/guide/multi-gpu#iterative-reconstruction-readout-distributed-normal-operator).
 
-### Automatic joint shared basis
+### Construction scope {#automatic-joint-shared-basis}
 
-The experimental `shared_basis_method=:joint` option builds one spatial basis
-from representative phase snapshots across dynamics. It automatically selects
-the final shared rank under sampled error checks, bypassing local rSVD.
-See the [API reference](/reference/highorderlowrankop#shared-basis-parameters) for parameters
-and defaults, and [theory](/theory/low-rank#direct-joint-shared-basis) for the
-snapshot, fitting, and audit stages.
-
-The following illustrates joint construction, with input arrays already
-prepared using the usual units and layouts:
-
-```julia
-using CUDA
-
-report = Ref{Any}()
-lowrank_op = HighOrderLowRankOp(
-    grid,
-    kspha_dynamic,
-    times_dynamic;
-    fieldmap,
-    csm,
-    mask,
-    arrayType=CuArray,
-    gpus=[2, 3, 4, 5, 6],
-    shared_basis_method=:joint,
-    shared_basis_tol=1f-2,
-    shared_rank_max=32,
-    joint_snapshots=128,
-    joint_samples=512,
-    joint_basis_report=report,
-    global_basis_tol=nothing,
-    rsvd_distribution=:single,
-    rsvd_chunk=32768,
-    rsvd_seed=1234,
-    normal_distribution=:channel,
-)
-
-report[].rank
-maximum(report[].audit_errors)
-maximum(report[].roi_errors)
-```
-
-Device IDs above assume those devices are visible without remapping. Tolerance
-literals use Float32 to match Float32 inputs; use matching Float64 values for
-Float64 inputs. This configuration selected $R=16$ on the frozen 3D dataset;
-it is not a universal rank prescription.
-
-For more demanding phase histories, increase `joint_snapshots` and
-`shared_rank_max` together as needed, then inspect the returned errors and
-memory cost. A larger budget does not guarantee a smaller final rank.
-Joint setup must keep `global_basis_tol=nothing` because recompressing the
-factors would invalidate their audit. That option remains available for rSVD.
-
-::: warning Random-sample acceptance is not ROI acceptance
-The main 3D and EPI joint validations passed the sampled random-voxel 1%
-tolerance, but their sampled high-$|B_0|$ errors were 4.03% and 141.47%.
-Add `joint_roi_tol=1f-2` when that ROI must also pass 1%; these recorded
-configurations would then be rejected. The setting adds an acceptance gate,
-not a new sampling or basis-construction strategy.
-:::
-
-The existing default remains rSVD. See the
-[performance results](/guide/performance#representative-measurements) for
-the cost and accuracy of complete reconstructions.
+This guide covers the regular `shared_basis_method=:rsvd` paths. Joint
+construction, its tests and its algorithm evaluation are outside this guide's
+reviewed scope. Its keywords remain visible in the exact source signatures;
+no joint configuration or validation claim is made here.
 
 ## Implementation paths
 
@@ -327,13 +274,13 @@ The public constructors select the following paths in the current implementation
 
 These helper types and functions describe internal dispatch, not additional
 public operator names. Source entry points are
-[`HighOrderKernelOp.jl`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/main/src/EncodingOperator/HighOrderKernelOp.jl),
-[`explicit_gpu_operator.jl`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/main/src/EncodingOperator/Explicit/explicit_gpu_operator.jl),
-[`HighOrderLowRankOp.jl`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/main/src/EncodingOperator/HighOrderLowRankOp.jl),
-[`per_readout_basis.jl`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/main/src/EncodingOperator/LowRankApproximation/per_readout_basis.jl),
-[`per_readout_cache.jl`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/main/src/EncodingOperator/LowRankApproximation/per_readout_cache.jl),
-[`multi_gpu_normal_operator.jl`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/main/src/EncodingOperator/LowRankApproximation/multi_gpu_normal_operator.jl),
-and [`recon_HOOp.jl`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/main/src/Recon/recon_HOOp.jl).
+[`HighOrderKernelOp.jl`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/d141e7dc48e8d18380050aaa970ee4ae364d916d/src/EncodingOperator/HighOrderKernelOp.jl),
+[`explicit_gpu_operator.jl`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/d141e7dc48e8d18380050aaa970ee4ae364d916d/src/EncodingOperator/Explicit/explicit_gpu_operator.jl),
+[`HighOrderLowRankOp.jl`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/d141e7dc48e8d18380050aaa970ee4ae364d916d/src/EncodingOperator/HighOrderLowRankOp.jl),
+[`per_readout_basis.jl`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/d141e7dc48e8d18380050aaa970ee4ae364d916d/src/EncodingOperator/LowRankApproximation/per_readout_basis.jl),
+[`per_readout_cache.jl`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/d141e7dc48e8d18380050aaa970ee4ae364d916d/src/EncodingOperator/LowRankApproximation/per_readout_cache.jl),
+[`multi_gpu_normal_operator.jl`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/d141e7dc48e8d18380050aaa970ee4ae364d916d/src/EncodingOperator/LowRankApproximation/multi_gpu_normal_operator.jl),
+and [`recon_HOOp.jl`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/d141e7dc48e8d18380050aaa970ee4ae364d916d/src/Recon/recon_HOOp.jl).
 
 ## Numerical consistency checks
 

@@ -1,44 +1,26 @@
 # `apply_coil_compression`
 
-Apply a fitted coil-compression transform along a selected receive-channel dimension.
-
-```julia
-apply_coil_compression(
-    array,
-    transform::CoilCompressionTransform;
-    coil_dim=ndims(array),
-)
-```
-
-## Arguments
-
-- `array`: complex data or coil-sensitivity maps.
-- `transform`: fitted [`CoilCompressionTransform`](/reference/coil-compression-transform).
-
-## Keywords
-
-- `coil_dim`: array dimension containing the receive channels.
-
-## Returns
-
-A CPU `Array` with the selected coil dimension replaced by the number of virtual coils.
-
-The input coil count must equal `size(transform, 1)`. Apply the **same** fitted transform to acquired data and CSM so that the compressed signal model remains consistent.
+Reuse a fitted transform for both measured data and sensitivity maps, even
+when the coil dimensions occur at different positions. The result is a CPU
+array; transfer it afterwards if the encoding backend needs CUDA storage.
 
 ## Example
 
 ```julia
-data_cc = apply_coil_compression(
-    data,
-    transform;
-    coil_dim=2,
-)
+using HighOrderMRI, Random
 
-csm_cc = apply_coil_compression(
-    csm,
-    transform;
-    coil_dim=ndims(csm),
-)
+rng = MersenneTwister(21)
+data = randn(rng, ComplexF32, 64, 4)
+csm = ones(ComplexF32, 8, 8, 1, 4)
+transform = fit_coil_compression(data; coil_dim=2, n_virtual_coils=2)
+data_cc = apply_coil_compression(data, transform; coil_dim=2)
+csm_cc = apply_coil_compression(csm, transform; coil_dim=4)
+@assert size(data_cc) == (64, 2)
+@assert size(csm_cc) == (8, 8, 1, 2)
 ```
 
-[Source: `CoilCompression.jl`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/docs/src/Recon/CoilCompression.jl)
+
+
+## API
+
+<!--@include: ../../.generated/api/apply-coil-compression.md-->

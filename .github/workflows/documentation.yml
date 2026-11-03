@@ -2,11 +2,9 @@ name: Documentation
 
 on:
   push:
-    branches:
-      - docs
+    branches: [docs]
   pull_request:
-    branches:
-      - docs
+    branches: [docs]
   workflow_dispatch:
 
 permissions:
@@ -16,26 +14,66 @@ concurrency:
   group: documentation-pages
   cancel-in-progress: false
 
+env:
+  CUDA_VISIBLE_DEVICES: ''
+  MPLBACKEND: Agg
+  JULIA_LOAD_PATH: '@:@stdlib'
+  JULIA_NUM_THREADS: '1'
+  JULIA_PKG_PRECOMPILE_AUTO: '0'
+
 jobs:
   build:
-    name: Build versioned VitePress documentation
+    name: Build checked VitePress dev documentation
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
+      - name: Read pinned code commit
+        id: version
+        shell: bash
+        run: |
+          node --input-type=module -e '
+          import { readFileSync, appendFileSync } from "node:fs";
+          const config = JSON.parse(readFileSync("docs/code-version.json", "utf8"));
+          if (config.schema_version !== 1 || !/^[0-9a-f]{40}$/.test(config.code_sha)) throw new Error("Invalid code_sha");
+          appendFileSync(process.env.GITHUB_OUTPUT, "sha=" + config.code_sha + "\n");'
+      - uses: actions/checkout@v7
         with:
-          fetch-depth: 0
-
+          ref: ${{ steps.version.outputs.sha }}
+          path: _code
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-
-      - name: Install documentation dependencies
-        run: npm install --prefix docs --no-audit --no-fund
-
-      - name: Build complete Pages site
+          cache: npm
+          cache-dependency-path: docs/package-lock.json
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: '1.12'
+      - name: Prepare isolated Julia environment
+        run: echo "JULIA_DEPOT_PATH=$RUNNER_TEMP/docs-julia-depot" >> "$GITHUB_ENV"
+      - name: Instantiate pinned code dependencies
+        shell: julia --startup-file=no --project=_code {0}
+        run: |
+          using Pkg
+          Pkg.instantiate(; allow_autoprecomp=false)
+          ENV["PYTHON"] = ""
+          Pkg.build("PyCall")
+          @assert Base.find_package("Documenter") === nothing
+      - name: Install locked website dependencies
+        run: npm ci --prefix docs --no-audit --no-fund
+      - name: Check tools and CPU examples
+        env:
+          DOCS_API_MAP: ${{ github.workspace }}/docs/api-map.toml
+          DOCS_SITE_PATH: ${{ github.workspace }}/docs
+        run: |
+          npm run docs:check-tools --prefix docs
+          julia --startup-file=no _code/scripts/docs/test_contract_check.jl
+          julia --startup-file=no --project=_code _code/scripts/docs/test_export_api.jl
+          julia --startup-file=no --project=_code _code/scripts/docs/check_examples.jl
+      - name: Build checked dev site
+        env:
+          DOCS_CODE_PATH: ${{ github.workspace }}/_code
         run: npm run docs:build-site --prefix docs
-
       - name: Upload Pages artifact
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/docs'
         uses: actions/upload-pages-artifact@v4
@@ -56,7 +94,6 @@ jobs:
     steps:
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
-
       - name: Deploy Pages artifact
         id: deployment
         uses: actions/deploy-pages@v4

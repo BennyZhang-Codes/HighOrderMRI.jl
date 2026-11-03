@@ -1,44 +1,16 @@
 import { defineConfig } from 'vitepress'
-import { mermaidPlugin } from './plugins/vitepress-mermaid'
+import { readFileSync } from 'node:fs'
+import { mermaidPlugin } from './plugins/vitepress-mermaid/index'
 
 const siteUrl = 'https://bennyzhang-codes.github.io/HighOrderMRI.jl'
 const docsVersion = process.env.DOCS_VERSION || 'dev'
 const docsBase = process.env.DOCS_BASE || '/HighOrderMRI.jl/dev/'
-const sourceRef = process.env.DOCS_SOURCE_REF || 'docs'
-const stableVersion = process.env.DOCS_STABLE_VERSION || ''
-const releaseVersions = (process.env.DOCS_RELEASE_VERSIONS || '')
-  .split(',')
-  .map((version) => version.trim())
-  .filter(Boolean)
-
-function versionLabel(version: string) {
-  if (version === docsVersion) return `${version} · current`
-  return version
-}
-
+const editRef = 'docs'
+const apiMeta = JSON.parse(readFileSync(new URL('../../.generated/api/build-meta.json', import.meta.url), 'utf8'))
+const candidatePreview = apiMeta.preview === true
+const codeLabel = apiMeta.codeRef.slice(0, 7)
 const versionItems = [
-  {
-    text: versionLabel('dev'),
-    link: `${siteUrl}/dev/`,
-  },
-  ...(stableVersion
-    ? [
-        {
-          text: docsVersion === 'stable'
-            ? `stable · ${stableVersion} · current`
-            : `stable · ${stableVersion}`,
-          link: `${siteUrl}/stable/`,
-        },
-      ]
-    : []),
-  ...releaseVersions.map((version) => ({
-    text: versionLabel(version),
-    link: `${siteUrl}/${version}/`,
-  })),
-  {
-    text: 'Release history',
-    link: 'https://github.com/BennyZhang-Codes/HighOrderMRI.jl/releases',
-  },
+  { text: 'dev · current', link: `${siteUrl}/dev/` },
 ]
 
 export default defineConfig({
@@ -46,14 +18,29 @@ export default defineConfig({
   description: 'GPU-accelerated Cartesian and non-Cartesian MRI reconstruction with dynamic high-order field encoding.',
   base: docsBase,
   cleanUrls: true,
-  lastUpdated: true,
+  outDir: '../.pages/dev',
+  vite: { define: { __DOCS_CANDIDATE__: JSON.stringify(candidatePreview), __DOCS_CODE_LABEL__: JSON.stringify(codeLabel) } },
+  lastUpdated: !candidatePreview,
   head: [
     ['meta', { name: 'theme-color', content: '#6366f1' }],
+    ['link', { rel: 'icon', href: 'data:,' }],
   ],
   markdown: {
     math: true,
     config(md) {
       md.use(mermaidPlugin)
+      const originalLink = md.renderer.rules.link_open
+      md.renderer.rules.link_open = (tokens, index, options, env, self) => {
+        const token = tokens[index]
+        const href = token.attrGet('href') || ''
+        const match = href.match(/^(https:\/\/github\.com\/BennyZhang-Codes\/HighOrderMRI\.jl\/(?:blob|tree)\/)(main|dev_jinyuan|docs|[0-9a-f]{40})(\/(?:src|MRIGeometry|scripts)\/.*)$/)
+        if (match) {
+          let suffix = match[3]
+          if (candidatePreview || match[2] !== apiMeta.codeRef) suffix = suffix.replace(/#L\d+(?:-L\d+)?$/, '')
+          token.attrSet('href', match[1] + apiMeta.codeRef + suffix)
+        }
+        return originalLink ? originalLink(tokens, index, options, env, self) : self.renderToken(tokens, index, options)
+      }
     },
   },
   themeConfig: {
@@ -88,7 +75,7 @@ export default defineConfig({
         text: 'Validation',
         items: [
           { text: 'Scientific validation', link: '/guide/validation' },
-          { text: 'Reconstruction protocol', link: '/guide/reconstruction-protocol' },
+          { text: 'Reconstruction conventions', link: '/guide/reconstruction-protocol' },
           { text: 'Performance & benchmarking', link: '/guide/performance' },
         ],
       },
@@ -112,9 +99,7 @@ export default defineConfig({
         ],
       },
       {
-        text: docsVersion === 'stable' && stableVersion
-          ? `stable · ${stableVersion}`
-          : docsVersion,
+        text: docsVersion,
         items: versionItems,
       },
     ],
@@ -148,7 +133,7 @@ export default defineConfig({
         text: 'Validation & Performance',
         items: [
           { text: 'Scientific validation', link: '/guide/validation' },
-          { text: 'Reconstruction protocol', link: '/guide/reconstruction-protocol' },
+          { text: 'Reconstruction conventions', link: '/guide/reconstruction-protocol' },
           { text: 'Performance & benchmarking', link: '/guide/performance' },
         ],
       },
@@ -157,6 +142,7 @@ export default defineConfig({
         items: [
           { text: 'API overview', link: '/api' },
           { text: 'Grid & field basis', link: '/reference/grid-basis' },
+          { text: 'Geometry & spatial I/O', link: '/reference/geometry' },
           {
             text: 'Encoding operators',
             collapsed: true,
@@ -172,6 +158,7 @@ export default defineConfig({
             items: [
               { text: 'recon_HOOp', link: '/reference/recon-hoop' },
               { text: 'samplingDensity', link: '/reference/sampling-density' },
+              { text: 'CoilCombineSOS', link: '/reference/coil-combine-sos' },
             ],
           },
           {
@@ -228,11 +215,11 @@ export default defineConfig({
       label: 'On this page',
     },
     editLink: {
-      pattern: `https://github.com/BennyZhang-Codes/HighOrderMRI.jl/edit/${sourceRef}/docs/src/:path`,
+      pattern: `https://github.com/BennyZhang-Codes/HighOrderMRI.jl/edit/${editRef}/docs/src/:path`,
       text: 'Edit this page on GitHub',
     },
     footer: {
-      message: `HighOrderMRI.jl documentation · ${docsVersion}`,
+      message: `HighOrderMRI.jl documentation · ${docsVersion} · code ${codeLabel}${candidatePreview ? " + local candidate changes" : ""}`,
       copyright: 'HighOrderMRI.jl contributors',
     },
   },

@@ -2,18 +2,22 @@
 
 The API reference is organized as a set of short pages, following the same separation used by established Julia MRI documentation: each page focuses on one public type, constructor, or closely related function family. Scientific derivations and validation requirements remain in the [Theory](/theory/encoding-model) and [Guide](/guide/operators) sections.
 
+<!--@include: ../.generated/api/highordermri.md-->
+
 ## Encoding model and operators
 
 - [`Grid` and `basisfunc_spha`](/reference/grid-basis): physical reconstruction grid and real solid-harmonic basis evaluation.
 - [`HighOrderOp`](/reference/highorderop): array-based explicit field-aware encoding.
 - [`HighOrderKernelOp`](/reference/highorderkernelop): legacy/direct CUDA kernels and resident blocked/cached cuBLAS, with `gpus` selecting single- or multi-GPU execution.
 - [`explicit_gpu_normal`](/reference/highorderkernelop#weighted-normal): resident weighted normal from raw square-root weights; distinct from `normalOperator(op,D)` with an already squared diagonal.
-- [`HighOrderLowRankOp`](/reference/highorderlowrankop): low-rank residual-phase representation with shared or independent per-readout factors, including bounded streaming and regeneration.
+- [`HighOrderLowRankOp`](/reference/highorderlowrankop): low-rank residual-phase representation with shared or independent per-readout factors, including bounded streaming/regeneration and rank-sharded multi-GPU execution.
 
 ## Reconstruction
 
-- [`recon_HOOp`](/reference/recon-hoop): iterative reconstruction wrapper.
+- [`recon_HOOp`](/reference/recon-hoop): iterative reconstruction wrapper, raw sample-weight convention, CPU/CUDA input requirements, and backend cleanup.
 - [`samplingDensity`](/reference/sampling-density): square-root sampling-density weights for non-Cartesian reconstruction.
+
+- [`CoilCombineSOS`](/reference/coil-combine-sos): root-sum-of-squares combination along the selected coil dimension.
 
 ## Coil compression
 
@@ -31,6 +35,10 @@ The API reference is organized as a set of short pages, following the same separ
 - [`InterpTrajTime`](/reference/interp-traj-time): interpolate field/trajectory coefficients to requested ADC times.
 - [`FindDelay`](/reference/find-delay): single-acquisition model-based field/data synchronization.
 - [`FindDelay_multishot`](/reference/find-delay-multishot): shared-delay estimation for multi-shot data.
+
+## Geometry
+
+- [MRIGeometry](/reference/geometry): physical coordinates, slab handling, resampling and NIfTI export, including current restrictions.
 
 ## Metrics and utilities
 

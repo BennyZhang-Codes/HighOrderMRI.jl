@@ -1,10 +1,28 @@
 # References
 
-References are numbered consistently across the HighOrderMRI documentation. Journal titles follow MEDLINE abbreviations where applicable, and the entries use the numbered reference style recommended by *Magnetic Resonance in Medicine* (MRM). DOI hyperlinks were checked against the corresponding publisher and/or PubMed records.
+This page collects the literature cited throughout the documentation. Use the topic index to choose a starting point, then follow the linked guide for the package's equations, assumptions, and implementation choices. Constructor arguments and defaults are listed in the [API reference](/api).
+
+## Reading by topic
+
+| Topic | Starting references | Package guide |
+|:--|:--|:--|
+| Higher-order encoding and singular-vector separation | [1](#ref-1), [2](#ref-2), [3](#ref-3) | [Encoding model](/theory/encoding-model) |
+| Randomized low-rank approximation and truncated SVD | [4](#ref-4), [5](#ref-5), [21](#ref-21) | [Low-rank shared subspace](/theory/low-rank) |
+| Parallel factorization and shared-subspace foundations | [22](#ref-22), [23](#ref-23) | [Low-rank shared subspace](/theory/low-rank#relation-to-previous-methods) |
+| Field monitoring and gradient impulse responses | [6](#ref-6), [7](#ref-7) | [Field preprocessing and synchronization](/guide/field-preprocessing) |
+| Field/data synchronization and related trajectory-correction methods | [8](#ref-8), [9](#ref-9), [10](#ref-10), [11](#ref-11) | [Field preprocessing and synchronization](/guide/field-preprocessing) |
+| Receive-channel compression and noise weighting | [12](#ref-12), [13](#ref-13), [14](#ref-14), [15](#ref-15) | [Coil compression](/guide/coil-compression) |
+| Explicit phase storage and GPU reconstruction | [24](#ref-24) | [Relation to the non-Fourier SENSE preprint](/guide/performance#relation-to-the-non-fourier-sense-preprint) |
+
+Entries 2 and 14 identify published errata; consult those corrections when using the papers. Reference 24 links to the cited preprint version.
+
+## Bibliography
+
+Reference numbers and `ref-N` anchors are shared across the site.
 
 <ol class="homri-references">
   <li id="ref-1">Wilm BJ, Barmet C, Pavan M, Pruessmann KP. Higher order reconstruction for MRI in the presence of spatiotemporal field perturbations. <em>Magn Reson Med</em>. 2011;65:1690-1701. <a href="https://doi.org/10.1002/mrm.22767" target="_blank" rel="noreferrer">doi:10.1002/mrm.22767</a></li>
-  <li id="ref-2">Wilm BJ, Barmet C, Pruessmann KP. Fast higher-order MR image reconstruction using singular-vector separation. <em>IEEE Trans Med Imaging</em>. 2012;31:1396-1403. <a href="https://doi.org/10.1109/TMI.2012.2190991" target="_blank" rel="noreferrer">doi:10.1109/TMI.2012.2190991</a></li>
+  <li id="ref-2">Wilm BJ, Barmet C, Pruessmann KP. Fast higher-order MR image reconstruction using singular-vector separation. <em>IEEE Trans Med Imaging</em>. 2012;31:1396-1403. <a href="https://doi.org/10.1109/TMI.2012.2190991" target="_blank" rel="noreferrer">doi:10.1109/TMI.2012.2190991</a> Erratum: <em>IEEE Trans Med Imaging</em>. 2012;31(9):1833, listed in the <a href="https://pubmed.ncbi.nlm.nih.gov/22434798/" target="_blank" rel="noreferrer">PubMed record</a>.</li>
   <li id="ref-3">Lee NG, Ramasawmy R, Lim Y, Campbell-Washburn AE, Nayak KS. MaxGIRF: Image reconstruction incorporating concomitant field and gradient impulse response function effects. <em>Magn Reson Med</em>. 2022;88:691-710. <a href="https://doi.org/10.1002/mrm.29232" target="_blank" rel="noreferrer">doi:10.1002/mrm.29232</a></li>
   <li id="ref-4">Halko N, Martinsson PG, Tropp JA. Finding structure with randomness: Probabilistic algorithms for constructing approximate matrix decompositions. <em>SIAM Rev</em>. 2011;53:217-288. <a href="https://doi.org/10.1137/090771806" target="_blank" rel="noreferrer">doi:10.1137/090771806</a></li>
   <li id="ref-5">Eckart C, Young G. The approximation of one matrix by another of lower rank. <em>Psychometrika</em>. 1936;1:211-218. <a href="https://doi.org/10.1007/BF02288367" target="_blank" rel="noreferrer">doi:10.1007/BF02288367</a></li>
@@ -16,7 +34,7 @@ References are numbered consistently across the HighOrderMRI documentation. Jour
   <li id="ref-11">Ianni JD, Grissom WA. Trajectory auto-corrected image reconstruction. <em>Magn Reson Med</em>. 2016;76:757-768. <a href="https://doi.org/10.1002/mrm.25916" target="_blank" rel="noreferrer">doi:10.1002/mrm.25916</a></li>
   <li id="ref-12">Huang F, Vijayakumar S, Li Y, Hertel S, Duensing GR. A software channel compression technique for faster reconstruction with many channels. <em>Magn Reson Imaging</em>. 2008;26:133-141. <a href="https://doi.org/10.1016/j.mri.2007.04.010" target="_blank" rel="noreferrer">doi:10.1016/j.mri.2007.04.010</a></li>
   <li id="ref-13">Buehrer M, Pruessmann KP, Boesiger P, Kozerke S. Array compression for MRI with large coil arrays. <em>Magn Reson Med</em>. 2007;57:1131-1139. <a href="https://doi.org/10.1002/mrm.21237" target="_blank" rel="noreferrer">doi:10.1002/mrm.21237</a></li>
-  <li id="ref-14">Kellman P, McVeigh ER. Image reconstruction in SNR units: A general method for SNR measurement. <em>Magn Reson Med</em>. 2005;54:1439-1447. <a href="https://doi.org/10.1002/mrm.20713" target="_blank" rel="noreferrer">doi:10.1002/mrm.20713</a></li>
+  <li id="ref-14">Kellman P, McVeigh ER. Image reconstruction in SNR units: A general method for SNR measurement. <em>Magn Reson Med</em>. 2005;54:1439-1447. <a href="https://doi.org/10.1002/mrm.20713" target="_blank" rel="noreferrer">doi:10.1002/mrm.20713</a> Erratum: <em>Magn Reson Med</em>. 2007;58(1):211-212. <a href="https://doi.org/10.1002/mrm.21261" target="_blank" rel="noreferrer">doi:10.1002/mrm.21261</a>.</li>
   <li id="ref-15">Zhang T, Pauly JM, Vasanawala SS, Lustig M. Coil compression for accelerated imaging with Cartesian sampling. <em>Magn Reson Med</em>. 2013;69:571-582. <a href="https://doi.org/10.1002/mrm.24267" target="_blank" rel="noreferrer">doi:10.1002/mrm.24267</a></li>
   <li id="ref-16">Drmač Z, Gugercin S. A new selection operator for the discrete empirical interpolation method—Improved a priori error bound and extensions. <em>SIAM J Sci Comput</em>. 2016;38:A631-A648. <a href="https://doi.org/10.1137/15M1019271" target="_blank" rel="noreferrer">doi:10.1137/15M1019271</a></li>
   <li id="ref-17">Peherstorfer B, Drmač Z, Gugercin S. Stability of discrete empirical interpolation and gappy proper orthogonal decomposition with randomized and deterministic sampling points. <em>SIAM J Sci Comput</em>. 2020. <a href="https://doi.org/10.1137/19M1307391" target="_blank" rel="noreferrer">doi:10.1137/19M1307391</a></li>
@@ -26,5 +44,5 @@ References are numbered consistently across the HighOrderMRI documentation. Jour
   <li id="ref-21">Yu W, Gu Y, Li Y. Efficient randomized algorithms for the fixed-precision low-rank matrix approximation. <em>SIAM J Matrix Anal Appl</em>. 2018;39:1339-1359. <a href="https://doi.org/10.1137/17M1141977" target="_blank" rel="noreferrer">doi:10.1137/17M1141977</a></li>
   <li id="ref-22">Demmel J, Grigori L, Hoemmen M, Langou J. Communication-optimal parallel and sequential QR and LU factorizations. <em>SIAM J Sci Comput</em>. 2012;34:A206-A239. <a href="https://doi.org/10.1137/080731992" target="_blank" rel="noreferrer">doi:10.1137/080731992</a></li>
   <li id="ref-23">Himpe C, Leibner T, Rave S. Hierarchical approximate proper orthogonal decomposition. <em>SIAM J Sci Comput</em>. 2018;40:A3267-A3292. <a href="https://doi.org/10.1137/16M1085413" target="_blank" rel="noreferrer">doi:10.1137/16M1085413</a></li>
-  <li id="ref-24">Bianchi S, Pruessmann KP. A GPU-enhanced workflow for non-Fourier SENSE reconstruction. <em>arXiv</em> [preprint]. 2026;2604.09233v1. Submitted April 10, 2026. <a href="https://doi.org/10.48550/arXiv.2604.09233" target="_blank" rel="noreferrer">doi:10.48550/arXiv.2604.09233</a>. <a href="https://arxiv.org/html/2604.09233v1#Sx4.SSx5" target="_blank" rel="noreferrer">Implementation section</a>.</li>
+  <li id="ref-24">Bianchi S, Pruessmann KP. A GPU-enhanced workflow for non-Fourier SENSE reconstruction. <em>arXiv</em> [preprint]. 2026;<a href="https://arxiv.org/abs/2604.09233v1" target="_blank" rel="noreferrer">2604.09233v1</a>. Submitted April 10, 2026. <a href="https://doi.org/10.48550/arXiv.2604.09233" target="_blank" rel="noreferrer">doi:10.48550/arXiv.2604.09233</a>. <a href="https://arxiv.org/html/2604.09233v1#Sx4.SSx5" target="_blank" rel="noreferrer">Implementation section</a>.</li>
 </ol>
