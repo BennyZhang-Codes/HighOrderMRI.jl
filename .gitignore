@@ -3,5 +3,8 @@
 debug
 results
 
-# Documenter.jl build products
-docs/build/
+# Separate code checkout used by the documentation workflow
+_code/
+
+# Local review and experiment records
+research_notes/

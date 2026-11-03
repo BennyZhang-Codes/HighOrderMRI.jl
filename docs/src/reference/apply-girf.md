@@ -1,46 +1,55 @@
 # `apply_girf`
 
-Apply a frequency-domain GIRF model to nominal physical gradients.
+Predict field waveforms by applying a calibrated frequency-domain response to
+nominal gradients in device coordinates. Each extra input dimension is processed
+independently, so separate shots need not be concatenated across their dead time.
+The output channel order comes from the response calibration.
+
+This complete CPU example applies a matched-length identity response directly.
+It checks the array interface without invoking response expansion:
 
 ```julia
-apply_girf(
-    G_DCS_nom::AbstractArray{T,N},
-    Hw::AbstractArray;
-    dim_spatial=1,
-    dim_time=2,
-    rbw=1.0,
-) where {T,N}
+using HighOrderMRI
+
+T = Float64
+nominal_gradients = zeros(T, 3, 8)
+nominal_gradients[1, 3] = 1
+Hw = zeros(Complex{T}, 8, 3, 3)
+for axis in 1:3
+    Hw[:, axis, axis] .= 1
+end
+predicted = apply_girf(nominal_gradients, Hw;
+    dim_spatial=1, dim_time=2, rbw=1.0)
+@assert predicted ≈ nominal_gradients
 ```
 
-A convenience overload also accepts `GIRFModel` directly.
+For the model-container form, see the
+[complete GIRFModel example](/reference/girf-model#matched-grid-identity-example).
+A calibrated response must match the acquisition sampling and physical units.
 
-## Arguments
+`rbw` suppresses outer waveform-frequency bins. It is not an estimate of the
+model's uncertainty. The function does not integrate gradients or apply a
+gyromagnetic ratio; perform the appropriate conversion before using the result
+as phase coefficients. See [phase preparation](/guide/field-preprocessing#phase-preparation-checklist).
 
-- `G_DCS_nom`: nominal physical gradient array.
-- `Hw`: GIRF transfer function with shape `(nFreq, 3, nOut)` and centered DC component.
+## Current limits
 
-## Keywords
+The FFT multiplication is periodic convolution. Padding the waveform to
+`nextprod([2,3,5],max(nPoint,nFreq))` does not by itself prevent a late response
+from wrapping to the start. Determine the required pre/post support from the
+acquisition and calibrated impulse response.
 
-- `dim_spatial`: dimension containing the three physical gradient channels.
-- `dim_time`: time dimension.
-- `rbw`: relative retained bandwidth. Values below 1 suppress the outer frequency band.
+If this FFT length exceeds the supplied response length, the current time-domain
+response expansion omits one middle coefficient. That can remove a valid
+response tap, including for odd lengths. An already matched response length
+avoids this expansion path; it does not remove periodic-boundary effects.
+These numerical limitations remain in the implementation.
 
-## Returns
+The real inverse transform is returned. A physically compatible real response,
+consistent frequency ordering and matched sample intervals must be supplied;
+the API does not validate all these calibration conditions. A `GIRFModel`
+wrapper adds metadata but does not resample its response.
 
-An array with the same dimensional structure as the input, except that the physical-gradient dimension is replaced by `nOut` GIRF output channels.
+## API
 
-If the required FFT length exceeds the GIRF frequency-grid length, the implementation converts the response to the time domain, inserts middle zero padding between its causal and non-causal portions, and transforms it back before applying the response.
-
-## Example
-
-```julia
-predicted = apply_girf(
-    nominal_gradients,
-    model;
-    dim_spatial=1,
-    dim_time=2,
-    rbw=1.0,
-)
-```
-
-[Source: `apply_girf.jl`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/docs/src/GIRF/apply_girf.jl)
+<!--@include: ../../.generated/api/apply-girf.md-->

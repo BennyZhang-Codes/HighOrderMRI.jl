@@ -4,6 +4,33 @@ Coil compression is applied as an operator-independent preprocessing step. HighO
 
 The current implementation performs global SVD/PCA coil compression, optionally after receive-noise whitening. This corresponds to the global software/array-compression family described previously. [[12]](/references#ref-12 "Huang F, Vijayakumar S, Li Y, Hertel S, Duensing GR. A software channel compression technique for faster reconstruction with many channels. Magn Reson Imaging. 2008;26:133-141.") [[13]](/references#ref-13 "Buehrer M, Pruessmann KP, Boesiger P, Kozerke S. Array compression for MRI with large coil arrays. Magn Reson Med. 2007;57:1131-1139.") The implementation does not perform spatially varying geometric-decomposition coil compression (GCC).
 
+## Complete CPU example
+
+This synthetic example demonstrates covariance estimation, fitting, and the
+same transform on data and sensitivity maps. Real noise samples must represent
+the receiver conditions of the acquisition.
+
+```julia
+using HighOrderMRI, Random, LinearAlgebra
+
+rng = MersenneTwister(21)
+noise = randn(rng, ComplexF64, 256, 4)
+data = randn(rng, ComplexF64, 128, 4)
+csm = ones(ComplexF64, 8, 8, 1, 4)
+covariance = estimate_noise_covariance(noise; coil_dim=2)
+transform = fit_coil_compression(data; coil_dim=2,
+    n_virtual_coils=2, noise_covariance=covariance)
+data_cc = apply_coil_compression(data, transform; coil_dim=2)
+csm_cc = apply_coil_compression(csm, transform; coil_dim=4)
+@assert size(data_cc) == (128, 2)
+@assert size(csm_cc) == (8, 8, 1, 2)
+C = transform.compression_matrix
+@assert isapprox(C' * covariance * C, Matrix{ComplexF64}(I, 2, 2))
+```
+
+Fit and application copy inputs to CPU arrays. After this step, transfer the
+compressed data and maps as required by the chosen encoding backend.
+
 ## Workflow
 
 When representative noise-only data are available, estimate the receive-noise covariance with [`estimate_noise_covariance`](/reference/estimate-noise-covariance):

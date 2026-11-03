@@ -1,199 +1,218 @@
 # `HighOrderLowRankOp`
 
-Low-rank implementation of the residual high-order/off-resonance phase. The default uses per-dynamic randomized SVD and an incrementally constructed shared spatial basis; the experimental joint method constructs the shared basis directly from representative phase snapshots.
+Use `HighOrderLowRankOp` to apply an MRI encoding model repeatedly without
+materializing its full sample-by-voxel phase matrix. It combines NFFT Fourier
+encoding with low-rank factors for the remaining phase. The default construction
+uses local randomized SVD (rSVD) followed by an incremental shared spatial basis.
+See the [low-rank derivation](/theory/low-rank) for the equations, approximation
+stages and references.
 
-## Single-dynamic constructor
+Readout index $i$ runs over `nDyn` encoding profiles of the **same image**.
+Input coefficients have shape `(nTerm,nSam,nDyn)`, and times have shape
+`(nSam,nDyn)`. The single-readout constructor also accepts a coefficient matrix
+and a time vector. The generated [API below](#api) gives the complete signatures,
+defaults and return layout.
 
-```julia
-HighOrderLowRankOp(
-    grid::Grid{T},
-    kspha::AbstractArray{T,2},
-    times::AbstractArray{T,1};
-    kwargs...,
-) where T<:AbstractFloat
-```
-
-The single-dynamic overload inserts a singleton dynamic dimension and delegates to the dynamic constructor. It also accepts `concomitant` with shape `(4,nSam)`.
-
-## Dynamic constructor
-
-```julia
-HighOrderLowRankOp(
-    grid::Grid{T},
-    kspha::AbstractArray{T,3},
-    times::AbstractArray{T,2};
-    fieldmap=zeros(T, grid.matrixSize...),
-    csm=ones(Complex{T}, grid.matrixSize..., 1),
-    mask=trues(grid.matrixSize...),
-    concomitant=nothing,
-    recon_terms=nothing,
-    k_nominal=kspha[2:4, :, :],
-    arrayType=Array,
-    gpus=[0],
-    L_rank=15,
-    rsvd_seed=1234,
-    rsvd_chunk=4096,
-    rsvd_oversample=5,
-    rsvd_finalize=:svd,
-    rsvd_backend=:auto,
-    rsvd_distribution=:auto,
-    basis_layout=:shared,
-    per_readout_storage=:gpu,
-    per_readout_cache_size=5,
-    per_readout_gather=:pipeline,
-    per_readout_host_cache_bytes=0,
-    shared_rank_max=128,
-    shared_basis_tol=T(1e-2),
-    global_basis_tol=nothing,
-    shared_basis_method=:rsvd,
-    joint_snapshots=256,
-    joint_samples=512,
-    joint_roi_tol=nothing,
-    joint_basis_report=nothing,
-    normal_distribution=:single,
-    nfft_center_correction=true,
-    verbose=false,
-) where T<:AbstractFloat
-```
-
-## Arguments
-
-- `grid`: physical reconstruction grid.
-- `kspha`: dynamic field coefficients `(nTerm, nSam, nDyn)`.
-- `times`: ADC times `(nSam, nDyn)`.
-
-## Spatial and encoding keywords
-
-- `fieldmap`: static off-resonance map.
-- `csm`: complex coil-sensitivity maps.
-- `mask`: reconstruction mask; only masked voxels enter the low-rank setup.
-- `concomitant`: optional `(4,nSam,nDyn)` time-integrated phase coefficients in cycles/m², ordered as `z²`, `x²+y²`, `xz`, `yz`; `(4,nSam)` is accepted for one dynamic. Coordinates must share the grid frame and physical origin. Terms are appended to the residual model before basis construction, independently of `recon_terms`; see [concomitant integration](/theory/low-rank#concomitant-phase-in-the-residual-model).
-- `recon_terms`: spherical-harmonic order-selection string.
-- `k_nominal`: nominal first-order trajectory `(3, nSam, nDyn)`.
-- `nfft_center_correction`: parity-aware correction aligning the NFFT grid with physical voxel centres.
-
-## Low-rank keywords
-
-For the default rSVD construction:
-
-- `L_rank`: retained rank of each dynamic-specific rSVD.
-- `rsvd_seed`: deterministic base seed; dynamic `d` uses `rsvd_seed + d - 1`.
-- `rsvd_chunk`: voxel chunk size for the chunked backend.
-- `rsvd_oversample`: additional randomized range directions.
-- `rsvd_finalize`: `:svd` or small-Gram `:gram` finalization.
-- `rsvd_backend`: `:chunked`, `:kernel`, or `:auto`.
-- `rsvd_distribution`: `:single`, `:voxel`, or `:auto`.
-- `shared_basis_tol`: incremental second-stage residual tolerance.
-- `shared_rank_max`: hard upper bound on the accumulated shared rank.
-
-The fused CUDA backend supports wide sketches in batches of at most 16
-columns. The matrix-dimension bound `L_rank + rsvd_oversample <= min(nSam,nVox)`
-still applies; this batch size does not truncate the final shared rank.
-
-## Per-readout parameters
-
-`basis_layout=:shared` is the default. Set `:per_readout` to retain the local
-rSVD factors without incremental sharing or final global recompression.
-
-| Keyword | Default | Meaning |
-|:--|:--|:--|
-| `basis_layout` | `:shared` | Shared spatial basis or independent `:per_readout` factors. |
-| `per_readout_storage` | `:gpu` | Materialize all independent factors on the selected array backend; CUDA also supports `:cpu` streaming and `:regenerate` on demand. |
-| `per_readout_cache_size` | `5` | Resident readouts per CUDA cache, capped at `nDyn`. Applies to `:cpu` and `:regenerate`; generation lookahead requires at least two slots. |
-| `per_readout_gather` | `:pipeline` | Two-buffer aggregation during voxel-distributed setup; `:synchronous` retains blocking downloads and host writes. |
-| `per_readout_host_cache_bytes` | `0` | Optional whole-readout host-factor budget for regeneration. Excludes Q/Z, model maps, staging, and workspaces. |
-
-Both `:cpu` and `:regenerate` require `basis_layout=:per_readout` and
-`arrayType=CuArray`. Regeneration additionally requires
-`rsvd_distribution=:voxel`, `rsvd_backend=:kernel`, and `rsvd_finalize=:gram`.
-It retains the original Q/Z factors and evaluates `(H_d' * Q_d) * Z_d` for
-uncached readouts without allocating the complete spatial bank.
-
-In the per-readout layout, `shared_rank_max` and `shared_basis_tol` are unused;
-`shared_basis_method` must remain `:rsvd` and `global_basis_tol` must be
-`nothing`. Setting `shared_basis_tol=0` in the shared layout does not bypass
-sharing. See [per-readout usage](/guide/operators#independent-per-readout-factors)
-and [storage and regeneration](/theory/low-rank#independent-per-readout-representation).
-
-## Shared-basis parameters
-
-::: info Experimental joint construction
-Joint construction is explicitly enabled with `shared_basis_method=:joint`.
-The default remains `:rsvd`. Both methods return the same operator type and
-use the same factor layout, NFFT, and reconstruction interface.
+::: info Construction covered here
+This page covers `shared_basis_method=:rsvd`. The generated signature also lists
+the implemented `joint_*` keywords; their construction method and evaluation
+are outside this page's scope.
 :::
 
-| Keyword | Default | Meaning |
-|:--|:--|:--|
-| `shared_basis_method` | `:rsvd` | Existing per-dynamic rSVD and incremental sharing; `:joint` explicitly selects joint snapshot construction. |
-| `global_basis_tol` | `nothing` | Optional final recompression of the rSVD representation; measures additional relative Frobenius error. Must remain `nothing` for joint. |
-| `joint_snapshots` | `256` | Representative phase-row budget $K$, used before rank selection and bounded by available phase geometries. |
-| `joint_samples` | `512` | Initial fitting voxel count $J$; may double once if selection fails, within the fitting pool. |
-| `joint_roi_tol` | `nothing` | Optional additional acceptance tolerance on sampled largest-$\lvert B_0\rvert$ voxels. Without it, excessive ROI error produces a warning. |
-| `joint_basis_report` | `nothing` | Optional `Ref{Any}()` receiving selection and audit diagnostics. |
+## A complete CPU example
 
-For `:joint`, `shared_rank_max=128` caps the final shared rank, and
-`shared_basis_tol=T(1e-2)` bounds each dynamic's sampled random-voxel error
-against the original phase model. Selection uses `0.9 * shared_basis_tol`;
-the final audit uses the requested tolerance. The search tests rank 1 and
-blocks of eight, including the last available rank. It does not guarantee the
-smallest rank or a full-matrix/image error bound.
-
-The existing `rsvd_seed=1234` controls joint sampling, while
-`rsvd_chunk=4096` bounds temporary phase matrices. `L_rank` is retained as
-metadata; neither it nor `rsvd_oversample` selects a local rank in this mode.
-`rsvd_backend` and `rsvd_finalize` do not change the joint algorithm.
-Use `rsvd_distribution=:auto` or `:single`; explicit `:voxel` is rejected.
-Setup uses the primary GPU or the CPU. The existing
-`normal_distribution=:channel` option can still distribute reconstruction.
-
-The report contains `rank`, `rank_max`, `snapshots`, `sample_count`,
-`tolerance`, `selection_tolerance`, `roi_tolerance`, `validation_errors`,
-`validation_roi_errors`, `audit_errors`, `roi_errors`, `orthogonality`,
-`passed`, and `stage`. It also records snapshot, fitting, validation and audit
-indices, held-out profiles, `disjoint_times`, and `seed`. Errors are relative
-Frobenius errors on sampled phase matrices, one value per dynamic.
-
-Rank/sample exhaustion and failed final audits throw instead of returning
-partial factors; those failures populate the report with `stage=:rank_limit`
-or `:audit`. A report is not guaranteed for an earlier input or CUDA failure.
-Float32 and Float64 are supported. The factors preserve the requested
-precision; small CPU eigendecompositions/QR and phase-audit references use
-Float64. See the [joint example](/guide/operators#automatic-joint-shared-basis)
-and [mathematical scope](/theory/low-rank#direct-joint-shared-basis).
-
-## Execution keywords
-
-- `arrayType`: `Array` or `CuArray`.
-- `gpus`: zero-based CUDA device IDs.
-- `normal_distribution`: `:single` (default), `:channel`, or `:readout` for the weighted normal operator. The distributed modes require CUDA and at least two GPUs; `:readout` additionally requires `basis_layout=:per_readout`. See [readout distribution](/guide/multi-gpu#iterative-reconstruction-readout-distributed-normal-operator).
-- `verbose`: report setup and resource information.
-
-## Returns
-
-A `HighOrderLowRankOp` with dimensions `(nSam * nDyn * nCha, prod(grid.matrixSize))`. In the shared layout, the stored `q` and `basis` have `R` columns. In the per-readout layout, `q` has shape `(nSam * nDyn, L_rank)` and the logical spatial bank has shape `(nVox, L_rank * nDyn)`; regeneration stores Q/Z and an optional host subset instead of materializing that bank.
-
-The shared rSVD implementation uses streaming coefficient blocks: when later dynamics expand the shared basis, earlier coefficient blocks are zero-padded rather than recomputed. See [Low-rank shared subspace](/theory/low-rank) for the exact factorization and approximation-error interpretation.
-
-## Example
+This example defines a small Cartesian grid, two readouts, two coils, a nonzero
+static field map and a varying second-order field term. It computes synthetic
+samples and an adjoint backprojection; it does not solve an inverse problem or
+test convergence on measured data.
 
 ```julia
-using CUDA
+using HighOrderMRI
+using LinearAlgebra
 
-op = HighOrderLowRankOp(
-    grid,
-    kspha,
-    times;
-    fieldmap,
-    csm,
-    mask,
-    arrayType=CuArray,
-    gpus=[0, 1, 2],
-    L_rank=15,
-    rsvd_finalize=:gram,
-    shared_basis_tol=1f-2,
-    normal_distribution=:channel,
+T = Float32
+nX, nY = 8, 8
+nSam, nDyn, nCha = nX * nY, 2, 2
+grid = Grid(nX, nY, 1, T(1e-3), T(1e-3), T(1e-3))
+
+# Metres, seconds, Hz; the phase coefficients use cycles and cycles/m^p.
+kx = T.(-4:3) ./ (T(nX) * grid.Δx)
+ky = T.(-4:3) ./ (T(nY) * grid.Δy)
+times = repeat(reshape(T.(0:nSam-1) .* T(1e-5), :, 1), 1, nDyn)
+kspha = zeros(T, 9, nSam, nDyn)
+for i in 1:nDyn
+    kspha[1, :, i] .= T(0.03) * T(i)
+    kspha[2, :, i] .= repeat(kx, nY)
+    ky_samples = repeat(ky; inner=nX)
+    kspha[3, :, i] .= i == 1 ? ky_samples : reverse(ky_samples)
+    kspha[5, :, i] .= T(i) .* range(T(-500), T(500); length=nSam)
+end
+
+fieldmap = reshape(collect(range(T(-15), T(15); length=nX*nY)), nX, nY, 1)
+csm = ones(Complex{T}, nX, nY, 1, nCha)
+csm[:, :, 1, 2] .= Complex{T}(T(0.8), T(0.2))
+mask = trues(nX, nY, 1)
+image = zeros(Complex{T}, nX, nY, 1)
+image[3:6, 3:6, 1] .= Complex{T}(one(T), T(0.25))
+image[4:5, 4:5, 1] .= Complex{T}(T(0.5), T(-0.2))
+
+op = HighOrderLowRankOp(grid, kspha, times;
+    fieldmap, csm, mask,
+    arrayType=Array,
+    shared_basis_method=:rsvd,
+    basis_layout=:shared,
+    normal_distribution=:single,
+    L_rank=4,
+    rsvd_oversample=4,
+    rsvd_seed=1234,
+    shared_rank_max=8,
+    shared_basis_tol=T(1e-3),
 )
+
+signal, backprojection = try
+    samples = reshape(op * vec(image), nSam, nDyn, nCha)
+    adjoint_image = reshape(adjoint(op) * vec(samples), nX, nY, 1)
+    samples, adjoint_image
+finally
+    close(op)
+end
+
+@assert size(signal) == (nSam, nDyn, nCha)
+@assert norm(signal) > zero(T)
 ```
 
-[Source: `HighOrderLowRankOp.jl`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/main/src/EncodingOperator/HighOrderLowRankOp.jl)
+Samples vary fastest, then readouts, then coils. For reconstruction, preserve
+that ordering and form `reshape(signal, nSam*nDyn, nCha)` for
+[`recon_HOOp`](/reference/recon-hoop). The backprojection above is $A^H y$,
+not a reconstructed solution. Rank and tolerance values in this small example
+are illustrative choices, not settings validated for a full brain.
+
+Use the default centred Cartesian coordinates on the active NFFT axes. In 2D,
+only $k_x$ and $k_y$ enter the NFFT; $k_z z$ remains in the residual phase.
+Changing grid coordinate vectors alone does not change the NFFT geometry.
+See [coordinate scope](/theory/encoding-model#coordinate-scope) before applying
+permutations, reversals or offsets.
+
+## Shared-basis construction {#shared-basis-parameters}
+
+For each readout $i$, local rSVD retains `L_rank` factors of the residual phase
+matrix. The sketch must satisfy
+`L_rank + rsvd_oversample <= min(nSam,count(mask))`. Incremental sharing then
+combines those retained spatial factors. When the basis grows, earlier saved
+coefficient blocks are zero-padded; they are not recomputed as projections onto
+the completed basis. This procedure is not a global optimal SVD.
+
+`shared_basis_tol` controls the incremental compression of retained local
+factors. It is not a bound on the original full phase matrix or image error.
+Optional `global_basis_tol` introduces a further error relative to the already
+shared representation. NFFT approximation and local rSVD truncation remain
+separate error sources.
+
+### Optional no-add check
+
+`shared_noadd_check` affects **basis construction**, independently of the
+reconstruction distribution. It is disabled by default and requires the shared,
+voxel-distributed CUDA rSVD path with Gram finalization.
+
+The update still performs both projection passes and forms the full residual.
+It accumulates residual energy in FP64 and, when a numerical guard places that
+energy safely below the tolerance allowance, skips the residual-Gram matrix
+and its eigendecomposition. Other cases use the original path. The check does
+not change the requested local rank or reconstruction sample batches. It does
+not establish a memory or runtime benefit for a particular measured dataset.
+
+## Independent readouts {#per-readout-parameters}
+
+`basis_layout=:per_readout` retains the local factors independently, without
+incremental sharing or final shared-basis recompression. The resident option
+stores those factors on the selected array backend. CUDA also supports host
+factor streaming (`per_readout_storage=:cpu`) and regeneration from retained
+Q/Z factors (`:regenerate`), with their additional setup and cache constraints
+listed in the generated API. These storage modes do not select the CG
+partition by themselves.
+
+## Choose setup and reconstruction execution separately
+
+`rsvd_distribution` controls factor construction. `normal_distribution` controls
+operator execution during iterative reconstruction; its default is `:single`.
+For rank execution it also selects the direct forward and adjoint paths.
+
+| `normal_distribution` | Work and persistent storage |
+|:--|:--|
+| `:single` | CPU with `arrayType=Array`, or the primary GPU with `CuArray`. |
+| `:channel` | Coil groups. In the shared layout, every worker retains the full temporal and spatial factors; coil-map storage is partitioned. |
+| `:rank` | Shared factor columns and coil-map storage are partitioned. Complete factor and coil-map masters remain in host RAM. |
+| `:readout` | Independent readout groups, requiring `basis_layout=:per_readout`; every worker retains all coil maps. |
+
+The distributed reconstruction modes require CUDA and at least two unique
+GPU IDs. IDs are zero based within CUDA's visible device list, and `first(gpus)`
+is the primary GPU for solver vectors. Rank execution additionally requires
+shared rSVD factors built by the voxel-distributed path with Gram finalization.
+Its worker count is at most `min(length(gpus), shared_rank, nCha)`, so selecting
+several devices does not guarantee they all participate.
+
+The setup requirement is different: explicit `rsvd_distribution=:voxel` accepts
+**one or more unique GPU IDs**; the list must be nonempty and must not contain more devices than masked voxels. Automatic voxel setup
+requires multiple GPUs, the kernel backend and Gram finalization; chunked voxel
+setup requires explicit selection.
+The generated API gives the exact combinations. Use the
+[multi-GPU guide](/guide/multi-gpu) for complete device configurations.
+
+### Why rank execution must combine forward contributions
+
+Coil groups contain independent observation rows, so their normal contributions
+can be summed. Rank groups instead contribute to the same samples. If
+$A=\sum_g A_g$, then
+
+$$
+A^H W^H W A = \sum_g\sum_h A_g^H W^H W A_h.
+$$
+
+The implementation combines forward samples across rank workers before applying
+the weights and adjoint. Summing only $A_g^H W^H W A_g$ would omit the cross-rank
+terms. The reductions and transfers use host staging buffers; GPU memory is
+not a single shared pool. Each rank worker evaluates all coils. If a coil map is absent from its local
+storage, the worker uploads that map from the host master.
+
+### Sample batching and data placement
+
+`normal_sample_batch_size` limits the number of sample/readout points in each
+rank-mode batch. Its effective size is
+`min(nSam*nDyn, normal_sample_batch_size)`. It bounds sample workspaces, not
+complete factor columns, coil maps, image grids, solver vectors, input/output
+data, host masters or setup buffers. The other reconstruction distributions do
+not use this parameter for batching.
+
+With the current NFFT.jl 0.14.3 GPU backend, use a full batch or an exact divisor
+of `nSam*nDyn`: its node-update path does not support a shorter final output
+batch. See [sample batching](/guide/multi-gpu#sample-batching-and-memory) for the
+backend-specific limitation. Reducing a batch cap therefore is not sufficient
+to establish that the complete problem fits in GPU memory.
+
+In rank mode, `op.q`, `op.basis` and `op.csm` are host matrices, while solver
+storage is on the primary GPU. Consequently, allocating `op * x` returns a host
+vector in this mode. Use `mul!` with an appropriately sized GPU output, or
+transfer the result before reconstruction. CUDA LowRank reconstruction requires
+the data matrix and raw weight vector on the primary GPU; `recon_HOOp` does not
+move them automatically. It returns a CPU image.
+
+## Release owned resources
+
+Use `try`/`finally` and `close(op)` after the final direct forward, adjoint or
+normal use. `recon_HOOp` releases the distributed backend by default; if
+`release_backend=false`, the caller retains that responsibility.
+
+The parent operator owns the workers. `release_highorder_normal_backend!(op)`
+releases that backend; `close(op)` also releases any source streaming or
+regeneration queue. Closing a derived normal view alone does not release the
+parent's workers. For distributed normal execution, release the existing backend before changing
+normal weights and obtain a fresh normal view. Host factor masters remain referenced until
+the parent and other references are dropped. See
+[resource lifecycle](/reference/resources) before replacing a large operator.
+
+## API
+
+The following source-generated reference separates the operator type, the
+single-readout convenience constructor and the multi-readout constructor.
+
+<!--@include: ../../.generated/api/highorderlowrankop.md-->

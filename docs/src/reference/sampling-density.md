@@ -1,34 +1,26 @@
 # `samplingDensity`
 
-Compute square-root sampling-density compensation weights for a 2D non-Cartesian trajectory.
-
-```julia
-samplingDensity(
-    tr::AbstractArray{T,2},
-    shape::Tuple,
-) where T
-```
-
-## Arguments
-
-- `tr`: two-dimensional k-space trajectory.
-- `shape`: reconstruction matrix size.
-
-## Returns
-
-- `weights::Vector{Complex{T}}`: square-root density weights compatible with `recon_HOOp`.
-
-The implementation normalizes the trajectory for the NFFT plan, evaluates iterative sampling-density compensation, and returns its square root. Consequently, `recon_HOOp` forms the weighted normal term $A^H W^H W A$.
+This trajectory-only helper estimates square-root density weights for the
+weighted least-squares wrapper. It is not a coil-aware or field-aware inverse.
+Supply trajectory coordinates in dimension-by-sample order; all-zero inputs
+are outside the usable normalization domain.
 
 ## Example
 
 ```julia
-weight = samplingDensity(
-    reshape(kspha[2:3, :, :], 2, :),
-    (grid.nX, grid.nY),
-)
+using HighOrderMRI
+
+kx = collect(range(-0.45, 0.45; length=32))
+trajectory = [kx'; zeros(1, length(kx))]
+weights = samplingDensity(trajectory, (8, 8))
+@assert length(weights) == size(trajectory, 2)
 ```
 
-Use the same trajectory convention and the same returned weights when comparing encoding implementations.
+The helper rescales all coordinates by a single maximum. For anisotropic
+sampling, prepare axis scaling consistently with the intended reconstruction
+grid. Use the returned weights once in [`recon_HOOp`](/reference/recon-hoop).
 
-[Source: `SampleDensity.jl`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/docs/src/Recon/SampleDensity/SampleDensity.jl)
+
+## API
+
+<!--@include: ../../.generated/api/sampling-density.md-->

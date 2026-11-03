@@ -13,13 +13,24 @@ HighOrderMRI.jl is a Julia toolbox for Cartesian and non-Cartesian MRI reconstru
 - `HighOrderOp`: array-based explicit evaluation on CPU or CUDA.
 - `HighOrderKernelOp`: fused explicit CUDA evaluation on one or more GPUs.
 - `HighOrderLowRankOp`: per-dynamic matrix-free rSVD, adaptive incremental shared spatial basis, and a global-trajectory NFFT.
-- Optional voxel-distributed multi-GPU rSVD setup and channel-distributed multi-GPU normal operators.
+- Optional voxel distribution for multi-GPU rSVD setup and channel, rank, or readout distribution for reconstruction.
 - GIRF-based field prediction and model-based field/data synchronization ([Dubovan and Baron, 2023](https://doi.org/10.1002/mrm.29460)).
 - Raw complex reconstruction metrics, encoding-convention regression tests, and a documented scientific validation strategy.
 
 ## Documentation
 
-The current development documentation is available at [HighOrderMRI.jl/dev](https://bennyzhang-codes.github.io/HighOrderMRI.jl/dev/). The `docs` branch builds VitePress and deploys a complete Pages artifact directly through GitHub Actions. Up to eight tags containing VitePress source are published under their own version paths, with the newest also built at `/stable/`. Documenter on `main` remains a build check and does not publish the website.
+The current development documentation is available at [HighOrderMRI.jl/dev](https://bennyzhang-codes.github.io/HighOrderMRI.jl/dev/). The `docs` branch builds VitePress and deploys a complete Pages artifact directly through GitHub Actions. This workflow builds only `/dev/`, bound to an explicit code commit. Source docstrings supply the API reference, with interface and CPU example checks on the code branch.
+
+This branch contains the website in `docs/` and its build configuration. Package source, tests and demo data are maintained on the code branches. To preview the website, prepare a separate code checkout with its Julia dependencies, then run from this checkout:
+
+```bash
+npm ci --prefix docs
+export DOCS_CODE_PATH=/absolute/path/to/HighOrderMRI-code
+npm run docs:build-site --prefix docs -- --preview
+npm run docs:preview --prefix docs
+```
+
+See [local documentation builds](https://bennyzhang-codes.github.io/HighOrderMRI.jl/dev/getting-started#build-the-documentation-locally) for prerequisites. Formal builds omit `--preview` and require a clean code checkout at the full SHA recorded in `docs/code-version.json`.
 
 The documentation contains:
 
@@ -28,15 +39,15 @@ The documentation contains:
 - the randomized SVD and incremental shared spatial-subspace derivation;
 - operator selection, reconstruction, multi-GPU, and synchronization guides;
 - a scientific validation strategy separating implementation consistency, low-rank approximation, independent numerical validation, and physical validation;
-- the frozen reconstruction comparison protocol, performance reporting guidance, API reference, references, and troubleshooting.
+- reconstruction conventions, performance reporting guidance, API reference, references, and troubleshooting.
 
 ## Installation
 
-HighOrderMRI.jl requires Julia 1.12 or later. CI tests both the minimum supported Julia 1.12 release and the latest stable Julia 1.x release; the documentation is also built with the latest stable release. The repository currently carries `MRIGeometry` as a local subpackage, so clone the complete repository:
+HighOrderMRI.jl requires Julia 1.12 or later. CI tests both the minimum supported Julia 1.12 release and the latest stable Julia 1.x release; the documentation checks use Julia 1.12. The package includes `MRIGeometry` as a local subpackage. Install it from a separate clone of the `main` code branch:
 
 ```bash
-git clone https://github.com/BennyZhang-Codes/HighOrderMRI.jl.git
-cd HighOrderMRI.jl
+git clone --branch main https://github.com/BennyZhang-Codes/HighOrderMRI.jl.git HighOrderMRI-code
+cd HighOrderMRI-code
 julia --project=. -e 'using Pkg; Pkg.instantiate()'
 ```
 
@@ -59,10 +70,10 @@ The current demo data include 2D single-shot spiral (7 T, 1 mm in-plane resoluti
     <th colspan="4" style="text-align:center">2D Spiral (left) & 2D EPI (right)</th>
   </tr>
   <tr>
-    <td><img src="demo/result/7T_2D_Spiral_1p0_200_r4_Nominal.png" width="250"/></td>
-    <td><img src="demo/result/7T_2D_Spiral_1p0_200_r4_Measured.png" width="250"/></td>
-    <td><img src="demo/result/7T_2D_EPI_1p0_200_r4_Nominal.png" width="250"/></td>
-    <td><img src="demo/result/7T_2D_EPI_1p0_200_r4_Measured.png" width="250"/></td>
+    <td><img src="https://raw.githubusercontent.com/BennyZhang-Codes/HighOrderMRI.jl/5b2e1e7d61689dad011ca3d934428bb773cd7a5f/demo/result/7T_2D_Spiral_1p0_200_r4_Nominal.png" width="250"/></td>
+    <td><img src="https://raw.githubusercontent.com/BennyZhang-Codes/HighOrderMRI.jl/5b2e1e7d61689dad011ca3d934428bb773cd7a5f/demo/result/7T_2D_Spiral_1p0_200_r4_Measured.png" width="250"/></td>
+    <td><img src="https://raw.githubusercontent.com/BennyZhang-Codes/HighOrderMRI.jl/5b2e1e7d61689dad011ca3d934428bb773cd7a5f/demo/result/7T_2D_EPI_1p0_200_r4_Nominal.png" width="250"/></td>
+    <td><img src="https://raw.githubusercontent.com/BennyZhang-Codes/HighOrderMRI.jl/5b2e1e7d61689dad011ca3d934428bb773cd7a5f/demo/result/7T_2D_EPI_1p0_200_r4_Measured.png" width="250"/></td>
   </tr>
 </table>
 

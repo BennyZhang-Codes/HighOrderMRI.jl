@@ -29,7 +29,7 @@ features:
     details: Evaluate the expanded signal model with array-based or fused CUDA implementations, including supported multi-GPU execution.
     link: /guide/operators
   - title: Shared spatial subspace
-    details: Approximate dynamic residual encoding using per-dynamic rSVD and an incrementally constructed spatial basis shared across dynamics.
+    details: Approximate dynamic residual encoding using per-readout rSVD and an incrementally constructed spatial basis shared across dynamics.
     link: /theory/low-rank
   - title: Field-monitoring workflow
     details: Combine dynamic field measurements or predictions with synchronization, preprocessing, and iterative reconstruction.
@@ -42,7 +42,7 @@ HighOrderMRI.jl is under active development. Regression tests establish implemen
 
 ## Common signal model, alternative numerical implementations
 
-HighOrderMRI.jl keeps the target MRI signal model fixed while changing how the encoding operator is evaluated. `HighOrderOp` and `HighOrderKernelOp` are explicit implementations of the expanded model. `HighOrderLowRankOp` introduces a controlled approximation only in the residual spatial phase representation.
+HighOrderMRI.jl keeps the target MRI signal model fixed while changing how the encoding operator is evaluated. `HighOrderOp` and `HighOrderKernelOp` are explicit implementations of the expanded model. `HighOrderLowRankOp` approximates the residual spatial phase representation; its NFFT also has a separate numerical approximation error.
 
 | Operator | Numerical representation | Backend | Typical use |
 | --- | --- | --- | --- |
@@ -50,14 +50,14 @@ HighOrderMRI.jl keeps the target MRI signal model fixed while changing how the e
 | `HighOrderKernelOp` | Explicit expanded encoding with fused kernels | CUDA, including supported multi-GPU execution | Explicit GPU calculations and implementation-consistency testing |
 | `HighOrderLowRankOp` | Per-dynamic rSVD + incremental shared spatial basis | CPU/CUDA with optional multi-GPU stages | Repeated large-scale forward/adjoint evaluations and iterative reconstruction |
 
-All three use the same positive-phase signal convention:
+The common signal model is:
 
 $$
-y_{jdc}
+y_{jic}
 =
 \frac{1}{\sqrt{N_v}}
 \sum_{v=1}^{N_v}
-m_v C_{vc}\exp\!\left(i2\pi\Phi_{jdv}\right).
+m_v C_{vc}\exp\!\left(\mathrm{i}2\pi\Phi_{jiv}\right).
 $$
 
 A controlled comparison should therefore proceed hierarchically: establish agreement between the explicit implementations, quantify the low-rank approximation against a fixed explicit reference, and then evaluate the complete signal model against an independent numerical or physical reference.

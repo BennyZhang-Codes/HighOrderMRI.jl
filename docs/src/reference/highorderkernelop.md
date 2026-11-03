@@ -1,57 +1,9 @@
 # `HighOrderKernelOp`
 
-Explicit CUDA encoding with legacy kernels and GPU-resident direct/cuBLAS backends. One public constructor selects single- or multi-GPU execution through `gpus`.
-
-```julia
-HighOrderKernelOp(
-    grid::Grid{T},
-    kspha::AbstractArray{T,2},
-    times::AbstractVector{T};
-    fieldmap=zeros(T, grid.matrixSize...),
-    csm=ones(Complex{T}, grid.matrixSize..., 1),
-    mask=trues(grid.matrixSize...),
-    concomitant=nothing,
-    recon_terms=nothing,
-    k_nominal=kspha[2:4, :],
-    kspha_dt=nothing,
-    nBlock=50,
-    arrayType=CuArray,
-    gpus=[0],
-    backend=:legacy,
-    block_size=320,
-    phase_backend=:kernel,
-    gemm_backend=:cublas,
-    phase_cache_bytes=0,
-    forward_threads=256,
-    adjoint_threads=512,
-    verbose=false,
-) where T<:AbstractFloat
-```
-
-## Arguments
-
-- `grid`: physical reconstruction grid, with `T` equal to `Float32` or `Float64`.
-- `kspha`: time-integrated spherical-harmonic coefficients `(nTerm, nSam)`, with 9 or 16 rows.
-- `times`: ADC sampling times.
-
-## Keywords
-
-| Keyword | Default | Meaning |
-|:--|:--|:--|
-| `fieldmap`, `csm`, `mask` | As above | Static off-resonance, complex coil sensitivities, and reconstruction mask. |
-| `concomitant` | `nothing` | Optional `(4,nSam)` integrated coefficients in cycles/m², ordered as `z²`, `x²+y²`, `xz`, `yz`; see [concomitant phase](/theory/encoding-model#optional-concomitant-phase). |
-| `recon_terms`, `k_nominal` | As above | Spherical-harmonic order selection and nominal trajectory. Concomitant terms are independent of `recon_terms`. |
-| `gpus` | `[0]` | Unique, zero-based CUDA-visible IDs. One entry selects single-GPU execution; several select multi-GPU execution. The first owns resident solver vectors. |
-| `backend` | `:legacy` | `:legacy`, `:direct`, `:blocked`, `:cached`, or `:cached_full`; see below. |
-| `block_size` | `320` | Sample rows per block for resident matrix backends. |
-| `phase_backend` | `:kernel` | Fused phase/exponential generation, or `:gemm` for real GEMM followed by the exponential. |
-| `gemm_backend` | `:cublas` | Native cuBLAS calls; `:auto` retains generic `mul!` dispatch for comparisons. |
-| `phase_cache_bytes` | `0` | Per-GPU byte budget for a complex phase prefix with `backend=:blocked`. |
-| `forward_threads`, `adjoint_threads` | `256`, `512` | Direct-kernel launch settings; the Float64 adjoint is capped at 128 threads. |
-| `kspha_dt` | `nothing` | Delay-estimation derivative coefficients; requires `backend=:legacy`. This path ignores `concomitant` and keeps the existing derivative model. |
-| `nBlock` | `50` | Legacy derivative block count; distinct from resident `block_size`. |
-| `arrayType` | `CuArray` | Must be `CuArray`. |
-| `verbose` | `false` | Report progress. |
+Use this constructor for explicit CUDA encoding. Legacy mode partitions voxels
+and keeps solver vectors on the host. Resident modes partition sample rows
+and keep solver vectors on the primary GPU. Read the
+[operator guide](/guide/operators) for the choice of implementation.
 
 ## Backends and storage
 
@@ -116,29 +68,42 @@ N_same = normalOperator(op, D)                   # already squared WᴴW
 
 `explicit_gpu_normal` accepts one raw weight per sample or per sample and coil, and squares it once; `nothing` means unit weights. `normalOperator(op, D)` expects an already squared real nonnegative diagonal. `normalOperator(W ∘ op)` supplies that diagonal automatically. Regularization remains in the solver, outside these data normal operators.
 
-## Resident reconstruction example
+## Complete resident example
+
+This synthetic example requires one CUDA GPU. It computes a weighted normal
+product, not an image reconstruction or a performance measurement.
 
 ```julia
-using CUDA
+using HighOrderMRI, CUDA
 
-CUDA.math_mode!(CUDA.PEDANTIC_MATH)
+CUDA.functional() || error("CUDA is not functional")
+CUDA.device!(0)
+grid = Grid(8, 8, 1, 1f-3, 1f-3, 5f-3)
+kspha = zeros(Float32, 9, 32)
+kspha[2, :] .= range(-200f0, 200f0; length=32)
+times = collect(range(0f0, 3f-3; length=32))
 op = HighOrderKernelOp(grid, kspha, times;
-    fieldmap, csm, mask,
-    gpus=[0, 1],
-    backend=:blocked,
-    block_size=1024,
-    phase_backend=:gemm,
-    gemm_backend=:cublas,
-    phase_cache_bytes=8 * 2^30,
-)
-try
-    image = recon_HOOp(op, CuArray(ComplexF32.(data_matrix)),
-        CuArray(ComplexF32.(weight_vector)), rec_params)
+    gpus=[0], backend=:blocked, block_size=16, phase_cache_bytes=0)
+image = try
+    x = CUDA.ones(ComplexF32, prod(grid.matrixSize))
+    weights = CUDA.ones(ComplexF32, size(op, 1))
+    normal = explicit_gpu_normal(op; weights)
+    Array(reshape(normal * x, grid.matrixSize))
 finally
     close(op)
 end
 ```
 
-This example assumes Float32 model inputs and sufficient memory on both GPUs; tune block size and cache budget on the complete problem. Device IDs are relative to `CUDA_VISIBLE_DEVICES` when set. See [Multi-GPU execution](/guide/multi-gpu#resident-explicit-encoding-sample-decomposition) for the sample decomposition.
+For reconstruction, pass GPU data and weights to
+[`recon_HOOp`](/reference/recon-hoop). The default legacy Float64 adjoint can
+exceed its fixed CUDA launch's register budget. The resident direct Float64
+cap does not apply to that legacy path. Derivative mode remains forward-only
+in the sense explained in the generated constructor reference.
 
-[Source: `HighOrderKernelOp.jl`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/main/src/EncodingOperator/HighOrderKernelOp.jl)
+## Constructor API
+
+<!--@include: ../../.generated/api/highorderkernelop.md-->
+
+## Weighted normal API
+
+<!--@include: ../../.generated/api/explicit-gpu-normal.md-->

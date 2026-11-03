@@ -1,15 +1,22 @@
 # Reconstruction workflow
 
-A controlled reconstruction should fix the data layout, field convention, spatial geometry, encoding operator, density weighting, and solver settings before numerical comparisons are performed. The workflow can be organized into six stages:
+Reconstruction combines a physical encoding model with a weighted inverse solve. Prepare the inputs in this order:
 
 1. prepare synchronized field coefficients and sampling times;
 2. optionally apply a fixed coil-compression transform;
 3. construct the physical grid and spatial inputs;
 4. construct and verify the encoding operator;
 5. define density weights and solver settings;
-6. reconstruct and report accuracy, convergence, timing, and provenance.
+6. solve, inspect convergence and check the reconstructed image.
 
 Receive-noise whitening and coil-compression theory are described separately in [Coil compression](/guide/coil-compression).
+
+## Complete CPU example
+
+Start with the [complete synthetic reconstruction example](/reference/recon-hoop#example).
+It defines the grid, trajectory, image, samples, weights and solver settings in
+one script. The remaining sections describe how to replace those inputs with
+acquisition data.
 
 ## Data layout
 
@@ -136,7 +143,13 @@ image = recon_HOOp(
 )
 ```
 
-For a channel-distributed `HighOrderLowRankOp`, the multi-GPU normal backend is constructed lazily. By default, `recon_HOOp` releases this backend in a `finally` block after the solve. Set `release_backend=false` only when the same operator and backend will be reused immediately, and call `close(op)` after the final solve.
+For `HighOrderLowRankOp`, channel/readout backends start on the first normal request; rank execution can also start on a forward or adjoint request. By default, `recon_HOOp` releases this backend in a `finally` block after the solve. Set `release_backend=false` only when the same operator and backend will be reused immediately, and call `close(op)` after the final solve.
+
+The data normal is Hermitian positive semidefinite, not necessarily positive
+definite. Undersampling and masked-out image columns can create a nullspace.
+Select a compatible regularizer and solver, and check the solve residual;
+standard CG assumptions require positive definiteness on the solved space.
+The wrapper does not choose regularization from the data.
 
 ## Accuracy and convergence
 
@@ -160,17 +173,9 @@ For low-rank studies, image-domain measures should be accompanied by operator-le
 
 The evidence hierarchy and the explicit, direct-global, and incremental comparison baselines are defined in [Scientific validation strategy](/guide/validation).
 
-## Timing and provenance
+## Further guidance
 
-Compilation and asynchronous CUDA execution can bias isolated wall-clock measurements. Warm the exact execution path before timing, synchronize every participating GPU around the measured region, and use repeated steady-state measurements. A robust summary such as the median and interquartile range is preferable to a single run.
-
-For a low-rank reconstruction study, record at least:
-
-- `L_rank`, final shared rank, `shared_basis_tol`, and `shared_rank_max`;
-- rSVD backend, distribution, finalization, oversampling, and random seed;
-- setup, forward, adjoint, normal-operator, solver, and end-to-end timing;
-- peak host and device memory;
-- Git SHA and dirty-worktree state;
-- Julia, CUDA, package, NFFT-backend, and GPU UUID information.
-
-The [reconstruction protocol](/guide/reconstruction-protocol) specifies the complete fixed comparison rules. Post-reconstruction intensity alignment should not be used to compensate for a phase-sign, centring, normalization, or data-layout mismatch.
+Use [performance guidance](/guide/performance) for planning memory and measuring
+execution, and [validation guidance](/guide/validation) to distinguish
+implementation consistency from independent physical validation. Numerical
+examples do not establish whole-brain memory or performance benefits.

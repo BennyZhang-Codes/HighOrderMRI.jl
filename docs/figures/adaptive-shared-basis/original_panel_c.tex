@@ -1,0 +1,102 @@
+% Derived from original v30 panel (c); the complete nested-loop algorithm remains.
+% v42: shorten local SVD after moving its equality chain to (b); explicitly label the zoom-in.
+% v47: use the already-defined residual Z_i per the latest author instruction.
+% v48: show the explicit U Sigma V^H intermediate in the local rSVD step.
+% v52: common axis, anchor-constrained routes and uniform physical arrow style.
+% v53: residual-mode box moves left by 1 mm after scaling; restore its incoming arrow.
+% v54: smaller residual diamond and consistent factor colors.
+% v57: ordinary algorithm edges/frames are neutral; semantic factor colors retained.
+% v60: square flow boxes; split augmentation conditions/update; shorten the title.
+% v61: headings render at 9 pt after .52 scaling; shorten only the acceptance gap.
+% Imported as one vector object, uniformly scaled by the parent figure.
+\begin{tikzpicture}[
+  x=1cm,y=1cm,
+  font=\fontsize{16.5}{19.5}\selectfont,
+  process/.style={draw=flowgray,line width=1.1pt,rounded corners=0pt,
+    fill=white,align=center,inner xsep=2mm,inner ysep=1.7mm},
+  decision/.style={diamond,draw=flowgray,line width=1.1pt,fill=white,
+    inner sep=0pt,align=center},
+  flow/.style={figflow,draw=flowgray},
+  innerloop/.style={figflow,draw=residual},
+  outerloop/.style={figflow,draw=flowgray},
+  link/.style={figflow,draw=ink},
+  flabel/.style={font=\smalltext,text=flowgray,fill=none,inner sep=.8mm,align=center},
+  encstep/.style={draw=frame,line width=.8pt,rounded corners=0pt,
+    fill=wash,align=center,inner xsep=2mm,inner ysep=1.8mm},
+  mathlabel/.style={font=\fontsize{15}{18}\selectfont,fill=none,align=center,inner sep=0pt}
+]
+
+\path[use as bounding box] (0,-7.25) rectangle (22.65,-25.2);
+\node[draw=none,text=red,fill=none,inner sep=0pt,
+    font=\bfseries\fontsize{17.307692}{20.769231}\selectfont] at (.64,-7.7) {(c)};
+\node[anchor=west,text=red,fill=none,font=\bfseries\fontsize{17.307692}{20.769231}\selectfont,
+    inner sep=0pt] at (1.20,-7.7) {Adaptive shared-basis compression};
+% C: restore the vertical main flow and left/right nested loops.
+% Show singular values explicitly, then their absorption into Vtilde.
+% Keep clear connectors around the compact, single-line local-factor step.
+\node[process,minimum height=.96cm] (init) at (8.4,-9.2)
+  {Initialize \(\sharedbasis\in\mathbb C^{N_v\times0}\),\quad \(i=1\)};
+\node[process,minimum height=1.05cm,font=\fontsize{15.5}{18.5}\selectfont] (load) at ($(init.center)+(0,-2.0)$)
+  {\textbf{rank-\(\boldsymbol L\) rSVD:}\quad
+    \(\mat H_i\approx{\color{timeblue}\mat U_{i,L}}\bm\Sigma_{i,L}{\color{spacegreen}\mat V_{i,L}^{\mathsf H}}
+    ={\color{timeblue}\mat U_{i,L}}{\color{spacegreen}\vlocal^{\mathsf H}}\)};
+\node[process,minimum height=1.6cm] (project) at ($(load.center)+(0,-2.4)$) {
+  \textbf{Project onto the shared basis \(\sharedbasis\)}\\[1.3mm]
+  \begin{tabular}{@{}c@{\quad}c@{}}
+    \(\coef=\sharedbasis^{\mathsf H}\vlocal\) & \(\mat Z_i=\vlocal-\sharedbasis\coef\)\\[-.3mm]
+    {\smalltext Coefficients} & {\smalltext Residual}
+  \end{tabular}};
+\node[decision,aspect=1.9,minimum width=5.7cm,minimum height=3.0cm]
+  (tol) at ($(project.center)+(0,-3.4)$) {};
+\node[mathlabel] (criterion) at (tol.center) {$\displaystyle
+  \frac{\|\mat Z_i\|_F}{\|\vlocal\|_F}\leq\tau$ ?};
+\node[process,draw=residual,fill=residual!9!white,text width=8.4cm,font=\smalltext,
+  minimum height=3.6cm] (expand) at ($(tol.center)+(9.407692,0)$) {
+  \textbf{Add residual modes}\\[1.3mm]
+  \mbox{\(\mat Q\): leading left singular vectors of \(\mat Z_i\)}\\[1.3mm]
+  \mbox{\(\sharedbasis^{\mathsf H}\mat Q=0,\quad\mat Q^{\mathsf H}\mat Q=\mat I\)}\\[1.2mm]
+  \mbox{\(\sharedbasis\leftarrow[\sharedbasis,\mat Q]\)}\\[1.2mm]
+  Zero-pad stored coefficients};
+% Compact tolerance-to-next-readout spacing leaves room for both loop labels.
+\node[decision,minimum width=4.8cm,minimum height=1.5cm] (more) at ($(tol.center)+(0,-3.2)$) {};
+\node[mathlabel] at (more.center) {$i<\ro$ ?};
+% Output frame is fitted to its content; its connector still uses the gutter.
+\node[process,draw=spacegreen,fill=spacewash,minimum height=1.15cm]
+  (shared) at ($(more.center)+(0,-2.5)$) {
+  \textbf{Orthonormal shared basis}\quad \(\sharedbasis=[{\color{spacegreen}\mat s_1},\ldots,{\color{spacegreen}\mat s_R}]\),\quad
+  stored \(\{\overline{\mat C}_i\}\)};
+
+% Every execution edge is tied to node anchors; each return path has one arrowhead.
+\draw[flow] (init.south) -- (load.north);
+\draw[flow] (load.south) -- (project.north);
+\draw[flow] (project.south) -- (tol.north);
+\draw[innerloop] (tol.east) -- (expand.west);
+\node[flabel,text=residual] at ($(tol.east)!0.5!(expand.west)+(0,.43)$) {No};
+\coordinate (innerturn) at (expand.north |- project.east);
+\draw[innerloop] (expand.north) -- (innerturn) -- (project.east);
+\draw[flow] (tol.south) -- node[midway,flabel,right=4mm] {Yes: store \(\coef\)} (more.north);
+\coordinate (outerrail) at ($(load.west)+(-.90,0)$);
+\coordinate (outerlower) at (outerrail |- more.west);
+\coordinate (outerupper) at (outerrail |- load.west);
+\draw[outerloop] (more.west) -- (outerlower) -- (outerupper) -- (load.west);
+\node[flabel,text=flowgray] at ($(more.west)!0.5!(outerlower)+(0,.48)$) {Yes};
+\node[flabel,text=flowgray] at ($(more.west)!0.5!(outerlower)+(0,-.62)$) {$i\leftarrow i+1$};
+\draw[flow] (more.south) -- node[midway,flabel,right=4mm] {No} (shared.north);
+\node[text=muted,font=\smalltext,fill=none] at ($(shared.south)+(0,-.50)$)
+  {Local rank \(L\) is fixed; shared rank \(R\) adapts to \(\tau\).};
+% Criterion-box audit checks fraction clearance against the sloped diamond edges.
+\path let \p1=(criterion.north west),\p2=(criterion.south east),
+  \p3=(tol.west),\p4=(tol.east),\p5=(tol.north),\p6=(tol.south),
+  \n1={abs(\x2-\x1)},\n2={abs(\y2-\y1)},
+  \n3={abs(\x4-\x3)},\n4={abs(\y6-\y5)}
+  in \pgfextra{\typeout{FIG1-C-CRITERION-W:\n1}
+    \typeout{FIG1-C-CRITERION-H:\n2}
+    \typeout{FIG1-C-CRITERION-DW:\n3}
+    \typeout{FIG1-C-CRITERION-DH:\n4}};
+% Build-time anchor audit, invisible in the artwork.
+\foreach \anodename in {init,load,project,tol,expand,more,shared}{
+  \path let \p1=(\anodename.center),\p2=(\anodename.north),\p3=(\anodename.south)
+    in \pgfextra{\typeout{FIG1-C-NODE:\anodename:\x1:\y1:\y2:\y3}};
+}
+
+\end{tikzpicture}
