@@ -20,7 +20,7 @@ end
 function test_adaptive_basis(arrayType, ::Type{T}) where T
     d = adaptive_basis_test_problem(T)
     original = deepcopy(d)
-    build(; kwargs...) = HighOrderMRI.adaptive_spatial_basis(d.times, d.fieldmap, d.bf, d.kspha;
+    build(; kwargs...) = HighOrderMRI.joint_adaptive_spatial_basis(d.times, d.fieldmap, d.bf, d.kspha;
         arrayType, epsilon_H=0.015, merge(d.options, (; kwargs...))...)
     result = build()
     @test result.construction_status === :computed
@@ -73,7 +73,8 @@ function test_adaptive_basis(arrayType, ::Type{T}) where T
     @test timeout.failure_reason === :time_budget && isempty(timeout.trials)
 end
 
-@testset "Global H adaptive shared basis" begin
+@testset "Joint adaptive low-rank basis" begin
+    @test HighOrderMRI.adaptive_spatial_basis === HighOrderMRI.joint_adaptive_spatial_basis
     @testset "CPU $T" for T in (Float32, Float64)
         test_adaptive_basis(Array, T)
     end

@@ -112,10 +112,11 @@ concomitant terms also enter the residual. The forward phase uses
 `exp(+2π * im * phase)` and normalization `1/sqrt(nVox)`, where `nVox` is
 the number of masked voxels.
 
-The default `shared_basis_method=:rsvd` builds local factors for each readout
-`i`. `basis_layout=:shared` incrementally merges their spatial factors;
-`:per_readout` retains independent factors. Local truncation, incremental
-sharing, and optional final recompression introduce distinct approximation
+Shared low-rank (`shared_basis_method=:shared_low_rank`, legacy alias
+`:rsvd`) builds local factors for each readout `i`. The default remains
+`:rsvd`. `basis_layout=:shared` incrementally merges their spatial factors;
+`:per_readout` retains independent factors from the same rSVD front end.
+Local truncation, incremental sharing, and optional final recompression introduce distinct approximation
 errors. Incremental sharing is not a global optimal SVD of all readouts.
 
 Construct the operator with either the single-readout or multi-readout
@@ -125,8 +126,9 @@ Use `close(op)` to release owned distributed resources and streaming caches.
 See [Low-rank theory](@ref LowRankTheory) for the factorization and
 [Resource ownership](@ref Resources) for reuse and cleanup.
 
-This reference covers the ordinary rSVD construction path. The separate
-`:joint` construction option is outside its scope.
+Joint adaptive low-rank (`shared_basis_method=:joint_adaptive_low_rank`,
+legacy alias `:adaptive`) selects the shared rank against global H error.
+The older `:joint` option retains its separate per-readout validation.
 """
 mutable struct HighOrderLowRankOp{
     T, F1, F2, 
@@ -259,13 +261,17 @@ CPU arrays, local rSVD, a shared spatial basis, and single-device execution.
 The keyword `normal_distribution` selects reconstruction execution;
 `rsvd_distribution` independently selects how the factors are built.
 
-`shared_basis_method=:adaptive, epsilon_H=0.01` opts into experimental
-global-H rank selection. It builds a stable snapshot master, fits all actual
+`shared_basis_method=:shared_low_rank` names the default Shared low-rank
+front end; `:rsvd` remains its compatible default spelling.
+
+`shared_basis_method=:joint_adaptive_low_rank, epsilon_H=0.01` opts into
+experimental Joint adaptive low-rank. The legacy alias `:adaptive` remains
+supported. It builds a stable snapshot master, fits all actual
 time rows, then uses blocked QR/small SVD and paired residual checks to select
 the final shared rank. K, J and the parent cap start at 128, 512 and 32;
 only a failed check triggers bounded expansion. `shared_rank_max` remains
 the hard parent cap. `adaptive_options` forwards resource and evaluation
-keywords to `adaptive_spatial_basis`; `rsvd_seed` and `rsvd_chunk`
+keywords to `joint_adaptive_spatial_basis`; `rsvd_seed` and `rsvd_chunk`
 provide its seed and chunk size. No NFFT setting changes.
 
 The target is the global relative Frobenius error of the pure residual H
@@ -276,7 +282,7 @@ image-error guarantee. `joint_basis_report` receives construction, empirical,
 external-audit and certification states without retaining factor arrays.
 Budget failure fills that report and throws instead of constructing an
 operator from partial factors. Existing `shared_basis_tol` and
-`global_basis_tol` retain their old meanings; adaptive setup requires
+`global_basis_tol` retain their old meanings; Joint adaptive low-rank requires
 `global_basis_tol=nothing` and does not impose `joint_roi_tol`.
 
 The older `:joint` method and its `joint_*` sampling controls remain available
@@ -579,32 +585,35 @@ function HighOrderLowRankOp(
         basis_layout === :per_readout || throw(ArgumentError("CPU factor storage requires basis_layout=:per_readout"))
         arrayType == CuArray || throw(ArgumentError("CPU factor storage with a GPU cache requires arrayType=CuArray"))
     end
-    shared_basis_method in (:rsvd, :joint, :adaptive) || throw(ArgumentError("shared_basis_method must be :rsvd, :joint or :adaptive"))
-    use_adaptive_basis = shared_basis_method === :adaptive
-    if use_adaptive_basis
+    shared_basis_method === :rsvd && (shared_basis_method = :shared_low_rank)
+    shared_basis_method === :adaptive && (shared_basis_method = :joint_adaptive_low_rank)
+    shared_basis_method in (:shared_low_rank, :joint, :joint_adaptive_low_rank) || throw(ArgumentError(
+        "shared_basis_method must be :shared_low_rank, :joint or :joint_adaptive_low_rank; legacy aliases :rsvd and :adaptive remain supported"))
+    use_joint_adaptive_basis = shared_basis_method === :joint_adaptive_low_rank
+    if use_joint_adaptive_basis
         isnothing(joint_basis_report) || (joint_basis_report[] = (
             construction_status=:not_computed, empirical_status=:not_evaluated,
             certification_status=:not_requested, external_audit_status=:not_requested,
             error_metric=:global_relative_frobenius, failure_reason=:not_completed, rank=0))
-        isnothing(epsilon_H) && throw(ArgumentError("Adaptive basis requires epsilon_H"))
+        isnothing(epsilon_H) && throw(ArgumentError("Joint adaptive low-rank requires epsilon_H"))
         isfinite(epsilon_H) && 0 < epsilon_H < 1 || throw(ArgumentError("epsilon_H must lie in (0,1)"))
-        isnothing(joint_roi_tol) || throw(ArgumentError("Adaptive basis uses global H error, not joint_roi_tol"))
+        isnothing(joint_roi_tol) || throw(ArgumentError("Joint adaptive low-rank uses global H error, not joint_roi_tol"))
         any(k -> k in (:epsilon_H, :arrayType, :seed, :chunk_size, :rank_max), keys(adaptive_options)) &&
             throw(ArgumentError("Use the constructor keywords for epsilon_H, arrayType, rsvd_seed, rsvd_chunk and shared_rank_max"))
     else
-        isnothing(epsilon_H) && isempty(adaptive_options) || throw(ArgumentError("epsilon_H and adaptive_options require shared_basis_method=:adaptive"))
+        isnothing(epsilon_H) && isempty(adaptive_options) || throw(ArgumentError("epsilon_H and adaptive_options require shared_basis_method=:joint_adaptive_low_rank (legacy alias :adaptive)"))
     end
     if basis_layout === :per_readout
-        shared_basis_method === :rsvd || throw(ArgumentError("basis_layout=:per_readout requires shared_basis_method=:rsvd"))
+        shared_basis_method === :shared_low_rank || throw(ArgumentError("basis_layout=:per_readout requires the rSVD front end, shared_basis_method=:shared_low_rank (legacy alias :rsvd)"))
         isnothing(global_basis_tol) || throw(ArgumentError("basis_layout=:per_readout does not support global_basis_tol"))
     end
     isempty(gpus) && throw(ArgumentError("gpus must contain at least one GPU id"))
     length(unique(gpus)) == length(gpus) || throw(ArgumentError("gpus contains duplicate GPU ids: $gpus"))
 
     is_gpu = arrayType == CuArray
-    use_joint_basis = shared_basis_method in (:joint, :adaptive)
+    use_joint_basis = shared_basis_method in (:joint, :joint_adaptive_low_rank)
     if use_joint_basis
-        isnothing(global_basis_tol) || throw(ArgumentError("shared_basis_method=:joint requires global_basis_tol=nothing to preserve its validation"))
+        isnothing(global_basis_tol) || throw(ArgumentError("shared_basis_method=$shared_basis_method requires global_basis_tol=nothing to preserve its validation"))
         rsvd_distribution !== :voxel || throw(ArgumentError("Joint basis setup uses the primary device; use rsvd_distribution=:auto or :single"))
         nCol <= typemax(Int32) || throw(ArgumentError("Joint operator grid indices exceed Int32"))
     end
@@ -618,8 +627,8 @@ function HighOrderLowRankOp(
     !use_joint_basis && (rsvd_distribution === :voxel || (rsvd_distribution === :auto && is_gpu && length(gpus) > 1 && rsvd_finalize === :gram && rsvd_backend === :kernel))
 
     if normal_distribution === :rank
-        basis_layout === :shared && (use_distributed_rsvd || use_adaptive_basis) || throw(ArgumentError(
-            "normal_distribution=:rank requires shared, voxel-distributed rSVD or adaptive basis"))
+        basis_layout === :shared && (use_distributed_rsvd || use_joint_adaptive_basis) || throw(ArgumentError(
+            "normal_distribution=:rank requires shared, voxel-distributed rSVD or Joint adaptive low-rank"))
     end
 
     if shared_noadd_check
@@ -726,8 +735,8 @@ function HighOrderLowRankOp(
         )
         shared_rank = L_rank
         shared_errors = T[]
-    elseif use_adaptive_basis
-        result = adaptive_spatial_basis(times_host, fieldmap_host, bf_err_host, kspha_err_host;
+    elseif use_joint_adaptive_basis
+        result = joint_adaptive_spatial_basis(times_host, fieldmap_host, bf_err_host, kspha_err_host;
             epsilon_H, arrayType, rank_max=effective_shared_rank_max,
             seed=rsvd_seed, chunk_size=rsvd_chunk, adaptive_options...)
         joint_report = (; (k => v for (k, v) in pairs(result) if k ∉ (:q, :S))...)

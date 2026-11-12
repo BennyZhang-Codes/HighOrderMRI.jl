@@ -4,7 +4,7 @@ function test_adaptive_operator(arrayType, nZ; gpus=[0], normal_distribution=:si
     options = (; selection_pairs=4000, acceptance_pairs=12000)
     op = HighOrderLowRankOp(d.grid, d.kspha, d.times;
         d.fieldmap, d.csm, d.mask, arrayType, gpus, normal_distribution,
-        shared_basis_method=:adaptive, epsilon_H=0.01, adaptive_options=options,
+        shared_basis_method=:joint_adaptive_low_rank, epsilon_H=0.01, adaptive_options=options,
         joint_basis_report=report, rsvd_chunk=23)
     try
         @test report[].empirical_status === :passed
@@ -37,7 +37,7 @@ function test_adaptive_operator(arrayType, nZ; gpus=[0], normal_distribution=:si
         d.fieldmap, d.csm, d.mask, shared_basis_method=:adaptive)
 end
 
-@testset "Adaptive operator integration" begin
+@testset "Joint adaptive low-rank operator integration" begin
     for nZ in (1, 8)
         test_adaptive_operator(Array, nZ)
     end
@@ -64,6 +64,33 @@ end
             end
         finally
             AbstractNFFTs.set_active_backend!(previous)
+        end
+    end
+end
+
+@testset "Low-rank method names and compatibility" begin
+    d = joint_operator_test_problem(1)
+    common = (; d.fieldmap, d.csm, d.mask, L_rank=6, rsvd_oversample=3, rsvd_chunk=23)
+    for (method, legacy, layout) in (
+        (:shared_low_rank, :rsvd, :shared),
+        (:shared_low_rank, :rsvd, :per_readout),
+        (:joint_adaptive_low_rank, :adaptive, :shared),
+    )
+        options = method === :joint_adaptive_low_rank ?
+            (; epsilon_H=0.01, adaptive_options=(; selection_pairs=4000, acceptance_pairs=12000)) : (;)
+        op = old = nothing
+        try
+            op = HighOrderLowRankOp(d.grid, d.kspha, d.times;
+                common..., basis_layout=layout, shared_basis_method=method, options...)
+            old = HighOrderLowRankOp(d.grid, d.kspha, d.times;
+                common..., basis_layout=layout, shared_basis_method=legacy, options...)
+            @test size(op) == size(old)
+            @test op.q == old.q
+            @test op.basis == old.basis
+            @test op * d.x == old * d.x
+        finally
+            isnothing(op) || close(op)
+            isnothing(old) || close(old)
         end
     end
 end
