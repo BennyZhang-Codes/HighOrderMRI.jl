@@ -3,10 +3,10 @@ function plan_main(args)
     output = required_option(options, "--output")
     event, ref = get(ENV, "GITHUB_EVENT_NAME", ""), get(ENV, "GITHUB_REF", "")
     payload = read_json(ENV["GITHUB_EVENT_PATH"])
-    preview = event == "pull_request"
-    preview || validate_context(get(ENV, "GITHUB_REPOSITORY", ""), event, ref, payload)
+    preview = is_preview(event, ref)
+    event == "pull_request" || validate_context(get(ENV, "GITHUB_REPOSITORY", ""), event, ref, payload)
     release_tag = get(ENV, "RELEASE_TAG", "")
-    require(isempty(release_tag) || event == "workflow_dispatch" && ref in last.(SOURCE_REFS),
+    require(isempty(release_tag) || event == "workflow_dispatch" && ref in CODE_REFS,
             "Manual release backfills must run from a code branch")
     source = git(pwd(), "rev-parse", "HEAD")
     saved = git_status(pwd(), "show", "refs/remotes/origin/gh-pages:versions.json")
@@ -34,14 +34,16 @@ function archive_main(args)
     options = command_options(args, ["--artifact-tar", "--site", "--source-sha"])
     artifact, site, source = (required_option(options, key) for key in ("--artifact-tar", "--site", "--source-sha"))
     payload = read_json(ENV["GITHUB_EVENT_PATH"])
+    require(!is_preview(get(ENV, "GITHUB_EVENT_NAME", ""), get(ENV, "GITHUB_REF", "")),
+            "Check-only events cannot publish documentation")
     validate_context(get(ENV, "GITHUB_REPOSITORY", ""), get(ENV, "GITHUB_EVENT_NAME", ""), get(ENV, "GITHUB_REF", ""), payload)
     require(0 < filesize(artifact) <= MAX_BYTES, "Artifact exceeds the supported size")
     extract_tar(read(artifact), site)
     plan = read_json(joinpath(site, "publication-plan.json"))
     require(get(plan, "source_sha", nothing) == source, "Build plan does not match the checked source")
     targets = Dict(row["version"] => row for row in plan["targets"])
-    code = Dict("schema_version" => 1, "code_sha" => targets["dev"]["code_sha"], "main_sha" => targets["main"]["code_sha"],
-                "dev_docs_sha" => targets["dev"]["docs_sha"], "main_docs_sha" => targets["main"]["docs_sha"])
+    code = Dict("schema_version" => 1, "code_sha" => targets["dev"]["code_sha"],
+                "dev_docs_sha" => targets["dev"]["docs_sha"])
     releases = Dict("schema_version" => 1, "stable" => plan["stable"], "releases" => plan["releases"])
     manifest = validate_site(site, code, releases)
     result = publish(pwd(), abspath(site), source, manifest; source_ref=ENV["GITHUB_REF"])

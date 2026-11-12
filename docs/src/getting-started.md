@@ -149,10 +149,11 @@ selected code commits. Publication, page validation and preview tools use an
 independent Julia environment in `docs/publish`; PyCall/PyPlot remain the
 existing plotting backend for package examples.
 
-Pushes to `dev_jinyuan` publish `dev/`; pushes to `main` publish `main/`.
+Pushes to `dev_jinyuan` publish `dev/`; pushes to `main` only check candidates.
 A published, non-prerelease `vX.Y.Z` release adds its version directory and
 advances `stable/` to the newest formal release. The root URL opens stable.
-Pull requests build labelled candidates without publishing.
+Pull requests build labelled candidates without publishing. Published navigation
+contains `dev/`, `stable/` and formal versions.
 
 The workflow resolves exact code and documentation commits at build time.
 Branch pages use the `docs/` stored with their code commit; new release pages

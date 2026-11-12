@@ -15,7 +15,8 @@ import URIs
 const REPOSITORY = "BennyZhang-Codes/HighOrderMRI.jl"
 const COMMIT_NAME = "BennyZhang-Codes"
 const COMMIT_EMAIL = "57568342+BennyZhang-Codes@users.noreply.github.com"
-const SOURCE_REFS = ("dev" => "refs/heads/dev_jinyuan", "main" => "refs/heads/main")
+const SOURCE_REFS = ("dev" => "refs/heads/dev_jinyuan",)
+const CODE_REFS = ("refs/heads/dev_jinyuan", "refs/heads/main")
 const ARCHIVE_REF = "refs/heads/gh-pages"
 const LEGACY_DOCS_SOURCE = "4bf8a2e45bfa703db13fc0796e2c4b205de4429c"
 const SHA_PATTERN = r"\A[0-9a-f]{40}\z"
@@ -25,6 +26,7 @@ const MAX_BYTES = 1024^3
 require(condition, message) = condition || throw(ArgumentError(message))
 is_sha(value) = value isa AbstractString && occursin(SHA_PATTERN, value)
 is_version(value) = value isa AbstractString && occursin(VERSION_PATTERN, value)
+is_preview(event, ref) = event == "pull_request" || event == "push" && ref == "refs/heads/main"
 version_number(value) = (require(is_version(value), "Invalid formal version"); VersionNumber(value[2:end]))
 read_json(path) = JSON.parsefile(path; dicttype=Dict{String,Any})
 parse_json(data) = JSON.parse(data; dicttype=Dict{String,Any})

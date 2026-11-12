@@ -8,11 +8,12 @@ branch is needed.
 ## Branches and releases
 
 - A push to `dev_jinyuan` updates `dev/` from that code commit's own `docs/`.
-- A push to `main` updates `main/` from that code commit's own `docs/`.
+- A push to `main` checks that commit's documentation as an unpublished candidate.
 - Publishing a non-prerelease GitHub Release with a `vMAJOR.MINOR.PATCH` tag
   adds that version and selects the newest formal release as `stable/`.
 - The root URL opens stable. Drafts, prereleases and unpublished tags do not
   advance stable. Pull requests build preview artifacts without deployment.
+  Published navigation contains only `dev/`, `stable/` and formal version directories.
 
 Review the code and its `docs/` content together before tagging a release.
 `Project.toml` must match the tag's version and the tag must belong to main's
