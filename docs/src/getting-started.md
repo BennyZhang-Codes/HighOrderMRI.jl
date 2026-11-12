@@ -161,6 +161,18 @@ The complete preview includes `dev`, `stable`, and all configured versions at `h
 `docs/code-version.json` pins the development code commit. `docs/versions.json` records each formal version's code and documentation commits and the current stable version. When versions use different code commits, prepare one checkout per SHA under a directory supplied through `DOCS_CODE_ROOT`. Release page content, figures, and API mappings come from their frozen documentation commits. The shared theme supplies the version navigation.
 
 A formal build omits `--preview`. It requires matching code tags and preserves every configured historical version. The publishing workflow additionally verifies that each configured release is published and is not a prerelease. API generation and page checks run for each version.
+
+The `docs` branch owns the editable website source and version registry.
+After every version passes its checks, the workflow commits the complete
+generated site to `gh-pages` and deploys that exact archive commit. `gh-pages`
+contains the `dev`, `stable` and release directories; it is maintained by the
+workflow and is not edited as Markdown source. Archive updates retain Git
+history and reject removal or source-identity changes of published releases.
+Pull requests build candidates without writing the archive or deploying;
+superseded source builds do not publish. API docstrings remain on the code
+branches, and new formal versions are registered with their frozen code and
+documentation SHAs in `versions.json`.
+
 To edit interactively, run `npm run docs:generate-api --prefix docs -- --preview` before `npm run docs:dev --prefix docs`; regenerate after source docstring changes. The API fragments are disposable output and are not edited or committed.
 
 ## Reading paths

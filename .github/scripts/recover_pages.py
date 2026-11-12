@@ -61,8 +61,9 @@ def validate_build(jobs, run):
 
 
 def select_artifact(artifacts, run):
-    candidates = [a for a in artifacts if a.get("name") == "github-pages" and a.get("expired") is False]
-    require(len(candidates) == 1, "Expected exactly one unexpired github-pages artifact")
+    checked = [a for a in artifacts if a.get("name") == "checked-documentation-site" and a.get("expired") is False]
+    candidates = checked or [a for a in artifacts if a.get("name") == "github-pages" and a.get("expired") is False]
+    require(len(candidates) == 1, "Expected exactly one unexpired checked Pages artifact")
     artifact = candidates[0]
     metadata = artifact.get("workflow_run", {})
     expected = {"id": run["id"], "head_sha": run["head_sha"], "head_branch": "docs",
@@ -81,6 +82,12 @@ def extract_archive(blob, output, code_sha):
         require(len(entries) == 1 and entries[0].filename == "artifact.tar", "ZIP must contain only artifact.tar")
         require(0 < entries[0].file_size <= MAX_BYTES, "TAR exceeds the supported size")
         raw = archive.read(entries[0])  # Includes ZIP CRC verification.
+    return extract_tar(raw, output, code_sha)
+
+
+def extract_tar(raw, output, code_sha):
+    require(re.fullmatch(r"[0-9a-f]{40}", code_sha), "Invalid configured code SHA")
+    require(0 < len(raw) <= MAX_BYTES, "TAR exceeds the supported size")
     with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as archive:
         members, folded, total = {}, set(), 0
         for member in archive:
