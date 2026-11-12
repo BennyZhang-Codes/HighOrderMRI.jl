@@ -13,7 +13,8 @@ import zipfile
 
 
 WORKFLOW = ".github/workflows/documentation.yml"
-BUILD_JOB = "Build checked VitePress dev documentation"
+BUILD_JOB = "Build checked VitePress versions"
+LEGACY_BUILD_JOB = "Build checked VitePress dev documentation"
 MAX_BYTES = 1024 ** 3
 
 
@@ -53,7 +54,7 @@ def validate_source(run, repository, run_id, source_tree, current_tree, current_
 
 
 def validate_build(jobs, run):
-    require(any(job.get("name") == BUILD_JOB and job.get("run_id") == run["id"]
+    require(any(job.get("name") in (BUILD_JOB, LEGACY_BUILD_JOB) and job.get("run_id") == run["id"]
                 and job.get("head_sha") == run["head_sha"]
                 and job.get("status") == "completed" and job.get("conclusion") == "success"
                 for job in jobs), "No successful checked build job at the source SHA")

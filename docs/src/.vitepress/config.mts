@@ -1,17 +1,22 @@
 import { defineConfig } from 'vitepress'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { mermaidPlugin } from './plugins/vitepress-mermaid/index'
 
 const siteUrl = 'https://bennyzhang-codes.github.io/HighOrderMRI.jl'
 const docsVersion = process.env.DOCS_VERSION || 'dev'
 const docsBase = process.env.DOCS_BASE || '/HighOrderMRI.jl/dev/'
 const editRef = 'docs'
+const jointPages = existsSync(new URL('../theory/joint-adaptive-low-rank.md', import.meta.url))
+const lowRankItems = [
+  { text: 'Shared low-rank', link: '/theory/low-rank' },
+  ...(jointPages ? [{ text: 'Joint adaptive low-rank', link: '/theory/joint-adaptive-low-rank' }] : []),
+]
 const apiMeta = JSON.parse(readFileSync(new URL('../../.generated/api/build-meta.json', import.meta.url), 'utf8'))
 const candidatePreview = apiMeta.preview === true
 const codeLabel = apiMeta.codeRef.slice(0, 7)
-const versionItems = [
-  { text: 'dev · current', link: `${siteUrl}/dev/` },
-]
+const versionItems = JSON.parse(process.env.DOCS_VERSION_ITEMS || JSON.stringify([{ text: 'dev', link: `${siteUrl}/dev/` }])).map(item => ({ ...item, target: '_self' }))
+const versionLabel = docsVersion === 'stable' ? `stable · ${process.env.DOCS_RELEASE_VERSION}` : docsVersion
+const frozenDocs = process.env.DOCS_DOCS_SHA || ''
 
 export default defineConfig({
   title: 'HighOrderMRI.jl',
@@ -58,8 +63,7 @@ export default defineConfig({
         items: [
           { text: 'Symbols & notation', link: '/theory/symbols' },
           { text: 'Expanded encoding model', link: '/theory/encoding-model' },
-          { text: 'Shared low-rank', link: '/theory/low-rank' },
-          { text: 'Joint adaptive low-rank', link: '/theory/joint-adaptive-low-rank' },
+          ...lowRankItems,
         ],
       },
       {
@@ -100,7 +104,7 @@ export default defineConfig({
         ],
       },
       {
-        text: docsVersion,
+        text: versionLabel,
         items: versionItems,
       },
     ],
@@ -117,7 +121,7 @@ export default defineConfig({
         items: [
           { text: 'Symbols & notation', link: '/theory/symbols' },
           { text: 'Expanded encoding model', link: '/theory/encoding-model' },
-          { text: 'Low-rank shared subspace', link: '/theory/low-rank' },
+          ...lowRankItems,
         ],
       },
       {
@@ -215,12 +219,12 @@ export default defineConfig({
       level: [2, 3],
       label: 'On this page',
     },
-    editLink: {
+    editLink: docsVersion === 'dev' ? {
       pattern: `https://github.com/BennyZhang-Codes/HighOrderMRI.jl/edit/${editRef}/docs/src/:path`,
       text: 'Edit this page on GitHub',
-    },
+    } : undefined,
     footer: {
-      message: `HighOrderMRI.jl documentation · ${docsVersion} · code ${codeLabel}${candidatePreview ? " + local candidate changes" : ""}`,
+      message: `HighOrderMRI.jl documentation · ${versionLabel} · code ${codeLabel}${frozenDocs ? ` · docs ${frozenDocs.slice(0, 7)}` : ""}${candidatePreview ? " + local candidate changes" : ""}`,
       copyright: 'HighOrderMRI.jl contributors',
     },
   },

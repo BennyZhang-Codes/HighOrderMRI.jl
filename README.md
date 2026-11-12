@@ -19,7 +19,7 @@ HighOrderMRI.jl is a Julia toolbox for Cartesian and non-Cartesian MRI reconstru
 
 ## Documentation
 
-The current development documentation is available at [HighOrderMRI.jl/dev](https://bennyzhang-codes.github.io/HighOrderMRI.jl/dev/). The `docs` branch builds VitePress and deploys a complete Pages artifact directly through GitHub Actions. This workflow builds only `/dev/`, bound to an explicit code commit. Source docstrings supply the API reference, with interface and CPU example checks on the code branch.
+The current development documentation is available at [HighOrderMRI.jl/dev](https://bennyzhang-codes.github.io/HighOrderMRI.jl/dev/). The `docs` branch builds VitePress and deploys a complete Pages artifact directly through GitHub Actions. The site publishes `/dev/`, `/stable/`, and each version listed in `docs/versions.json`. The root URL opens stable. Development follows a pinned main commit. Each formal version pins its code commit, page content, figures and API mapping. The shared site theme supplies the version menu. Source docstrings supply the API reference, with interface and CPU example checks on the code branch.
 
 This branch contains the website in `docs/` and its build configuration. Package source, tests and demo data are maintained on the code branches. To preview the website, prepare a separate code checkout with its Julia dependencies, then run from this checkout:
 
@@ -30,7 +30,7 @@ npm run docs:build-site --prefix docs -- --preview
 npm run docs:preview --prefix docs
 ```
 
-See [local documentation builds](https://bennyzhang-codes.github.io/HighOrderMRI.jl/dev/getting-started#build-the-documentation-locally) for prerequisites. Formal builds omit `--preview` and require a clean code checkout at the full SHA recorded in `docs/code-version.json`.
+See [local documentation builds](https://bennyzhang-codes.github.io/HighOrderMRI.jl/dev/getting-started#build-the-documentation-locally) for prerequisites. Complete-site candidate builds use exact clean code checkouts too. `docs/code-version.json` pins dev. `docs/versions.json` records release code and documentation commits and the newest stable version. Set `DOCS_CODE_ROOT` to a directory containing one checkout per full code SHA when versions use different code commits. Formal builds omit `--preview` and require matching version tags. CI also verifies published, non-prerelease GitHub Releases. See `docs/RELEASING.md` for the release procedure.
 
 The documentation contains:
 

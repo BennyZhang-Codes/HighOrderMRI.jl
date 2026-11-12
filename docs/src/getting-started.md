@@ -20,6 +20,8 @@ cd HighOrderMRI-code
 julia --project=. -e 'using Pkg; Pkg.instantiate()'
 ```
 
+For a release installation, run `git checkout` with the tag displayed in the version menu after `cd` and before `Pkg.instantiate()`. The full code commit shown in the footer selects the exact documented implementation.
+
 Start Julia in that environment:
 
 ```bash
@@ -154,8 +156,11 @@ npm run docs:build-site --prefix docs -- --preview
 npm run docs:preview --prefix docs
 ```
 
-The local preview is labelled with the configured code baseline and local-source status. A formal build omits `--preview` and requires a clean code checkout at the exact full SHA in `docs/code-version.json`, including the documentation tools and corrected docstrings. The build generates API fragments, checks contracts, builds only `dev`, and checks the resulting pages. There is no stable or historical-version build in this workflow.
+The complete preview includes `dev`, `stable`, and all configured versions at `http://localhost:8775/HighOrderMRI.jl/`. The root URL opens stable. Candidates carry a visible preview label and use exact clean code checkouts.
 
+`docs/code-version.json` pins the development code commit. `docs/versions.json` records each formal version's code and documentation commits and the current stable version. When versions use different code commits, prepare one checkout per SHA under a directory supplied through `DOCS_CODE_ROOT`. Release page content, figures, and API mappings come from their frozen documentation commits. The shared theme supplies the version navigation.
+
+A formal build omits `--preview`. It requires matching code tags and preserves every configured historical version. The publishing workflow additionally verifies that each configured release is published and is not a prerelease. API generation and page checks run for each version.
 To edit interactively, run `npm run docs:generate-api --prefix docs -- --preview` before `npm run docs:dev --prefix docs`; regenerate after source docstring changes. The API fragments are disposable output and are not edited or committed.
 
 ## Reading paths

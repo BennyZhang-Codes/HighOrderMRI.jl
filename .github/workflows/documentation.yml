@@ -29,27 +29,34 @@ env:
 
 jobs:
   build:
-    name: Build checked VitePress dev documentation
+    name: Build checked VitePress versions
     if: ${{ !inputs.artifact_run_id }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - name: Check deployment recovery and live-site validation
         run: python3 -m unittest discover -s .github/scripts -p 'test_*.py'
-      - name: Read pinned code commit
-        id: version
-        shell: bash
+      - name: Validate version sources
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DOCS_CANDIDATE: ${{ github.event_name == 'pull_request' }}
         run: |
-          node --input-type=module -e '
-          import { readFileSync, appendFileSync } from "node:fs";
-          const config = JSON.parse(readFileSync("docs/code-version.json", "utf8"));
-          if (config.schema_version !== 1 || !/^[0-9a-f]{40}$/.test(config.code_sha)) throw new Error("Invalid code_sha");
-          appendFileSync(process.env.GITHUB_OUTPUT, "sha=" + config.code_sha + "\n");'
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ steps.version.outputs.sha }}
-          path: _code
+          if [ "$DOCS_CANDIDATE" = true ]; then
+            python3 .github/scripts/verify_releases.py --allow-unpublished
+          else
+            python3 .github/scripts/verify_releases.py
+          fi
+      - name: Prepare pinned code checkouts
+        run: |
+          node docs/scripts/versions.mjs docs --code-shas > "$RUNNER_TEMP/docs-code-shas"
+          mkdir -p "$RUNNER_TEMP/docs-code"
+          while IFS= read -r code_sha; do
+            git worktree add --detach "$RUNNER_TEMP/docs-code/$code_sha" "$code_sha"
+          done < "$RUNNER_TEMP/docs-code-shas"
+          echo "DOCS_CODE_ROOT=$RUNNER_TEMP/docs-code" >> "$GITHUB_ENV"
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -61,28 +68,29 @@ jobs:
       - name: Prepare isolated Julia environment
         run: echo "JULIA_DEPOT_PATH=$RUNNER_TEMP/docs-julia-depot" >> "$GITHUB_ENV"
       - name: Instantiate pinned code dependencies
-        shell: julia --startup-file=no --project=_code {0}
         run: |
-          using Pkg
-          Pkg.instantiate(; allow_autoprecomp=false)
-          ENV["PYTHON"] = ""
-          Pkg.build("PyCall")
-          @assert Base.find_package("Documenter") === nothing
+          while IFS= read -r code_sha; do
+            julia --startup-file=no --project="$DOCS_CODE_ROOT/$code_sha" -e '
+              using Pkg
+              Pkg.instantiate(; allow_autoprecomp=false)
+              ENV["PYTHON"] = ""
+              Pkg.build("PyCall")
+              @assert Base.find_package("Documenter") === nothing'
+          done < "$RUNNER_TEMP/docs-code-shas"
       - name: Install locked website dependencies
         run: npm ci --prefix docs --no-audit --no-fund
-      - name: Check tools and CPU examples
+      - name: Check website tools
+        run: npm run docs:check-tools --prefix docs
+      - name: Build all checked versions and CPU examples
         env:
-          DOCS_API_MAP: ${{ github.workspace }}/docs/api-map.toml
-          DOCS_SITE_PATH: ${{ github.workspace }}/docs
+          DOCS_CHECK_EXAMPLES: '1'
+          DOCS_CANDIDATE: ${{ github.event_name == 'pull_request' }}
         run: |
-          npm run docs:check-tools --prefix docs
-          julia --startup-file=no _code/scripts/docs/test_contract_check.jl
-          julia --startup-file=no --project=_code _code/scripts/docs/test_export_api.jl
-          julia --startup-file=no --project=_code _code/scripts/docs/check_examples.jl
-      - name: Build checked dev site
-        env:
-          DOCS_CODE_PATH: ${{ github.workspace }}/_code
-        run: npm run docs:build-site --prefix docs
+          if [ "$DOCS_CANDIDATE" = true ]; then
+            npm run docs:build-site --prefix docs -- --preview
+          else
+            npm run docs:build-site --prefix docs
+          fi
       - name: Upload Pages artifact
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/docs'
         uses: actions/upload-pages-artifact@v4
@@ -118,7 +126,7 @@ jobs:
     if: ${{ !cancelled() && github.event_name != 'pull_request' && github.ref == 'refs/heads/docs' && (needs.build.result == 'success' || needs.recover.result == 'success') }}
     needs: [build, recover]
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     permissions:
       contents: read
       pages: write

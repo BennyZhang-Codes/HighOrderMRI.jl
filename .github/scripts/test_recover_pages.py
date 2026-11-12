@@ -47,6 +47,9 @@ def fixture(extra=(), missing=(), code_sha=SHA, zip_name="artifact.tar"):
 
 
 class SourceTests(unittest.TestCase):
+    def test_previous_checked_job_name_remains_supported(self):
+        recovery.validate_build([dict(JOB, name=recovery.LEGACY_BUILD_JOB)], RUN)
+
     def test_completed_run_with_failed_deployment_is_allowed(self):
         recovery.validate_source(RUN, REPOSITORY, 123, "tree", "tree", CURRENT_SHA)
         recovery.validate_build([JOB], RUN)
