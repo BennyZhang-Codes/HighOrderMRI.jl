@@ -25,38 +25,6 @@ operator for large 2D and 3D reconstruction.
   ([Dubovan and Baron, 2023](https://doi.org/10.1002/mrm.29460)).
 - Raw complex reconstruction metrics and encoding-convention regression tests.
 
-## Experimental automatic H rank
-
-The default remains local rSVD with the existing sharing tolerances. To select
-the final shared rank using a global residual-phase tolerance, opt in explicitly:
-
-```julia
-report = Ref{Any}()
-op = HighOrderLowRankOp(grid, kspha, times;
-    fieldmap, csm, mask,
-    shared_basis_method=:adaptive, epsilon_H=0.01,
-    joint_basis_report=report)
-```
-
-This targets the **empirically estimated** relative Frobenius error of the pure
-residual `H ≈ q*S'` over all readouts and masked voxels. It does not certify a
-probability bound, worst-region error or reconstruction-image error. Construction
-starts at K128/J512/parent32 and expands only after a failed check, within finite
-resource budgets. `adaptive_options` can override these budgets; the source
-docstring lists the controls. Budget exhaustion throws and leaves a failure
-report. An independent final audit is not silently inferred from internal checks.
-The old `shared_basis_tol` and `global_basis_tol` meanings, precision and NFFT
-settings are unchanged.
-
-For an optional finite uniform-box voxel model, compute
-`a = HighOrderMRI.voxel_aperture(grid, k_first_order)` from the same prepared first-order
-coefficients used by the operator. Pass it as
-`recon_HOOp(op, Data, weight, recParams; encoding_weights=a)`; on CUDA, move `a`
-to the same backend as the raw weights. Only the encoding receives this factor;
-data receive the raw weights once. This integrates the linear phase over a voxel,
-and treats other spatial factors as constant inside it. Point-voxel reconstruction
-remains the default. Close the operator after its final use.
-
 ## Documentation
 
 The [development documentation](https://bennyzhang-codes.github.io/HighOrderMRI.jl/dev/)
