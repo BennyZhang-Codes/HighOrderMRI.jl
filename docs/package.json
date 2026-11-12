@@ -6,7 +6,7 @@
     "docs:dev": "vitepress src",
     "docs:build": "node build-site.mjs",
     "docs:build-site": "node build-site.mjs",
-    "docs:preview": "python3 scripts/serve-site.py",
+    "docs:preview": "julia --startup-file=no --project=publish publish/run.jl preview",
     "docs:generate-api": "node scripts/prepare-api.mjs",
     "docs:build-dev": "node scripts/build-dev.mjs",
     "docs:check-tools": "node --test scripts/*.test.mjs"

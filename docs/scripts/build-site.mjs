@@ -127,7 +127,7 @@ export function buildSite({ argv = process.argv.slice(2), env = process.env, doc
       const record = { ...target, preview, api_map_sha256: api.apiMapSha256 }
       writeFileSync(join(output, 'version.json'), JSON.stringify(record, null, 2) + '\n')
       records.push(record)
-      runChecked(run, env.PYTHON_FOR_DOCS || 'python3', [join(root, 'scripts', 'check-site.py'), input, output, `${sitePath}${target.version}/`, target.version], { stdio: 'inherit', env })
+      runChecked(run, env.JULIA || 'julia', ['--startup-file=no', `--project=${join(root, 'publish')}`, join(root, 'publish', 'run.jl'), 'check-site', input, output, `${sitePath}${target.version}/`, target.version], { stdio: 'inherit', env })
     }
     writeFileSync(join(stage, 'versions.json'), JSON.stringify({ schema_version: 1, stable: plan.stable, preview, versions: records }, null, 2) + '\n')
     if (plan.source_sha) writeFileSync(join(stage, 'publication-plan.json'), JSON.stringify(plan, null, 2) + '\n')

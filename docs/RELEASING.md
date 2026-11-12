@@ -54,9 +54,13 @@ The generated `publication-plan.json`, per-version `version.json` and root
 pins; automated publication resolves its own plan instead of editing these
 files. Prepare one clean code worktree per required full SHA under
 `DOCS_CODE_ROOT`, or use `DOCS_CODE_PATH` when every target shares one code
-commit. Use Node.js 22, Python 3.11 or later and compatible Julia:
+commit. Use Node.js 22 and compatible Julia. The independent `docs/publish`
+environment supplies JSON, HTML/XML and HTTP support for publication and
+validation; it does not change the package's runtime dependencies or plotting
+backend.
 
 ```bash
+julia --startup-file=no --project=docs/publish -e 'using Pkg; Pkg.instantiate()'
 npm ci --prefix docs
 export DOCS_CODE_ROOT=/absolute/path/to/prepared-code-checkouts
 export DOCS_CHECK_EXAMPLES=1

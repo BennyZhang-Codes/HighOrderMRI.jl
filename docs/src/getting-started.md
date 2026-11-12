@@ -144,8 +144,10 @@ Use the default centred Cartesian grid on active NFFT axes; editing coordinate v
 ## Build the documentation locally
 
 The website source lives in this package's `docs/` directory on `main` and
-`dev_jinyuan`. It uses VitePress with Node.js 22, Python 3.11 or later and
-Julia compatible with the selected code commits.
+`dev_jinyuan`. It uses VitePress with Node.js 22 and Julia compatible with the
+selected code commits. Publication, page validation and preview tools use an
+independent Julia environment in `docs/publish`; PyCall/PyPlot remain the
+existing plotting backend for package examples.
 
 Pushes to `dev_jinyuan` publish `dev/`; pushes to `main` publish `main/`.
 A published, non-prerelease `vX.Y.Z` release adds its version directory and
@@ -178,6 +180,7 @@ For a local fixed-snapshot preview, prepare exact clean code checkouts under
 `DOCS_CODE_ROOT`, one directory per full code SHA, then run:
 
 ```bash
+julia --startup-file=no --project=docs/publish -e 'using Pkg; Pkg.instantiate()'
 npm ci --prefix docs
 export DOCS_CODE_ROOT=/absolute/path/to/prepared-code-checkouts
 export DOCS_CHECK_EXAMPLES=1
