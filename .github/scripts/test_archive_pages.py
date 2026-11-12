@@ -125,6 +125,8 @@ class GitTests(unittest.TestCase):
     def test_first_archive_incremental_update_and_same_site(self):
         first = archive.publish(self.repo, self.site, self.source, self.manifest)
         self.assertTrue(first["publish"] and first["updated"])
+        self.assertEqual(archive.git(self.repo, "show", "-s", "--format=%an|%ae|%cn|%ce", first["sha"]),
+                         "|".join([archive.COMMIT_NAME, archive.COMMIT_EMAIL] * 2))
         files = archive.git(self.repo, "ls-tree", "--name-only", first["sha"]).splitlines()
         self.assertEqual(set(files), {".nojekyll", "archive-info.json", "index.html", "versions.json", "dev", "stable", "v0.1.0"})
         self.assertNotIn("source.md", files)

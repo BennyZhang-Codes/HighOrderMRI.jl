@@ -10,7 +10,7 @@ import tempfile
 import tomllib
 
 sys.dont_write_bytecode = True
-from archive_pages import REPOSITORY, SHA, SOURCE_REF, VERSION, git, remote_ref, require
+from archive_pages import COMMIT_EMAIL, COMMIT_NAME, REPOSITORY, SHA, SOURCE_REF, VERSION, git, remote_ref, require
 from verify_releases import formal_releases, validate_release_metadata
 
 
@@ -69,10 +69,8 @@ def metadata_commit(repo, parent, code, releases):
         tree = git(repo, "write-tree", env=env)
     if git(repo, "rev-parse", f"{parent}^{{tree}}") == tree:
         return parent
-    author = dict(os.environ, GIT_AUTHOR_NAME="github-actions[bot]",
-                  GIT_AUTHOR_EMAIL="41898282+github-actions[bot]@users.noreply.github.com",
-                  GIT_COMMITTER_NAME="github-actions[bot]",
-                  GIT_COMMITTER_EMAIL="41898282+github-actions[bot]@users.noreply.github.com")
+    author = dict(os.environ, GIT_AUTHOR_NAME=COMMIT_NAME, GIT_AUTHOR_EMAIL=COMMIT_EMAIL,
+                  GIT_COMMITTER_NAME=COMMIT_NAME, GIT_COMMITTER_EMAIL=COMMIT_EMAIL)
     return git(repo, "commit-tree", tree, "-p", parent, "-m", "docs: synchronize code branches and published releases", env=author)
 
 

@@ -14,6 +14,8 @@ from recover_pages import MAX_BYTES, extract_tar
 
 
 REPOSITORY = "BennyZhang-Codes/HighOrderMRI.jl"
+COMMIT_NAME = "BennyZhang-Codes"
+COMMIT_EMAIL = "57568342+BennyZhang-Codes@users.noreply.github.com"
 SOURCE_REF = "refs/heads/docs"
 ARCHIVE_REF = "refs/heads/gh-pages"
 SHA = r"[0-9a-f]{40}"
@@ -121,10 +123,8 @@ def publish(repo, site, source_sha, manifest):
         tree = git(repo, "write-tree", env=env)
     if parent and git(repo, "rev-parse", f"{parent}^{{tree}}") == tree:
         return {"publish": True, "sha": parent, "updated": False}
-    author = dict(os.environ, GIT_AUTHOR_NAME="github-actions[bot]",
-                  GIT_AUTHOR_EMAIL="41898282+github-actions[bot]@users.noreply.github.com",
-                  GIT_COMMITTER_NAME="github-actions[bot]",
-                  GIT_COMMITTER_EMAIL="41898282+github-actions[bot]@users.noreply.github.com")
+    author = dict(os.environ, GIT_AUTHOR_NAME=COMMIT_NAME, GIT_AUTHOR_EMAIL=COMMIT_EMAIL,
+                  GIT_COMMITTER_NAME=COMMIT_NAME, GIT_COMMITTER_EMAIL=COMMIT_EMAIL)
     args = ["commit-tree", tree]
     if parent:
         args.extend(["-p", parent])

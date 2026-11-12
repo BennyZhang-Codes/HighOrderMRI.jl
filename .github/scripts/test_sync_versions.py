@@ -83,6 +83,8 @@ class GitTests(unittest.TestCase):
     def test_sync_changes_only_metadata_and_keeps_source_checkout_clean(self):
         result = sync.synchronize(self.repo, [release("v0.1.0")])
         self.assertTrue(result["updated"])
+        self.assertEqual(self.git("show", "-s", "--format=%an|%ae|%cn|%ce", result["docs_sha"]),
+                         "|".join([sync.COMMIT_NAME, sync.COMMIT_EMAIL] * 2))
         self.assertEqual(self.git("rev-parse", "HEAD"), self.source)
         self.assertEqual(self.git("status", "--porcelain"), "")
         self.assertEqual(self.git("diff", "--name-only", self.source, result["docs_sha"]).splitlines(),
