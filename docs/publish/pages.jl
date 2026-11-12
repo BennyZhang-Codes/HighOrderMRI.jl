@@ -294,10 +294,7 @@ function expected_versions(config_path)
     check(get(branches, "schema_version", nothing) === 1 && is_sha(get(branches, "code_sha", nothing)), "Invalid code-version.json")
     config = read_json(joinpath(dirname(config_path), "versions.json"))
     records = Any[Dict("version" => "dev", "code_sha" => branches["code_sha"], "docs_sha" => nothing)]
-    if haskey(branches, "main_sha")
-        check(is_sha(branches["main_sha"]), "Invalid main_sha")
-        push!(records, Dict("version" => "main", "code_sha" => branches["main_sha"], "docs_sha" => nothing))
-    end
+    check(!haskey(branches, "main_sha"), "The main documentation channel is not published")
     append!(records, config["releases"])
     stable = only(filter(row -> row["version"] == config["stable"], config["releases"]))
     push!(records, merge(stable, Dict("version" => "stable", "release" => stable["version"])))

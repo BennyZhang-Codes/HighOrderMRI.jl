@@ -59,10 +59,7 @@ function validate_site(site, code, releases)
     require(is_sha(code["code_sha"]), "Invalid dev code SHA")
     expected["dev"] = (code["code_sha"], get(code, "dev_docs_sha", nothing))
     expected["stable"] = expected[releases["stable"]]
-    if haskey(code, "main_sha")
-        require(is_sha(code["main_sha"]), "Invalid main code SHA")
-        expected["main"] = (code["main_sha"], get(code, "main_docs_sha", nothing))
-    end
+    require(!haskey(code, "main_sha"), "The main documentation channel is not published")
     rows = get(manifest, "versions", [])
     require(length(rows) == length(expected) && Set(get(row, "version", nothing) for row in rows) == Set(keys(expected)),
             "The archive must contain every configured version exactly once")
@@ -75,6 +72,7 @@ function validate_site(site, code, releases)
         require(read_json(joinpath(site, version, "version.json")) == row, "Version metadata does not match the complete-site manifest")
     end
     require(isfile(joinpath(site, "index.html")), "Site index is missing")
+    require(!ispath(joinpath(site, "main")), "The main documentation directory is not published")
     for (directory, directories, files) in walkdir(site; follow_symlinks=false)
         require(!any(name -> islink(joinpath(directory, name)), vcat(directories, files)), "Archive links are not allowed")
     end
@@ -95,10 +93,15 @@ function preserve_releases(previous, current)
     return nothing
 end
 
-function current_sources(repo, manifest; legacy=LEGACY_DOCS_SOURCE)
+function current_sources(repo, manifest; source_sha=nothing, source_ref=nothing, legacy=LEGACY_DOCS_SOURCE)
+    if source_ref !== nothing
+        controller = startswith(source_ref, "refs/tags/") ? "refs/heads/main" : source_ref
+        require(controller in CODE_REFS, "Unexpected publication source ref")
+        remote_ref(repo, controller) == source_sha || return false
+    end
     rows = Dict(row["version"] => row for row in manifest["versions"])
     for (version, ref) in SOURCE_REFS
-        require(haskey(rows, version), "Both code branch versions are required")
+        require(haskey(rows, version), "The development version is required")
         row = rows[version]
         remote_ref(repo, ref) == row["code_sha"] || return false
         require(row["docs_sha"] == documentation_source(repo, row["code_sha"]; legacy), "Branch documentation source mismatch")
@@ -118,7 +121,7 @@ function publish(repo, site, source_sha, manifest; source_ref=nothing, legacy=LE
     require(is_sha(source_sha) && git(repo, "rev-parse", "HEAD") == source_sha,
             "Source checkout does not match the checked workflow commit")
     require(isempty(git(repo, "status", "--porcelain")), "Source checkout must be clean")
-    current_sources(repo, manifest; legacy) || return Dict("publish" => false, "reason" => "superseded_source")
+    current_sources(repo, manifest; source_sha, source_ref, legacy) || return Dict("publish" => false, "reason" => "superseded_source")
     parent = remote_ref(repo, ARCHIVE_REF)
     if parent !== nothing
         git(repo, "fetch", "--no-tags", "origin", ARCHIVE_REF)
@@ -128,7 +131,7 @@ function publish(repo, site, source_sha, manifest; source_ref=nothing, legacy=LE
     touch(joinpath(site, ".nojekyll"))
     rows = Dict(row["version"] => row for row in manifest["versions"])
     info = Dict("schema_version" => 1, "source_ref" => source_ref, "source_sha" => source_sha,
-                "dev_code_sha" => rows["dev"]["code_sha"], "main_code_sha" => rows["main"]["code_sha"],
+                "dev_code_sha" => rows["dev"]["code_sha"],
                 "stable" => manifest["stable"])
     write_json(joinpath(site, "archive-info.json"), info)
     tree = mktempdir() do temporary
@@ -148,7 +151,7 @@ function publish(repo, site, source_sha, manifest; source_ref=nothing, legacy=LE
     parent === nothing || append!(args, ["-p", parent])
     append!(args, ["-m", "Deploy checked documentation from $source_sha"])
     commit = git(repo, args...; env)
-    current_sources(repo, manifest; legacy) || return Dict("publish" => false, "reason" => "superseded_source")
+    current_sources(repo, manifest; source_sha, source_ref, legacy) || return Dict("publish" => false, "reason" => "superseded_source")
     git(repo, "push", "origin", "$commit:$ARCHIVE_REF")
     return Dict("publish" => true, "sha" => commit, "updated" => true)
 end
