@@ -95,6 +95,7 @@ jobs:
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/docs'
         uses: actions/upload-pages-artifact@v4
         with:
+          name: checked-documentation-site
           path: docs/.pages
 
   recover:
@@ -119,6 +120,7 @@ jobs:
       - name: Upload recovered Pages artifact
         uses: actions/upload-pages-artifact@v4
         with:
+          name: checked-documentation-site
           path: ${{ runner.temp }}/recovered-pages
 
   deploy:
@@ -128,7 +130,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
-      contents: read
+      contents: write
       pages: write
       id-token: write
     environment:
@@ -136,12 +138,40 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Download the checked complete site
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: checked-documentation-site
+          path: ${{ runner.temp }}/checked-pages-artifact
+      - name: Update the generated gh-pages archive
+        id: archive
+        run: >-
+          python3 .github/scripts/archive_pages.py
+          --artifact-tar "$RUNNER_TEMP/checked-pages-artifact/artifact.tar"
+          --site "$RUNNER_TEMP/checked-pages-site"
+          --source-sha "$GITHUB_SHA"
+      - name: Prepare the archived Pages tree
+        if: steps.archive.outputs.publish == 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/archived-pages-site"
+          git archive '${{ steps.archive.outputs.sha }}' | tar -xf - -C "$RUNNER_TEMP/archived-pages-site"
+      - name: Upload the archived Pages artifact
+        if: steps.archive.outputs.publish == 'true'
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: ${{ runner.temp }}/archived-pages-site
       - name: Configure GitHub Pages
+        if: steps.archive.outputs.publish == 'true'
         uses: actions/configure-pages@v5
       - name: Deploy Pages artifact
+        if: steps.archive.outputs.publish == 'true'
         id: deployment
         uses: actions/deploy-pages@v4
       - name: Verify the published code revision and pages
+        if: steps.archive.outputs.publish == 'true'
         env:
           PAGES_URL: ${{ steps.deployment.outputs.page_url }}
         run: python3 .github/scripts/check_live_pages.py

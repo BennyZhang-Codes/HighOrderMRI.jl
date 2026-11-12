@@ -47,6 +47,15 @@ def fixture(extra=(), missing=(), code_sha=SHA, zip_name="artifact.tar"):
 
 
 class SourceTests(unittest.TestCase):
+    def test_checked_build_artifact_precedes_published_archive(self):
+        checked = dict(ARTIFACT, id=457, name="checked-documentation-site")
+        self.assertEqual(recovery.select_artifact([ARTIFACT, checked], RUN)["id"], 457)
+
+    def test_duplicate_checked_build_artifacts_are_rejected(self):
+        checked = dict(ARTIFACT, name="checked-documentation-site")
+        with self.assertRaises(ValueError):
+            recovery.select_artifact([checked, checked], RUN)
+
     def test_previous_checked_job_name_remains_supported(self):
         recovery.validate_build([dict(JOB, name=recovery.LEGACY_BUILD_JOB)], RUN)
 
