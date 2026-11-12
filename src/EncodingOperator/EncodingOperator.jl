@@ -16,6 +16,7 @@ include("LowRankApproximation/distributed_rsvd.jl")      # distributed randomize
 include("LowRankApproximation/distributed_factor_gather.jl")
 include("LowRankApproximation/shared_spatial_basis.jl")
 include("LowRankApproximation/joint_spatial_basis.jl")
+include("LowRankApproximation/adaptive_spatial_basis.jl")
 include("LowRankApproximation/distributed_shared_spatial_basis.jl")
 include("LowRankApproximation/regenerated_spatial_basis.jl")
 include("LowRankApproximation/per_readout_basis.jl")

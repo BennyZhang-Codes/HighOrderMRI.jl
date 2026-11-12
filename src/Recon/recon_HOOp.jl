@@ -3,7 +3,8 @@
         Data::AbstractArray{Complex{T}, 2},
         weight::AbstractVector{Complex{T}},
         recParams::Dict;
-        release_backend::Bool = true) where T <: AbstractFloat
+        release_backend::Bool = true,
+        encoding_weights::Union{Nothing,AbstractVector} = nothing) where T <: AbstractFloat
 
 Reconstruct an image with a high-order encoding operator.
 
@@ -19,6 +20,14 @@ and diagonal `W` formed from the repeated raw weights, it passes `W * A` and
 weight contributes `abs2(weight)` to the normal. Do not square the weights
 before passing them here. [`samplingDensity`](@ref) already returns
 square-root density weights for this convention.
+
+`encoding_weights` optionally supplies one additional real or complex row
+factor of precision `T`, on the same backend as `weight`. It modifies the
+encoding, not the measured data: the solver receives
+`diag(weight .* encoding_weights) * HOOp` and `diag(weight) * vec(Data)`.
+The default `nothing` preserves the point-voxel model. For a finite box
+voxel, use `HighOrderMRI.voxel_aperture` with the same prepared first-order
+trajectory as the operator. Do not multiply the data by that aperture.
 
 `recParams` must explicitly contain `:solver`, `:reg`, and `:reconSize`.
 Remaining solver settings are merged with MRIReco's `defaultRecoParams()`;
@@ -55,8 +64,16 @@ function recon_HOOp(
     weight    :: AbstractVector{Complex{T}},
     recParams :: Dict;
     release_backend :: Bool = true,
+    encoding_weights :: Union{Nothing,AbstractVector} = nothing,
 ) where T<:AbstractFloat
     try
+        if !isnothing(encoding_weights)
+            length(encoding_weights) == size(Data, 1) == length(weight) ||
+                throw(DimensionMismatch("Encoding row factors must match data rows and weights"))
+            eltype(encoding_weights) in (T, Complex{T}) ||
+                throw(ArgumentError("Encoding row factors must match operator precision"))
+            all(isfinite, encoding_weights) || throw(ArgumentError("Encoding row factors must be finite"))
+        end
         if HOOp isa HighOrderLowRankOp && HOOp.q isa CuArray
             primary_gpu = first(HOOp.normal_backend.gpus)
             CUDA.device!(primary_gpu)
@@ -74,7 +91,8 @@ function recon_HOOp(
 
         _, nCha = size(Data)
         Data = vec(Data) .* repeat(weight, nCha)
-        W = WeightingOp(Complex{T}; weights=weight, rep=nCha)
+        operator_weight = isnothing(encoding_weights) ? weight : weight .* encoding_weights
+        W = WeightingOp(Complex{T}; weights=operator_weight, rep=nCha)
         E = ∘(W, HOOp)
         EᴴE = normalOperator(E)
         solver = createLinearSolver(recParams[:solver], E; AHA=EᴴE, reg=recParams[:reg], recoParams...,)

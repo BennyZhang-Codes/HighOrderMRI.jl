@@ -53,39 +53,27 @@ function joint_snapshot_selection(temporal, spatial, nSam, nDyn, snapshots, seed
     return rows[chosen], weights, holdout
 end
 
-function joint_snapshot_basis(
-    temporal::Matrix{T}, spatial::Matrix{T}, indices, weights, rank_max, chunk_size, arrayType,
-) where T<:AbstractFloat
-    nVox = size(spatial, 1)
-    K = length(indices)
-    chunk_size = min(chunk_size, nVox)
-    centers = root_weights = spatial_device = phase = encoding = gram = nothing
+function joint_basis_from_gram(
+    spatial_device, centers, root_weights, phase, encoding, F, rank_max, chunk_size, arrayType,
+)
+    T = eltype(phase)
+    nVox = size(spatial_device, 1)
+    K = size(centers, 1)
     rotation = basis_gram = correction = scratch = basis = nothing
     succeeded = false
     try
-        centers = arrayType(temporal[indices, :])
-        root_weights = arrayType(reshape(sqrt.(T.(weights)), 1, :))
-        spatial_device = arrayType(spatial)
-        phase = arrayType(zeros(T, chunk_size, K))
-        encoding = arrayType(zeros(Complex{T}, chunk_size, K))
-        gram = arrayType(zeros(Complex{T}, K, K))
-        for first in 1:chunk_size:nVox
-            last = min(first + chunk_size - 1, nVox)
-            n = last - first + 1
-            p = @view phase[1:n, :]
-            e = @view encoding[1:n, :]
-            mul!(p, @view(spatial_device[first:last, :]), transpose(centers))
-            @. e = cis(-T(2π) * p) * root_weights
-            mul!(gram, adjoint(e), e, one(Complex{T}), one(Complex{T}))
-        end
-        F = eigen(Hermitian(ComplexF64.(Array(gram))))
         order = sortperm(F.values; rev=true)
         values = F.values[order]
         # The independent original-phase residual decides acceptance. Dropping
         # unresolved Gram directions prevents division by roundoff-sized energy.
-        resolved = count(>(eps(T) * values[1]), values)
+        # The Float64 eigensolver can create O(K*eps) positive eigenvalues for
+        # repeated snapshots. This only bounds usable directions; the full
+        # phase residual still decides whether the discarded energy is allowed.
+        resolution = T === Float64 ? K * eps(T) : eps(T)
+        resolved = count(>(resolution * values[1]), values)
         R = min(rank_max, resolved)
         R > 0 || error("Joint spatial basis has no numerically resolved direction")
+        snapshot_tail = sqrt(sum(max.(values[R+1:end], 0)) / sum(max.(values, 0)))
         rotation = arrayType(Complex{T}.(F.vectors[:, order[1:R]] ./ reshape(sqrt.(values[1:R]), 1, :)))
         basis = arrayType(zeros(Complex{T}, nVox, R))
         for first in 1:chunk_size:nVox
@@ -113,12 +101,70 @@ function joint_snapshot_basis(
         orthogonality = norm(ComplexF64.(Array(basis_gram)) - I)
         orthogonality <= 100eps(T) * R || error("Joint spatial basis lost orthogonality: $orthogonality")
         succeeded = true
-        return basis, orthogonality
+        return basis, orthogonality, resolved, snapshot_tail
     finally
         joint_synchronize(arrayType)
         succeeded || joint_release!(basis)
-        for a in (centers, root_weights, spatial_device, phase, encoding, gram,
-                  rotation, basis_gram, correction, scratch)
+        for a in (rotation, basis_gram, correction, scratch)
+            joint_release!(a)
+        end
+    end
+end
+
+function joint_snapshot_basis(
+    temporal::Matrix{T}, spatial::Matrix{T}, indices, weights, rank_max, chunk_size, arrayType,
+) where T<:AbstractFloat
+    nVox = size(spatial, 1)
+    K = length(indices)
+    chunk_size = min(chunk_size, nVox)
+    centers = root_weights = spatial_device = phase = encoding = gram = nothing
+    try
+        centers = arrayType(temporal[indices, :])
+        root_weights = arrayType(reshape(sqrt.(T.(weights)), 1, :))
+        spatial_device = arrayType(spatial)
+        phase = arrayType(zeros(T, chunk_size, K))
+        encoding = arrayType(zeros(Complex{T}, chunk_size, K))
+        gram = arrayType(zeros(Complex{T}, K, K))
+        for first in 1:chunk_size:nVox
+            last = min(first + chunk_size - 1, nVox)
+            n = last - first + 1
+            p = @view phase[1:n, :]
+            e = @view encoding[1:n, :]
+            mul!(p, @view(spatial_device[first:last, :]), transpose(centers))
+            @. e = cis(-T(2π) * p) * root_weights
+            mul!(gram, adjoint(e), e, one(Complex{T}), one(Complex{T}))
+        end
+        F = eigen(Hermitian(ComplexF64.(Array(gram))))
+        try
+            basis, orthogonality, resolved, snapshot_tail = joint_basis_from_gram(
+                spatial_device, centers, root_weights, phase, encoding, F,
+                rank_max, chunk_size, arrayType)
+            return basis, orthogonality, resolved, snapshot_tail, false
+        catch error
+            numerical = error isa PosDefException ||
+                (error isa ErrorException && startswith(error.msg, "Joint spatial basis lost orthogonality"))
+            T === Float32 && numerical || rethrow()
+            @warn "Joint snapshot Gram precision fallback" reason=sprint(showerror, error)
+        end
+        gram64 = zeros(ComplexF64, K, K)
+        for first in 1:chunk_size:nVox
+            last = min(first + chunk_size - 1, nVox)
+            n = last - first + 1
+            p = @view phase[1:n, :]
+            e = @view encoding[1:n, :]
+            mul!(p, @view(spatial_device[first:last, :]), transpose(centers))
+            @. e = cis(-T(2π) * p) * root_weights
+            block = ComplexF64.(Array(e))
+            mul!(gram64, adjoint(block), block, one(ComplexF64), one(ComplexF64))
+        end
+        F = eigen(Hermitian(gram64))
+        basis, orthogonality, resolved, snapshot_tail = joint_basis_from_gram(
+            spatial_device, centers, root_weights, phase, encoding, F,
+            rank_max, chunk_size, arrayType)
+        return basis, orthogonality, resolved, snapshot_tail, true
+    finally
+        joint_synchronize(arrayType)
+        for a in (centers, root_weights, spatial_device, phase, encoding, gram)
             joint_release!(a)
         end
     end
@@ -312,9 +358,15 @@ when tiny inputs require reuse of a validation time. At least four voxels are
 required to separate fitting and validation. `report_ref` may be a `Ref` to
 capture diagnostics even on a rank-limit or validation error.
 
-All rank/validation failures throw; there is no CPU fallback or returned
-partial approximation. The snapshot Gram is computed in the requested
-precision; Float64 validation does not recover directions lost by that Gram.
+All rank/validation failures throw; CUDA errors do not trigger a CPU
+computation or a returned partial approximation. The snapshot Gram is computed
+in the requested precision. If a Float32 Gram causes a positive-definiteness
+or orthogonality failure, the same quantized snapshots are re-accumulated in
+ComplexF64;
+`report.gram_fallback`, `report.numerical_rank` and `report.snapshot_tail`
+record that path and the Gram-estimated discarded snapshot energy. Without a
+fallback, Float32 roundoff can inflate the latter two estimates. Float64 validation does
+not recover directions lost when the original phase samples were quantized.
 """
 function joint_spatial_basis(
     times       :: AbstractMatrix{T},
@@ -370,11 +422,15 @@ function joint_spatial_basis(
     selection_tol = T(0.9) * tol
     selected_R = 0
     orthogonality = Inf
+    numerical_rank = 0
+    snapshot_tail = Inf
+    gram_fallback = false
     passed = false
     succeeded = false
     try
         indices, weights, holdout = joint_snapshot_selection(temporal, spatial, nSam, nDyn, snapshots, seed + 3, chunk_size)
-        basis, orthogonality = joint_snapshot_basis(temporal, spatial, indices, weights, effective_rank_max, chunk_size, arrayType)
+        basis, orthogonality, numerical_rank, snapshot_tail, gram_fallback = joint_snapshot_basis(
+            temporal, spatial, indices, weights, effective_rank_max, chunk_size, arrayType)
         selected_indices = indices
         selected_holdout = holdout
         for J in unique([min(sample_count, pool_size), min(2 * min(sample_count, pool_size), pool_size)])
@@ -406,7 +462,8 @@ function joint_spatial_basis(
         report = (; rank=selected_R, rank_max=effective_rank_max, snapshots=length(selected_indices),
             sample_count=length(selected_points), tolerance=tol, selection_tolerance=selection_tol, roi_tolerance=roi_tol,
             validation_errors=errors, validation_roi_errors=roi_errors, audit_errors, roi_errors=audit_roi_errors,
-            orthogonality, passed=audit_passed, stage=passed ? :audit : :rank_limit,
+            orthogonality, numerical_rank, snapshot_tail, gram_fallback,
+            passed=audit_passed, stage=passed ? :audit : :rank_limit,
             snapshot_indices=selected_indices, heldout_profiles=selected_holdout,
             fit_indices=selected_points, validation_rows, audit_rows,
             validation_voxels, audit_voxels, validation_roi, audit_roi, disjoint_times, seed)
