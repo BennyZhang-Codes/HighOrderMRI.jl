@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="260" viewBox="0 0 900 260" fill="none">
+<rect width="900" height="260" rx="24" fill="#FAFAF8"/>
+<g font-family="Inter, Arial" text-anchor="middle">
+<circle cx="120" cy="130" r="62" stroke="#2563EB" stroke-width="4"/>
+<path d="M65 130 C90 80 150 180 175 110" stroke="#0891B2" stroke-width="4" fill="none"/>
+<text x="120" y="215" fill="#1E3A8A" font-size="18">k-space</text>
+
+<path d="M205 130H285" stroke="#94A3B8" stroke-width="3"/>
+<path d="M270 115L285 130L270 145" stroke="#94A3B8" stroke-width="3"/>
+
+<rect x="310" y="70" width="180" height="120" rx="18" fill="#EFF6FF" stroke="#2563EB" stroke-width="3"/>
+<text x="400" y="120" fill="#1E3A8A" font-size="18">Dynamic</text>
+<text x="400" y="148" fill="#1E3A8A" font-size="18">field model</text>
+
+<path d="M510 130H590" stroke="#94A3B8" stroke-width="3"/>
+<path d="M575 115L590 130L575 145" stroke="#94A3B8" stroke-width="3"/>
+
+<rect x="615" y="70" width="170" height="120" rx="18" fill="#ECFEFF" stroke="#0891B2" stroke-width="3"/>
+<text x="700" y="120" fill="#155E75" font-size="18">GPU</text>
+<text x="700" y="148" fill="#155E75" font-size="18">reconstruction</text>
+</g>
+</svg>
