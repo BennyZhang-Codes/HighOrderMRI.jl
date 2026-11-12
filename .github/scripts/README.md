@@ -28,3 +28,5 @@ Run the helper tests with Python 3.11 or later:
 ```bash
 python3 -m unittest discover -s .github/scripts -p 'test_*.py'
 ```
+
+The publication checker verifies all configured versions and the public version index. Candidates require the explicit local `--allow-preview` flag. Formal deployment rejects candidate artifacts.

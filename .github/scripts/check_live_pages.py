@@ -162,14 +162,15 @@ def check_response(page, response, root, code_sha):
 
 
 def verify_site(root, code_sha, *, attempts=12, interval=10, max_wait=120,
-                fetch=fetch_response, sleep=time.sleep, clock=time.monotonic, emit=print):
+                fetch=fetch_response, sleep=time.sleep, clock=time.monotonic, emit=print, prefix="dev"):
     root = site_root(root)
     if attempts < 1 or not math.isfinite(interval) or interval < 0 or not math.isfinite(max_wait) or max_wait <= 0:
         raise CheckError("attempts and max-wait must be positive; interval must be nonnegative")
     deadline = clock() + max_wait
     for attempt in range(1, attempts + 1):
         failures = []
-        for page in PAGES:
+        for original in PAGES:
+            page = Page(original.path.replace("dev/", prefix + "/", 1), original.phrase, original.source_link, original.svg)
             remaining = deadline - clock()
             if remaining <= 0:
                 failures.append(f"{page.path}: verification deadline reached")
@@ -181,7 +182,7 @@ def verify_site(root, code_sha, *, attempts=12, interval=10, max_wait=120,
             except CheckError as error:
                 failures.append(f"{page.path}: {error}")
         if not failures:
-            emit(f"Verified 3 dev pages and 2 Fig.1 SVGs for code {code_sha}.")
+            emit(f"Verified 3 {prefix} pages and 2 Fig.1 SVGs for code {code_sha}.")
             return True
         for failure in failures:
             emit(f"Attempt {attempt}/{attempts}: {failure}")
@@ -193,6 +194,41 @@ def verify_site(root, code_sha, *, attempts=12, interval=10, max_wait=120,
     return False
 
 
+def expected_versions(config_path):
+    code = load_code_sha(config_path)
+    config = json.loads(Path(config_path).with_name("versions.json").read_text())
+    records = [{"version": "dev", "code_sha": code, "docs_sha": None}]
+    for release in config["releases"]:
+        records.append(dict(release))
+    stable = next(release for release in config["releases"] if release["version"] == config["stable"])
+    records.append({**stable, "version": "stable", "release": stable["version"]})
+    return config["stable"], records
+
+
+def check_version_index(response, stable, expected, allow_preview=False):
+    if response.status != 200 or response.content_type.split(";", 1)[0].strip().lower() != "application/json":
+        raise CheckError("published version index is missing or not JSON")
+    try:
+        actual = json.loads(response.body)
+    except ValueError as error:
+        raise CheckError("invalid published version index") from error
+    if not isinstance(actual, dict) or actual.get("schema_version") != 1 or actual.get("stable") != stable:
+        raise CheckError("published stable version differs from configuration")
+    if type(actual.get("preview")) is not bool or (actual["preview"] and not allow_preview):
+        raise CheckError("candidate artifact cannot pass formal publication checks")
+    records = actual.get("versions", [])
+    if not isinstance(records, list) or not all(isinstance(record, dict) for record in records):
+        raise CheckError("invalid published version records")
+    if len(records) != len(expected) or len({record.get("version") for record in records}) != len(expected):
+        raise CheckError("published version set differs from configuration")
+    for target in expected:
+        record = next((item for item in records if item.get("version") == target["version"]), None)
+        if record is None or any(record.get(key) != value for key, value in target.items()):
+            raise CheckError("published version identity differs from configuration")
+        if record.get("preview") is not actual["preview"]:
+            raise CheckError("published version candidate status is inconsistent")
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pages-url", default=os.environ.get("PAGES_URL", ""))
@@ -200,12 +236,19 @@ def main(argv=None):
     parser.add_argument("--attempts", type=int, default=12)
     parser.add_argument("--interval", type=float, default=10)
     parser.add_argument("--max-wait", type=float, default=120)
+    parser.add_argument("--allow-preview", action="store_true")
     args = parser.parse_args(argv)
     try:
-        code_sha = load_code_sha(args.config)
-        success = verify_site(args.pages_url, code_sha, attempts=args.attempts,
-                              interval=args.interval, max_wait=args.max_wait)
-        return 0 if success else 1
+        root = site_root(args.pages_url)
+        stable, versions = expected_versions(args.config)
+        if not all(verify_site(root, record["code_sha"], prefix=record["version"],
+                              attempts=args.attempts, interval=args.interval, max_wait=args.max_wait)
+                   for record in versions):
+            return 1
+        response = fetch_response(urljoin(root, "versions.json") + "?check=" + uuid4().hex, "GET", 10)
+        check_version_index(response, stable, versions, args.allow_preview)
+        print(f"Published version index verified: stable {stable}, {len(versions)} sites")
+        return 0
     except CheckError as error:
         print(f"Published-site verification failed: {error}")
         return 1
