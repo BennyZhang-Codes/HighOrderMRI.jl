@@ -32,6 +32,9 @@ function test_joint_factors(arrayType, ::Type{T}) where T
         @test size(basis) == (193, report.rank)
         @test report_ref[] === report
         @test report.passed && report.stage === :audit
+        @test report.numerical_rank >= report.rank
+        @test report.snapshot_tail >= 0
+        @test report.gram_fallback isa Bool
         @test maximum(report.validation_errors) <= report.selection_tolerance < report.tolerance
         @test maximum(report.audit_errors) <= 1e-2
         @test maximum(report.roi_errors) <= 1e-2
@@ -106,9 +109,44 @@ function test_joint_factors(arrayType, ::Type{T}) where T
     end
 end
 
+function test_joint_snapshot_numerical_rank(arrayType, ::Type{T}) where T
+    nVox, K = 257, 64
+    indices = collect(1:K)
+    weights = ones(Int, K)
+    for (temporal, spatial, expected_rank) in (
+        (zeros(T, K, 1), ones(T, nVox, 1), 1),
+        (reshape(T.(range(0, 0.04; length=K)), :, 1),
+            reshape(T.(range(-100, 100; length=nVox)), :, 1), nothing),
+    )
+        for _ in 1:2
+            basis = nothing
+            try
+                basis, orthogonality, numerical_rank, snapshot_tail, fallback =
+                    HighOrderMRI.joint_snapshot_basis(temporal, spatial, indices,
+                        weights, K, 31, arrayType)
+                @test size(basis, 1) == nVox
+                @test size(basis, 2) == numerical_rank < K
+                @test orthogonality <= 100eps(T) * numerical_rank
+                @test 0 <= snapshot_tail < 1e-2
+                @test fallback isa Bool
+                if !isnothing(expected_rank)
+                    @test numerical_rank == expected_rank
+                end
+                Z = cis.(-2π .* (Float64.(spatial) * transpose(Float64.(temporal))))
+                S = ComplexF64.(Array(basis))
+                @test norm(Z - S * (S \ Z)) / norm(Z) < 1e-3
+            finally
+                HighOrderMRI.joint_synchronize(arrayType)
+                HighOrderMRI.joint_release!(basis)
+            end
+        end
+    end
+end
+
 @testset "Joint shared spatial basis" begin
     @testset "CPU $T" for T in (Float32, Float64)
         test_joint_factors(Array, T)
+        test_joint_snapshot_numerical_rank(Array, T)
     end
 
     @testset "Input validation" begin
@@ -156,6 +194,7 @@ end
     if CUDA.functional()
         @testset "CUDA $T" for T in (Float32, Float64)
             test_joint_factors(CuArray, T)
+            test_joint_snapshot_numerical_rank(CuArray, T)
         end
     end
 end
