@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "stable": "v0.1.0",
+  "preview": false,
+  "versions": [
+    {
+      "version": "dev",
+      "code_sha": "c5729e36c6b617c78ef19831540e60281dd1c7a6",
+      "docs_sha": null,
+      "preview": false,
+      "api_map_sha256": "e051269f019493a890294a926c668de6c34a99b7a3346d5aecb051d2261d0223"
+    },
+    {
+      "version": "v0.1.0",
+      "code_sha": "425f7df50decd64fbba16180e0c96970894dabfb",
+      "docs_sha": "f949b4faef044f8550f687d2580f6fbdba99242d",
+      "preview": false,
+      "api_map_sha256": "e051269f019493a890294a926c668de6c34a99b7a3346d5aecb051d2261d0223"
+    },
+    {
+      "version": "stable",
+      "code_sha": "425f7df50decd64fbba16180e0c96970894dabfb",
+      "docs_sha": "f949b4faef044f8550f687d2580f6fbdba99242d",
+      "release": "v0.1.0",
+      "preview": false,
+      "api_map_sha256": "e051269f019493a890294a926c668de6c34a99b7a3346d5aecb051d2261d0223"
+    }
+  ]
+}

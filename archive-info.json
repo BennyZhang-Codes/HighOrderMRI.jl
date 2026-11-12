@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "source_branch": "docs",
+  "source_sha": "4bf8a2e45bfa703db13fc0796e2c4b205de4429c",
+  "dev_code_sha": "c5729e36c6b617c78ef19831540e60281dd1c7a6",
+  "stable": "v0.1.0"
+}
