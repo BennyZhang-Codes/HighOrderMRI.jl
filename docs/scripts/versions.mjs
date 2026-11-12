@@ -25,11 +25,11 @@ export function loadVersions(docsRoot, planFile = null) {
     const names = new Set()
     for (const target of plan.targets) {
       if (names.has(target.version) || !shaPattern.test(target.code_sha) || !shaPattern.test(target.docs_sha)) throw new Error('Invalid or duplicate publication target.')
-      if (!['dev', 'main', 'stable'].includes(target.version)) versionNumber(target.version)
+      if (!['dev', 'stable'].includes(target.version)) versionNumber(target.version)
       names.add(target.version)
     }
     const releases = [...plan.releases].sort((a, b) => compareVersions(b.version, a.version))
-    if (!releases.length || releases[0].version !== plan.stable || names.size !== releases.length + 3 || !['dev', 'main', 'stable', ...releases.map(r => r.version)].every(v => names.has(v))) throw new Error('Incomplete publication version set.')
+    if (!releases.length || releases[0].version !== plan.stable || names.size !== releases.length + 2 || !['dev', 'stable', ...releases.map(r => r.version)].every(v => names.has(v))) throw new Error('Incomplete publication version set.')
     for (const release of releases) {
       for (const target of plan.targets.filter(t => t.version === release.version || t.version === 'stable' && release.version === plan.stable)) {
         if (target.code_sha !== release.code_sha || target.docs_sha !== release.docs_sha) throw new Error('Release source identity mismatch.')
@@ -40,7 +40,7 @@ export function loadVersions(docsRoot, planFile = null) {
   const code = JSON.parse(readFileSync(join(docsRoot, 'code-version.json'), 'utf8'))
   const config = JSON.parse(readFileSync(join(docsRoot, 'versions.json'), 'utf8'))
   if (code.schema_version !== 1 || !shaPattern.test(code.code_sha)) throw new Error('Invalid dev code_sha.')
-  if (code.main_sha !== undefined && !shaPattern.test(code.main_sha)) throw new Error('Invalid main_sha.')
+  if (code.main_sha !== undefined) throw new Error('The main documentation channel is not published; remove main_sha.')
   if (config.schema_version !== 1 || !Array.isArray(config.releases)) throw new Error('Invalid versions.json.')
   const seen = new Set()
   const releases = config.releases.map(release => {
@@ -54,7 +54,6 @@ export function loadVersions(docsRoot, planFile = null) {
   if (!stable || releases[0].version !== stable.version) throw new Error('Stable must select the newest configured formal release.')
   const targets = [
     { version: 'dev', code_sha: code.code_sha, docs_sha: null },
-    ...(code.main_sha ? [{ version: 'main', code_sha: code.main_sha, docs_sha: null }] : []),
     ...releases, { ...stable, version: 'stable', release: stable.version },
   ]
   return { schema_version: 1, stable: stable.version, releases, targets }

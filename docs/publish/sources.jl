@@ -23,7 +23,7 @@ end
 function validate_context(repository, event, ref, payload=Dict())
     require(repository == REPOSITORY, "Unexpected documentation repository")
     if event in ("push", "workflow_dispatch")
-        require(ref in last.(SOURCE_REFS), "Only code branches may publish documentation")
+        require(ref in CODE_REFS, "Only code branches may build documentation")
     elseif event == "release"
         release = get(payload, "release", Dict())
         require(get(payload, "action", nothing) == "published" && is_version(get(release, "tag_name", nothing)),
@@ -50,6 +50,7 @@ end
 function resolve_versions(repo, published, archive, source, event, ref;
                           base=nothing, release_tag="", legacy=LEGACY_DOCS_SOURCE)
     require(is_sha(source), "Invalid build source")
+    event == "pull_request" && require(base in ("main", "dev_jinyuan"), "Unexpected preview base branch")
     saved = read_json(joinpath(repo, "docs", "versions.json"))
     rows = Dict(row["version"] => copy(row) for row in saved["releases"])
     for row in get(archive, "versions", [])
@@ -80,7 +81,7 @@ function resolve_versions(repo, published, archive, source, event, ref;
     for (version, branch_ref) in SOURCE_REFS
         branch = chop(branch_ref; head=length("refs/heads/"), tail=0)
         code = git(repo, "rev-parse", "refs/remotes/origin/$branch")
-        if event == "pull_request" && base == branch || event in ("push", "workflow_dispatch") && ref == branch_ref
+        if is_preview(event, ref) || event in ("push", "workflow_dispatch") && ref == branch_ref
             code = source
         end
         push!(targets, Dict("version" => version, "code_sha" => code, "docs_sha" => documentation_source(repo, code; legacy)))

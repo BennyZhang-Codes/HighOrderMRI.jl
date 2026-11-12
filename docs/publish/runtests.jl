@@ -59,13 +59,13 @@ function site_fixture(root; code=SHA_A, source=nothing, main=nothing, main_sourc
     return manifest
 end
 
-function fixture_plan(f; published=[published()], source=f.source, event="push", ref="refs/heads/main", kwargs...)
+function fixture_plan(f; published=[published()], source=f.source, event="workflow_dispatch", ref="refs/heads/main", kwargs...)
     return PT.resolve_versions(f.repo, published, Dict(), source, event, ref; legacy=f.legacy, kwargs...)
 end
 
 @testset "Publication contexts and formal release catalog" begin
     flush(stdout)
-    for event in ("push", "workflow_dispatch"), ref in last.(PT.SOURCE_REFS)
+    for event in ("push", "workflow_dispatch"), ref in PT.CODE_REFS
         @test PT.validate_context(PT.REPOSITORY, event, ref) === nothing
     end
     for (repository, event, ref) in [("other/repo", "push", "refs/heads/main"),
@@ -85,6 +85,11 @@ end
     @test_throws ArgumentError PT.validate_release_catalog(config, [published(), published("v0.2.0")])
     @test_throws ArgumentError PT.version_number("../outside")
     @test PT.version_number("v0.10.0") > PT.version_number("v0.9.0")
+    @test PT.is_preview("push", "refs/heads/main")
+    @test PT.is_preview("pull_request", "refs/pull/1/merge")
+    @test !PT.is_preview("push", "refs/heads/dev_jinyuan")
+    @test !PT.is_preview("workflow_dispatch", "refs/heads/main")
+    @test !PT.is_preview("release", "refs/tags/v0.1.0")
 end
 
 @testset "Resolved source histories and annotated release tags" begin
@@ -92,12 +97,17 @@ end
     with_repository() do f
         plan = fixture_plan(f)
         rows = Dict(row["version"] => row for row in plan["targets"])
-        @test rows["main"]["code_sha"] == rows["main"]["docs_sha"] == f.source
+        @test Set(keys(rows)) == Set(["dev", "stable", "v0.1.0"])
         @test rows["dev"]["code_sha"] == f.code
         @test rows["dev"]["docs_sha"] == rows["v0.1.0"]["docs_sha"] == f.legacy
         @test isempty(PT.git(f.repo, "ls-remote", "origin", "refs/heads/docs"))
         preview = fixture_plan(f; event="pull_request", ref="refs/pull/1/merge", base="dev_jinyuan")
         @test first(preview["targets"])["code_sha"] == first(preview["targets"])["docs_sha"] == f.source
+        main_preview = fixture_plan(f; event="pull_request", ref="refs/pull/1/merge", base="main")
+        @test first(main_preview["targets"])["code_sha"] == f.source
+        main_push = fixture_plan(f; event="push")
+        @test first(main_push["targets"])["code_sha"] == first(main_push["targets"])["docs_sha"] == f.source
+        @test_throws ArgumentError fixture_plan(f; event="pull_request", base="other")
         @test fixture_plan(f; event="workflow_dispatch", release_tag="v0.1.0")["stable"] == "v0.1.0"
         for tag in ("v9.9.9", "../outside")
             @test_throws ArgumentError fixture_plan(f; event="workflow_dispatch", release_tag=tag)
@@ -147,6 +157,9 @@ end
         @test_throws ArgumentError PT.validate_site(site, code, releases)
         rm(joinpath(site, "README.md"))
         @test_throws ArgumentError PT.validate_site(site, merge(code, Dict("main_sha" => SHA_C)), releases)
+        mkpath(joinpath(site, "main"))
+        @test_throws ArgumentError PT.validate_site(site, code, releases)
+        rm(joinpath(site, "main"))
         @test PT.preserve_releases(manifest, manifest) === nothing
         removed = deepcopy(manifest)
         filter!(row -> row["version"] != "v0.1.0", removed["versions"])
@@ -164,12 +177,15 @@ end
     flush(stdout)
     with_repository() do f
         site = joinpath(f.root, "site")
-        manifest = site_fixture(site; code=f.dev, source=f.legacy, main=f.source, main_source=f.source, release=f.release)
+        manifest = site_fixture(site; code=f.dev, source=f.legacy, release=f.release)
         first = PT.publish(f.repo, site, f.source, manifest; legacy=f.legacy)
         @test first["publish"] && first["updated"]
         @test PT.git(f.repo, "show", "-s", "--format=%an|%ae|%cn|%ce", first["sha"]) == join([PT.COMMIT_NAME, PT.COMMIT_EMAIL, PT.COMMIT_NAME, PT.COMMIT_EMAIL], "|")
         files = Set(split(PT.git(f.repo, "ls-tree", "--name-only", first["sha"]), '\n'))
-        @test files == Set([".nojekyll", "archive-info.json", "index.html", "versions.json", "dev", "main", "stable", "v0.1.0"])
+        @test files == Set([".nojekyll", "archive-info.json", "index.html", "versions.json", "dev", "stable", "v0.1.0"])
+        previous = site_fixture(joinpath(f.root, "previous"); code=f.dev, source=f.legacy,
+                                main=f.source, main_source=f.source, release=f.release)
+        @test PT.preserve_releases(previous, manifest) === nothing
         again = PT.publish(f.repo, site, f.source, manifest; legacy=f.legacy)
         @test !again["updated"] && again["sha"] == first["sha"]
         write(joinpath(site, "dev", "index.html"), "updated page")
@@ -188,16 +204,26 @@ end
     end
     with_repository() do f
         site = joinpath(f.root, "site")
-        manifest = site_fixture(site; code=f.dev, source=f.legacy, main=f.source, main_source=f.source, release=f.release)
+        manifest = site_fixture(site; code=f.dev, source=f.legacy, release=f.release)
+        @test PT.current_sources(f.repo, manifest; source_sha=f.source, source_ref="refs/tags/v0.1.0", legacy=f.legacy)
         PT.git(f.repo, "commit", "--allow-empty", "-m", "superseding code")
         PT.git(f.repo, "push", "origin", "main")
         PT.git(f.repo, "checkout", "--detach", f.source)
-        @test !PT.publish(f.repo, site, f.source, manifest; legacy=f.legacy)["publish"]
+        @test !PT.publish(f.repo, site, f.source, manifest; source_ref="refs/heads/main", legacy=f.legacy)["publish"]
+        @test !PT.current_sources(f.repo, manifest; source_sha=f.source, source_ref="refs/tags/v0.1.0", legacy=f.legacy)
         @test PT.remote_ref(f.repo, PT.ARCHIVE_REF) === nothing
     end
     with_repository() do f
         site = joinpath(f.root, "site")
-        manifest = site_fixture(site; code=f.dev, source=f.legacy, main=f.source, main_source=f.source, release=f.release)
+        manifest = site_fixture(site; code=f.dev, source=f.legacy, release=f.release)
+        PT.git(f.repo, "update-ref", "refs/heads/dev_jinyuan", f.source)
+        PT.git(f.repo, "push", "origin", "dev_jinyuan")
+        @test !PT.publish(f.repo, site, f.source, manifest; source_ref="refs/heads/dev_jinyuan", legacy=f.legacy)["publish"]
+        @test PT.remote_ref(f.repo, PT.ARCHIVE_REF) === nothing
+    end
+    with_repository() do f
+        site = joinpath(f.root, "site")
+        manifest = site_fixture(site; code=f.dev, source=f.legacy, release=f.release)
         # The local tag still matches. A moved remote tag must reject publication.
         PT.git(f.remote, "update-ref", "refs/tags/v0.1.0", f.source)
         @test PT.git(f.repo, "rev-parse", "refs/tags/v0.1.0") == f.code
@@ -394,17 +420,18 @@ end
     end
 end
 
-@testset "Legacy/local version config preserves main identity and rejects invalid JSON" begin
+@testset "Local version config excludes main and rejects invalid JSON" begin
     flush(stdout)
     mktempdir() do root
         config = joinpath(root, "code-version.json")
-        PT.write_json(config, Dict("schema_version" => 1, "code_sha" => SHA_A, "main_sha" => SHA_B))
+        PT.write_json(config, Dict("schema_version" => 1, "code_sha" => SHA_A))
         PT.write_json(joinpath(root, "versions.json"), Dict("stable" => "v0.1.0", "releases" => [Dict("version" => "v0.1.0", "code_sha" => SHA_B, "docs_sha" => SHA_C)]))
         stable, rows = PT.expected_versions(config)
-        @test stable == "v0.1.0" && rows[2]["version"] == "main" && rows[2]["code_sha"] == SHA_B
+        @test stable == "v0.1.0" && [row["version"] for row in rows] == ["dev", "v0.1.0", "stable"]
         for value in ["not JSON", "[]", "{}", "{\"schema_version\":true,\"code_sha\":\"$SHA_A\"}",
                       PT.json_text(Dict("schema_version" => 1, "code_sha" => "short")),
-                      PT.json_text(Dict("schema_version" => 1, "code_sha" => SHA_A, "main_sha" => "invalid"))]
+                      PT.json_text(Dict("schema_version" => 1, "code_sha" => SHA_A, "main_sha" => "invalid")),
+                      PT.json_text(Dict("schema_version" => 1, "code_sha" => SHA_A, "main_sha" => SHA_B))]
             write(config, value)
             @test_throws Exception PT.expected_versions(config)
         end
@@ -417,15 +444,15 @@ end
         PT.git(f.repo, "update-ref", "refs/heads/dev_jinyuan", f.source)
         PT.git(f.repo, "push", "origin", "dev_jinyuan")
         site = joinpath(f.root, "site")
-        manifest = site_fixture(site; code=f.source, source=f.source, main=f.source, main_source=f.source, release=f.release)
-        plan = PT.resolve_versions(f.repo, [published()], Dict(), f.source, "push", "refs/heads/main")
+        manifest = site_fixture(site; code=f.source, source=f.source, release=f.release)
+        plan = PT.resolve_versions(f.repo, [published()], Dict(), f.source, "workflow_dispatch", "refs/heads/main")
         PT.write_json(joinpath(site, "publication-plan.json"), plan)
         artifact = joinpath(f.root, "artifact.tar")
         Tar.create(site, artifact)
         event = joinpath(f.root, "event.json")
         PT.write_json(event, Dict())
         output = joinpath(f.root, "workflow-output")
-        env = Dict("GITHUB_REPOSITORY" => PT.REPOSITORY, "GITHUB_EVENT_NAME" => "push", "GITHUB_REF" => "refs/heads/main",
+        env = Dict("GITHUB_REPOSITORY" => PT.REPOSITORY, "GITHUB_EVENT_NAME" => "workflow_dispatch", "GITHUB_REF" => "refs/heads/main",
                    "GITHUB_EVENT_PATH" => event, "GITHUB_OUTPUT" => output)
         script = joinpath(@__DIR__, "run.jl")
         project = @__DIR__
@@ -440,5 +467,10 @@ end
         again = Cmd(`$(Base.julia_cmd()) --startup-file=no --project=$project $script archive --artifact-tar $artifact --site $(joinpath(f.root,"extracted-again")) --source-sha $(f.source)`; dir=f.repo)
         repeated = PT.parse_json(read(addenv(again, env), String))
         @test repeated["publish"] && !repeated["updated"] && repeated["sha"] == result["sha"]
+        check_only = joinpath(f.root, "check-only-output")
+        withenv(merge(env, Dict("GITHUB_EVENT_NAME" => "push"))...) do
+            @test_throws ArgumentError PT.archive_main(["--artifact-tar", artifact, "--site", check_only, "--source-sha", f.source])
+        end
+        @test !ispath(check_only)
     end
 end

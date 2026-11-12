@@ -111,17 +111,14 @@ test('formal builds require matching registered tags; unpublished tags are not r
   assert.equal(f.invoke([]).preview, false)
 })
 
-test('main and dev use their own code commits and appear in version navigation', t => {
+test('only dev, stable and formal versions appear in navigation', t => {
   const f = fixture(t)
-  writeFileSync(join(f.docs, 'code-version.json'), JSON.stringify({ schema_version: 1, code_sha: f.sha, main_sha: 'b'.repeat(40) }))
   const result = f.invoke()
-  assert.deepEqual(result.versions.map(version => version.version), ['dev', 'main', 'v0.1.0', 'stable'])
-  assert.equal(result.versions.find(version => version.version === 'main').code_sha, 'b'.repeat(40))
-  assert.equal(readFileSync(join(f.docs, '.pages/main/index.html'), 'utf8'), 'new dev prose')
-  const call = f.calls.find(call => call.command === process.execPath && call.options.env.DOCS_VERSION === 'main')
-  assert.equal(call.options.env.DOCS_BASE, '/HighOrderMRI.jl/main/')
-  assert.ok(JSON.parse(call.options.env.DOCS_VERSION_ITEMS).some(item => item.text === 'main'))
-  writeFileSync(join(f.docs, 'code-version.json'), JSON.stringify({ schema_version: 1, code_sha: f.sha, main_sha: '../unsafe' }))
+  assert.deepEqual(result.versions.map(version => version.version), ['dev', 'v0.1.0', 'stable'])
+  assert.throws(() => readFileSync(join(f.docs, '.pages/main/index.html')), /ENOENT/)
+  const call = f.calls.find(call => call.command === process.execPath && call.options.env.DOCS_VERSION === 'dev')
+  assert.ok(JSON.parse(call.options.env.DOCS_VERSION_ITEMS).every(item => item.text !== 'main'))
+  writeFileSync(join(f.docs, 'code-version.json'), JSON.stringify({ schema_version: 1, code_sha: f.sha, main_sha: 'b'.repeat(40) }))
   assert.throws(() => f.invoke(), /main_sha/)
 })
 
@@ -130,13 +127,12 @@ test('resolved publication plans bind each branch to committed in-tree prose', t
   const release = f.config.releases[0]
   const plan = { schema_version: 1, source_sha: f.sha, stable: 'v0.1.0', releases: [release], targets: [
     { version: 'dev', code_sha: f.sha, docs_sha: f.sha },
-    { version: 'main', code_sha: f.sha, docs_sha: f.sha },
     release, { ...release, version: 'stable', release: release.version },
   ] }
   const path = join(f.repo, 'plan.json')
   writeFileSync(path, JSON.stringify(plan))
   const result = f.invoke(['--preview'], { DOCS_BUILD_PLAN: path })
-  assert.equal(result.versions.length, 4)
+  assert.equal(result.versions.length, 3)
   assert.equal(readFileSync(join(f.docs, '.pages/dev/index.html'), 'utf8'), 'frozen release prose')
   assert.deepEqual(JSON.parse(readFileSync(join(f.docs, '.pages/publication-plan.json'))), plan)
   const cli = spawnSync(process.execPath, [join(actualDocs, 'scripts/versions.mjs'), f.docs, '--code-shas'], {
@@ -144,7 +140,10 @@ test('resolved publication plans bind each branch to committed in-tree prose', t
   })
   assert.equal(cli.status, 0, cli.stderr)
   assert.equal(cli.stdout.trim(), f.sha)
-  plan.targets[1].docs_sha = 'invalid'
+  const withMain = { ...plan, targets: [...plan.targets, { version: 'main', code_sha: f.sha, docs_sha: f.sha }] }
+  writeFileSync(path, JSON.stringify(withMain))
+  assert.throws(() => f.invoke(['--preview'], { DOCS_BUILD_PLAN: path }), /Invalid release version/)
+  plan.targets[0].docs_sha = 'invalid'
   writeFileSync(path, JSON.stringify(plan))
   assert.throws(() => f.invoke(['--preview'], { DOCS_BUILD_PLAN: path }), /publication target/)
 })
