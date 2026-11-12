@@ -4,7 +4,9 @@ on:
   push:
     branches: [main, dev_jinyuan]
   pull_request:
-    branches: [main]
+    branches: [main, dev_jinyuan]
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -63,3 +65,31 @@ jobs:
         env:
           DOCS_SITE_PATH: ${{ github.workspace }}/_website/docs
         run: julia --startup-file=no --project=. scripts/docs/check_examples.jl
+
+  publish:
+    name: Synchronize and publish documentation versions
+    needs: docs
+    if: >-
+      github.repository == 'BennyZhang-Codes/HighOrderMRI.jl' &&
+      ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+       (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev_jinyuan') ||
+       github.event_name == 'release' && !github.event.release.draft && !github.event.release.prerelease)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: write
+    concurrency:
+      group: documentation-version-sync
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: docs
+          fetch-depth: 0
+      - name: Check version synchronization and publication
+        run: python3 -B -m unittest discover -s .github/scripts -p 'test_*.py'
+      - name: Pin current branches and formal releases, then build docs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/sync_versions.py
