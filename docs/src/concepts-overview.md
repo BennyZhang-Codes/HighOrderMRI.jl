@@ -32,7 +32,15 @@ The encoding model combines Cartesian or non-Cartesian sampling, receive-coil se
 
 ### Low-rank acceleration
 
-By default, `HighOrderLowRankOp` accelerates repeated forward and adjoint evaluations using per-readout randomized SVD followed by an adaptive spatial basis shared across dynamics. Low-rank approximation acts on the residual spatial phase. The NFFT evaluates the active x/y Fourier terms in 2D and x/y/z terms in 3D, with its own numerical error; a 2D k_z z contribution remains in the residual. The factorization and coefficient conventions are derived in [Low-rank shared subspace](/theory/low-rank).
+By default, `HighOrderLowRankOp` uses [Shared low-rank](/theory/low-rank):
+per-readout randomized SVD followed by incremental spatial sharing.
+[Joint adaptive low-rank](/theory/joint-adaptive-low-rank) is an opt-in
+alternative that directly builds a common snapshot parent, fits all time rows
+and selects its final rank by empirical global H residuals. Both approximate
+the residual spatial phase. The NFFT evaluates the active x/y Fourier terms
+in 2D and x/y/z terms in 3D, with its own numerical error; a 2D k_z z
+contribution remains in the residual. Their theory pages distinguish the
+conditional error bounds from construction policies and observed performance.
 
 ### Validation strategy
 

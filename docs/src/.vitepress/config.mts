@@ -58,7 +58,8 @@ export default defineConfig({
         items: [
           { text: 'Symbols & notation', link: '/theory/symbols' },
           { text: 'Expanded encoding model', link: '/theory/encoding-model' },
-          { text: 'Low-rank shared subspace', link: '/theory/low-rank' },
+          { text: 'Shared low-rank', link: '/theory/low-rank' },
+          { text: 'Joint adaptive low-rank', link: '/theory/joint-adaptive-low-rank' },
         ],
       },
       {

@@ -8,10 +8,14 @@ This guide walks through installation, a small CPU encoding problem, and a CG re
 - The CPU examples below explicitly select `arrayType=Array`.
 - CUDA execution additionally requires an NVIDIA GPU and a functional CUDA.jl installation. Memory requirements depend on the grid, mask, samples, coils, and selected representation.
 
-The package resolves `MRIGeometry` from its included local source tree. Install from a separate clone of the `main` code branch to retain this layout:
+The package resolves `MRIGeometry` from its included local source tree. These
+development pages are bound to the code SHA shown by the site's source links.
+Install from a separate clone of `dev_jinyuan` for the documented opt-in Joint
+adaptive low-rank path; `main` may not yet contain it. For an exact reproduction,
+check out the displayed source SHA before instantiating.
 
 ```bash
-git clone --branch main https://github.com/BennyZhang-Codes/HighOrderMRI.jl.git HighOrderMRI-code
+git clone --branch dev_jinyuan https://github.com/BennyZhang-Codes/HighOrderMRI.jl.git HighOrderMRI-code
 cd HighOrderMRI-code
 julia --project=. -e 'using Pkg; Pkg.instantiate()'
 ```

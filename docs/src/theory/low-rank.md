@@ -8,9 +8,10 @@ const sharedBasisFigure = computed(() => withBase(
 ))
 </script>
 
-# Low-rank shared subspace
+# Shared low-rank
 
-By default, `HighOrderLowRankOp` reduces repeated encoding cost with two
+Shared low-rank (`shared_basis_method=:shared_low_rank`, with the compatible
+default spelling `:rsvd`) reduces repeated encoding cost with two
 successive approximations: local randomized SVD (rSVD), then incremental
 sharing of the retained spatial factors. An optional final recompression
 introduces a third approximation stage. The image and coil maps are not
@@ -25,6 +26,10 @@ is an encoding profile of the same unknown image, not a separately
 reconstructed frame.
 
 Readouts use index $i$, with $N_t$ samples each and $N_{\mathrm{ro}}$ readouts (`nSam`, `nDyn` in Julia).
+The distinct [Joint adaptive low-rank](/theory/joint-adaptive-low-rank) path
+constructs a common snapshot space directly and selects its final rank using
+global residual checks. Both approximate the same pure residual phase matrix;
+they share the downstream forward, adjoint and weighted normal representation.
 
 ## Method overview
 
@@ -32,7 +37,7 @@ Readouts use index $i$, with $N_t$ samples each and $N_{\mathrm{ro}}$ readouts (
   <img :src="sharedBasisFigure" alt="Signal model, shared-basis reconstruction, and sequential adaptive spatial compression across readouts i" />
 </a>
 
-**Figure 1. Adaptive shared-basis reconstruction.**
+**Figure 1. Shared low-rank reconstruction.**
 (a) The signal model separates zeroth-order phase, Fourier encoding, and
 residual field modulation. (b) Local rSVD factors are combined into a shared
 spatial basis and readout-specific temporal factors. (c) Readouts $i$ are
@@ -78,9 +83,21 @@ Separable temporal-spatial representations of higher-order MRI encoding have pre
 
 HighOrderMRI combines matrix-free per-dynamic factorization with an incrementally constructed shared spatial basis and a global-trajectory NFFT representation. The resulting shared basis is not an exact post-hoc global SVD of all dynamic-specific matrices. Consequently, the Eckart-Young optimality result for a truncated SVD of a fixed matrix does not apply directly to the completed incremental representation. [[5]](/references#ref-5 "Eckart C, Young G. The approximation of one matrix by another of lower rank. Psychometrika. 1936;1:211-218.")
 
+The implementation's contribution is the combination of singular-value-weighted
+online sharing, matrix-free phase products and reuse of the completed common
+basis over the full Fourier trajectory. SVD, randomized range finding and
+subspace projection are established tools. Related group-patch joint compression
+also exploits MRI encoding redundancy, including B0 and RF modulations, with a
+different construction and grouping objective. [[20]](/references#ref-20 "Tian R, Scheffler K. Group-Patch Joint Compression. Magn Reson Med. 2026.")
+Claims about reduced memory, construction cost or reconstruction time require
+measurements at matched accuracy; these properties do not follow from an
+optimal-rank theorem for the incremental algorithm.
+
 A direct global SVD/rSVD remains a useful approximation-quality reference when memory permits because all dynamics can be considered jointly. The incremental method instead targets memory-bounded construction and scalable execution. These alternatives are distinguished explicitly in [Scientific validation strategy](/guide/validation).
 
 Shared subspace and hierarchical POD constructions also have established mathematical foundations, including HAPOD. [[23]](/references#ref-23 "Himpe C, Leibner T, Rave S. Hierarchical approximate proper orthogonal decomposition. SIAM J Sci Comput. 2018;40:A3267-A3292.")
+HAPOD's tree construction and tolerance allocation differ from this streaming
+merge; its error theorem is not a certificate for the present implementation.
 
 For local fixed-precision approximation, Yu et al. give QB energy identities with orthogonality and finite-precision requirements. [[21]](/references#ref-21 "Yu W, Gu Y, Li Y. Efficient randomized algorithms for the fixed-precision low-rank matrix approximation. SIAM J Matrix Anal Appl. 2018;39:1339-1359.") Demmel et al. describe TSQR, a stable alternative to forming a tall matrix's Gram before SVD. [[22]](/references#ref-22 "Demmel J, Grigori L, Hoemmen M, Langou J. Communication-optimal parallel and sequential QR and LU factorizations. SIAM J Sci Comput. 2012;34:A206-A239.") These are numerical references, not additional constructor backends.
 
@@ -101,6 +118,20 @@ k_{\ell,ji}b_{\ell,v}
 \qquad
 H_i\in\mathbb C^{N_t\times N_v}.
 $$
+
+All phase features are real. Time is in seconds, the off-resonance map is in
+Hz, and each integrated coefficient/basis product is in cycles; the forward
+phase sign is positive. Stacking every actual readout gives
+
+$$
+H=\begin{bmatrix}H_1\\ \vdots\\ H_{N_{\mathrm{ro}}}\end{bmatrix}
+\in\mathbb C^{N\times N_v},\qquad
+N=N_tN_{\mathrm{ro}},\qquad \|H\|_F^2=NN_v.
+$$
+
+This pure phase matrix excludes coil sensitivities, data weights, NFFT centre
+correction and normalization. Its relative Frobenius error is the common
+phase-approximation target for both shared constructions.
 
 The zeroth-order temporal phase and the first-order Fourier terms are excluded from $H_i$. In 3D, $\mathcal R$ begins with the second-order terms. In 2D, the $z$ first-order term remains in $\mathcal R$ because only the $x$ and $y$ first-order terms are represented by the 2D NFFT. The setup products do not require a full $H_i$. The chunked backend does
 materialize phase and encoding tiles; a chunk covering every masked voxel
@@ -213,7 +244,10 @@ U_{i,L}^H U_{i,L}
 I_L.
 $$
 
-The singular values are absorbed into the spatial factor $\widetilde V_i=V_{i,L}\Sigma_{i,L}$, where $V_{i,L}=P_{i,L}$. The retained local energy is therefore
+The singular values of the projected matrix $B_i$ are absorbed into the
+spatial factor $\widetilde V_i=V_{i,L}\Sigma_{i,L}$, where $V_{i,L}=P_{i,L}$.
+They need not equal the leading singular values of the full $H_i$.
+The retained local energy is therefore
 
 $$
 \eta_i
@@ -259,9 +293,65 @@ Q_i Z_{i,L}^{\mathrm{svd}},
 B_i Z_{i,L}^{\mathrm{svd}}.
 $$
 
-If $B_i=P_i\Sigma_i (Z_i^{\mathrm{svd}})^H$, then $B_iZ_{i,L}^{\mathrm{svd}}=P_{i,L}\Sigma_{i,L}$; thus, in exact arithmetic, the Gram and direct-SVD routes produce the same retained factorization. The Gram formulation avoids a direct SVD of the tall $N_v\times L_{\mathrm{sk}}$ matrix but squares its condition number. The single-device implementation checks for non-finite values, significant negative eigenvalues, and degeneracy and can fall back to the direct SVD if the Gram result fails these checks.
+If $B_i=P_i\Sigma_i (Z_i^{\mathrm{svd}})^H$, then
+$B_iZ_{i,L}^{\mathrm{svd}}=P_{i,L}\Sigma_{i,L}$. In exact arithmetic, the
+Gram and direct-SVD routes therefore give the same projected singular values
+and optimal projected error. Their retained approximation agrees when they
+choose the same leading invariant subspace; a tie at the truncation boundary
+can give different, equally optimal subspaces. The Gram formulation avoids a
+direct SVD of the tall $N_v\times L_{\mathrm{sk}}$ matrix but squares its
+condition number. The single-device implementation checks for non-finite
+values, significant negative eigenvalues, and degeneracy and can fall back to
+the direct SVD if the Gram result fails these checks.
 Voxel-distributed setup requires Gram finalization and reports failure when
 its eigensystem is invalid; it does not silently switch to a distributed SVD.
+
+### Local projection error and sketch conditioning
+
+In exact arithmetic, either supported finalization gives
+$\widetilde V_i=H_i^HU_{i,L}$ and $U_{i,L}^HU_{i,L}=I$.
+Consequently the retained local approximation is an orthogonal projection:
+
+$$
+H_{i,\mathrm{loc}}=U_{i,L}U_{i,L}^HH_i,\qquad
+U_{i,L}^H(H_i-H_{i,\mathrm{loc}})=0.
+$$
+
+Within the sampled range $Q_i$, the small SVD supplies the best rank-$L$
+approximation. It need not equal the best rank-$L$ approximation to $H_i$.
+More explicitly, with $P_{Q_i}=Q_iQ_i^H$,
+
+$$
+\|H_i-H_{i,\mathrm{loc}}\|_F^2
+=\|(I-P_{Q_i})H_i\|_F^2
++\sum_{h>L}\sigma_h(Q_i^HH_i)^2.
+$$
+
+This separates missed range information from truncation within that range.
+For a full SVD partition $H_i=\mathcal U\Sigma\mathcal V^H$ at rank $L$,
+write $\Omega_1=\mathcal V_1^H\Omega_i$ and
+$\Omega_2=\mathcal V_2^H\Omega_i$. If $\Omega_1$ has full row rank,
+the range-and-truncate construction satisfies the deterministic bound
+
+$$
+\|H_i-H_{i,\mathrm{loc}}\|_F^2
+\leq \|\Sigma_2\|_F^2
++\|\Sigma_2\Omega_2\Omega_1^\dagger\|_F^2.
+$$
+
+To see this, the rank-$L$ candidate $H_i\Omega_i\Omega_1^\dagger
+\mathcal V_1^H$ belongs to the sampled range. In SVD coordinates its error
+has squared norm equal to the right-hand side; the optimal small-SVD truncation
+within that range cannot do worse. This argument uses conjugate transposes
+and applies to complex matrices. Randomized estimates for the sketch term
+require their distribution and oversampling assumptions; a seed or fixed $L$
+is not an observed-error certificate. [[4]](/references#ref-4 "Halko N, Martinsson PG, Tropp JA. Finding structure with randomness. SIAM Rev. 2011;53:217-288.")
+
+The local identity $\|H_i-H_{i,\mathrm{loc}}\|_F^2
+=\|H_i\|_F^2-\|\widetilde V_i\|_F^2$ also assumes the stated
+orthogonality and exact products. Subtracting nearly equal energies is a
+poor numerical residual estimator for tight tolerances. Fixed-precision QB
+methods discuss these requirements explicitly. [[21]](/references#ref-21 "Yu W, Gu Y, Li Y. Efficient randomized algorithms for the fixed-precision low-rank matrix approximation. SIAM J Matrix Anal Appl. 2018;39:1339-1359.")
 
 ## Independent per-readout representation
 
@@ -395,8 +485,8 @@ recreated lazily if the operator is subsequently reused.
 Both representations use the same local rSVD model. Changing
 `basis_layout` changes how retained factors are stored and combined.
 `shared_rank_max` and `shared_basis_tol` are unused for independent factors;
-`global_basis_tol` must be `nothing`, and `shared_basis_method` must be
-`:rsvd`. A zero shared tolerance still constructs a shared basis and does
+`global_basis_tol` must be `nothing`, and `shared_basis_method` must select
+`:shared_low_rank` (or its compatible alias `:rsvd`). A zero shared tolerance still constructs a shared basis and does
 not select the independent representation. See the
 [storage reference](/reference/highorderlowrankop#per-readout-parameters).
 
@@ -443,7 +533,7 @@ $$
 
 A second projection/subtraction is performed in the implementation and the corresponding correction is accumulated in $C_i^{\mathrm{old}}$ to reduce finite-precision loss of orthogonality.
 
-The residual Gram matrix is decomposed as
+The residual Gram matrix is decomposed with eigenvalues in descending order as
 
 $$
 Z_i^H Z_i
@@ -624,10 +714,15 @@ change is included here.
 <a id="oversampled-coefficient-fitting"></a>
 <a id="rank-selection-and-final-audit"></a>
 
-This derivation covers regular local rSVD and incremental sharing. Joint
-construction and its algorithm evaluation are outside the reviewed scope.
-The former section anchor is retained for existing links; source signatures
-list the implemented keywords without making claims about that path.
+This page derives Shared low-rank, the local-rSVD plus incremental-sharing
+path. [Joint adaptive low-rank](/theory/joint-adaptive-low-rank) instead
+constructs one common snapshot parent, fits all actual time rows and
+recompresses the completed coefficient matrix. Its global H target, conditional
+error bounds and empirical rank-selection policy are described separately.
+The older `shared_basis_method=:joint` keeps its sampled per-readout checks;
+it is not an alias for `:joint_adaptive_low_rank`. The retained anchors above
+preserve existing links; the corresponding derivations are now on the
+[joint theory page](/theory/joint-adaptive-low-rank#phase-geometry-and-representative-snapshots).
 
 ## Final residual representation
 
@@ -775,6 +870,48 @@ $$
 
 The first term is the local rSVD approximation error and the second term is the incremental shared-basis approximation error. `shared_basis_tol` controls only the second stage relative to the retained local energy $\eta_i$; it does not bound the local rSVD truncation error relative to the full matrix $H_i$.
 
+### Orthogonal decomposition and a stacked bound
+
+The orthogonal local projection permits a stronger identity than the triangle
+inequality. The local residual is orthogonal to $U_{i,L}$, while both the local
+and shared approximations have sample-domain columns in its range. Thus
+
+$$
+\|H_i-\widehat q_i^{(0)}(S^{(0)})^H\|_F^2
+=\|H_i-H_{i,\mathrm{loc}}\|_F^2
++\|\widetilde V_i-S^{(0)}\bar C_i\|_F^2.
+$$
+
+Let $H$ stack all readouts, $H_{\mathrm{loc}}$ stack their local
+approximations, and $H_{\mathrm{sh}}=\widehat q^{(0)}(S^{(0)})^H$.
+If every accepted incremental update satisfies its actual residual condition
+$\|\widetilde V_i-S^{(0)}\bar C_i\|_F^2\leq\tau^2\eta_i$, then
+
+$$
+\|H_{\mathrm{loc}}-H_{\mathrm{sh}}\|_F^2
+\leq\tau^2\sum_i\eta_i=\tau^2\|H_{\mathrm{loc}}\|_F^2.
+$$
+
+Zero-padding old coefficient blocks preserves each old approximation, so this
+inequality does not require a post-hoc refit to the final basis. With
+$e_{\mathrm{loc}}=\|H-H_{\mathrm{loc}}\|_F/\|H\|_F$, orthogonality gives
+
+$$
+\frac{\|H-H_{\mathrm{sh}}\|_F^2}{\|H\|_F^2}
+\leq e_{\mathrm{loc}}^2+\tau^2(1-e_{\mathrm{loc}}^2).
+$$
+
+This is a conditional exact-arithmetic result: the stacked bound needs the
+true local projection and the stated actual residual inequalities.
+Orthonormal spatial updates are additionally used to infer those residual
+inequalities from the residual spectrum.
+For numerical factors, orthogonality defects, phase-product roundoff and
+weak-spectrum decisions add errors. The reported Gram-tail estimates are not
+rigorous Float32 certificates. In particular $\tau=0.01$ alone cannot certify
+1% total H error because $e_{\mathrm{loc}}$ remains unspecified.
+
+### Additional final compression
+
 For the stacked original phase matrix $H$, adding final recompression gives
 
 $$
@@ -790,6 +927,116 @@ not relative to $H$. Neither shared tolerance includes numerical NFFT
 interpolation, floating-point operator evaluation, physical input errors, or
 solver convergence. A phase-matrix Frobenius tolerance is not an image-error
 guarantee.
+
+The local residual remains orthogonal to the final representation: each
+recompressed readout still has sample-domain columns in the range of
+$U_{i,L}$. Write $E_{\mathrm{sh}}=H_{\mathrm{loc}}-H_{\mathrm{sh}}$ and
+$D_g=H_{\mathrm{sh}}-\widehat qS^H$. Then
+
+$$
+\|H-\widehat qS^H\|_F^2
+=\|H-H_{\mathrm{loc}}\|_F^2+\|E_{\mathrm{sh}}+D_g\|_F^2.
+$$
+
+If the final stage actually satisfies
+$\|D_g\|_F\leq\epsilon_g\|H_{\mathrm{sh}}\|_F$, the earlier shared
+residual conditions give
+
+$$
+\frac{\|H-\widehat qS^H\|_F^2}{\|H\|_F^2}
+\leq e_{\mathrm{loc}}^2+
+\left(\tau\sqrt{1-e_{\mathrm{loc}}^2}
++\epsilon_g\frac{\|H_{\mathrm{sh}}\|_F}{\|H\|_F}\right)^2.
+$$
+
+The sharing error is orthogonal to the basis available at its insertion time,
+but can have components along columns added later. A global rotation and
+truncation can mix these columns, so $\langle E_{\mathrm{sh}},D_g\rangle_F$
+need not vanish. Adding all three squared error percentages is therefore
+unjustified. The optional legacy global stage
+uses a coefficient Gram and subtractive tail accounting, unlike the blocked
+QR/SVD in Joint adaptive low-rank. Its ideal spectral interpretation does
+not remove the numerical limitations stated above.
+
+## Guarantees, empirical choices and contribution
+
+| Statement | Scope |
+|:--|:--|
+| Local projection identity and spatial-factor error transfer | Exact-arithmetic identities under the displayed orthogonality conditions. |
+| Stacked local-plus-shared bound | Conditional on each actual shared residual satisfying its threshold. |
+| Small-SVD optimality | For the projected matrix or residual being decomposed, not the entire completed streaming construction. |
+| Final shared rank is globally minimal | Not established; saved old coefficients are not refitted, and profile order can matter. |
+| A configured local rank or shared tolerance certifies total H error | Not established; evaluate the original H residual of the final factors. |
+| Lower memory or faster reconstruction | Implementation/workload properties requiring matched-accuracy measurements. |
+
+The method-specific design is weighted online spatial sharing without retaining
+all local spatial matrices, followed by a reusable common-trajectory execution.
+Its [joint alternative](/theory/joint-adaptive-low-rank#method-contribution-and-related-work)
+uses a different construction objective and error-selection policy. Neither
+path treats SVD, POD or randomized range finding as a new mathematical invention.
+
+## From H error to encoding and reconstruction error
+
+For the point-voxel model, stack actual time rows as $u$ and write the exact
+multi-coil encoding entry as a unit-modulus Fourier/temporal phase times
+$C_{vc}H_{uv}/\sqrt{N_v}$. If $\Delta H=\widehat H-H$ and
+$\Delta A=\widehat A-A$, then for raw weights $w_{uc}$,
+
+$$
+\|W\Delta A\|_F^2
+=\frac{1}{N_v}\sum_{u,v}|\Delta H_{uv}|^2
+\sum_c|w_{uc}|^2|C_{vc}|^2.
+$$
+
+Thus a global H tolerance is an unweighted average, whereas encoding error
+depends on coil and data weights. Additional encoding-only row factors add
+their squared moduli to this expression. With unit weights and
+$\sum_c|C_{vc}|^2=1$ at every voxel, relative encoding Frobenius error equals
+$e_H$ for exact Fourier encoding. This equality does not include NFFT error
+or imply the same relative error on every object or ROI.
+
+An illustrative inverse-problem bound makes the remaining dependence explicit.
+Consider converged linear Tikhonov solutions minimizing
+$\|Bx-d\|_2^2+\lambda\|x\|_2^2$, with the same $d=Wy$ and $\lambda>0$:
+$x$ uses $B=WA$, and $\widehat x$ uses $\widehat B=B+\Delta B$.
+Defining $r=d-Bx$, the normal equations give
+
+$$
+\widehat x-x=(\widehat B^H\widehat B+\lambda I)^{-1}
+\left[\Delta B^Hr-\widehat B^H\Delta Bx\right].
+$$
+
+Consequently
+
+$$
+\|\widehat x-x\|_2\leq
+\frac{\|\Delta B\|_2}{\sigma_{\min}(\widehat B)^2+\lambda}
+\left(\|r\|_2+\|\widehat B\|_2\|x\|_2\right).
+$$
+
+Here $\sigma_{\min}(B)=\inf_{\|z\|_2=1}\|Bz\|_2$ is defined over the
+entire chosen image domain. It is zero when B has a nullspace, including
+masked-out coordinates if the full grid is retained; it is not the smallest
+nonzero singular value of a rectangular matrix. Directly from the triangle
+inequality,
+
+$$
+\sigma_{\min}(\widehat B)
+\geq\max\{\sigma_{\min}(B)-\|\Delta B\|_2,0\}.
+$$
+
+Thus the denominator is always at least $\lambda$, with a stronger lower
+bound only when the original operator and perturbation justify it.
+The encoding Frobenius bound controls $\|\Delta B\|_2$ through
+$\|\Delta B\|_2\leq\|\Delta B\|_F$.
+
+This identity follows by subtracting the two normal systems. It illustrates
+dependence on conditioning, regularization, the data residual and weighted
+operator error. It is not a guarantee for arbitrary regularizers or singular
+unregularized systems. A finite CG output has the additional error to its own
+converged solution. NFFT, low-rank and iterative errors must therefore be
+validated separately; $e_H\leq\epsilon_H$ does not imply an image error below
+$\epsilon_H$.
 
 ## Parameter interpretation
 

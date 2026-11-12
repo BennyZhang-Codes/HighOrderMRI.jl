@@ -3,7 +3,7 @@
 Use `HighOrderLowRankOp` to apply an MRI encoding model repeatedly without
 materializing its full sample-by-voxel phase matrix. It combines NFFT Fourier
 encoding with low-rank factors for the remaining phase. The default construction
-uses local randomized SVD (rSVD) followed by an incremental shared spatial basis.
+is Shared low-rank: local randomized SVD (rSVD) followed by incremental spatial sharing.
 See the [low-rank derivation](/theory/low-rank) for the equations, approximation
 stages and references.
 
@@ -13,10 +13,14 @@ Input coefficients have shape `(nTerm,nSam,nDyn)`, and times have shape
 and a time vector. The generated [API below](#api) gives the complete signatures,
 defaults and return layout.
 
-::: info Construction covered here
-This page covers `shared_basis_method=:rsvd`. The generated signature also lists
-the implemented `joint_*` keywords; their construction method and evaluation
-are outside this page's scope.
+::: info Construction methods
+`shared_basis_method=:shared_low_rank` names the default Shared low-rank path;
+`:rsvd` remains the compatible default spelling. Opt into
+`shared_basis_method=:joint_adaptive_low_rank` with `epsilon_H` for a common
+snapshot parent, all-time fitting and empirical global H rank selection;
+`:adaptive` remains an alias. See the [joint theory](/theory/joint-adaptive-low-rank)
+for its bounds, budgets and empirical/certification distinction. The older
+`:joint` retains its separate sampled per-readout checks.
 :::
 
 ## A complete CPU example

@@ -187,12 +187,20 @@ factors, `:cpu` or `:regenerate` storage instead uses bounded GPU queues.
 ## Rank-distributed shared execution
 
 Select `normal_distribution=:rank` when shared-factor replication is the memory
-constraint. The public constructor requires:
+constraint. Both construction paths require `arrayType=CuArray`, at least two
+unique GPU IDs and `basis_layout=:shared`. Shared low-rank setup additionally
+requires:
 
-- `arrayType=CuArray` and at least two unique GPU IDs;
-- `basis_layout=:shared` and `shared_basis_method=:rsvd`;
+- `shared_basis_method=:shared_low_rank` (compatible default `:rsvd`);
 - voxel-distributed rSVD, either explicit `:voxel` or eligible `:auto`;
 - `rsvd_finalize=:gram` and a compatible kernel or chunked setup backend.
+
+Joint adaptive low-rank instead uses
+`shared_basis_method=:joint_adaptive_low_rank` (alias `:adaptive`) with
+`epsilon_H`, `global_basis_tol=nothing` and `rsvd_distribution=:auto` or
+`:single`. Its factor construction uses the primary GPU; rank-distributed
+execution starts afterward from the returned host factors. See its
+[construction and acceptance scope](/theory/joint-adaptive-low-rank).
 
 The parent operator retains complete `q`, `basis`, and CSM arrays in host RAM.
 Persistent workers and NFFT plans are created on the first forward, adjoint, or

@@ -2,7 +2,12 @@
 
 This page maps the mathematical notation to the arrays used by HighOrderMRI. Use it alongside the [encoding model](/theory/encoding-model) for physical phase conventions and the [low-rank derivation](/theory/low-rank) for the algorithm. Unless a page explicitly states a local convention, the same symbol has the same meaning throughout the documentation.
 
-The readouts indexed by $i$ encode one unknown image. The shared rSVD notation below distinguishes the completed incremental representation (superscript $(0)$ and rank $R_0$) from the final representation after optional recompression (rank $R$).
+$M^H$ denotes the conjugate transpose, and $M^\dagger$ the Moore-Penrose
+pseudoinverse. $\|M\|_F$ is the Frobenius norm, $\|M\|_2$ the matrix
+spectral norm, and $\|x\|_2$ the Euclidean vector norm. The Frobenius inner
+product is $\langle M_1,M_2\rangle_F=\operatorname{tr}(M_1^HM_2)$.
+
+The readouts indexed by $i$ encode one unknown image. The Shared low-rank notation below distinguishes the completed incremental representation (superscript $(0)$ and rank $R_0$) from the final representation after optional recompression (rank $R$). Joint adaptive low-rank uses a snapshot parent $Q_0$ of width $r_0$; this is distinct from either $R_0$ or the local randomized range $Q_i$.
 
 ## Indices and sizes
 
@@ -16,6 +21,7 @@ The readouts indexed by $i$ encode one unknown image. The shared rSVD notation b
 | $r$ | Shared-mode index; $q_r$ and $s_r$ are columns of the stacked temporal matrix and spatial basis |
 | $N_t$ | Number of ADC samples per readout (`nSam`) |
 | $N_{\mathrm{ro}}$ | Number of readouts (`nDyn`) |
+| $N=N_tN_{\mathrm{ro}}$ | Total actual time rows in the stacked residual matrix |
 | $N_v$ | Number of voxels inside the reconstruction mask, `count(mask)` |
 | $a$ | Spatial-axis index, x/y/z; distinct from readout $i$ |
 | $N_a$ | Number of grid points along spatial axis $a$ |
@@ -66,6 +72,7 @@ In the implementation, the time-integrated coefficients $k_{\ell,i}(t)$ are stor
 | $F_i$ | First-order Fourier encoding matrix | $N_t\times N_v$ |
 | $\mathcal F$ | First-order Fourier/NFFT encoding stacked over readouts, with full-grid embedding of masked inputs | sample space $\leftarrow$ image grid |
 | $H_i$ | Residual phase matrix containing static off-resonance and non-NFFT field terms | $N_t\times N_v$ |
+| $H$ | All residual phase blocks $H_i$ stacked with samples fastest; $\|H\|_F^2=NN_v$ | $N\times N_v$ |
 | $E_i$ | Complete single-dynamic spatial encoding matrix, excluding coil multiplication and the symmetric normalization | $N_t\times N_v$ |
 | $C_c$ | Diagonal matrix of receive sensitivities for coil $c$ | $N_v\times N_v$ |
 | $A_c$ | Encoding operator for coil $c$, including mask support and normalization | $(N_tN_{\mathrm{ro}})\times N_{\mathrm{grid}}$ |
@@ -78,6 +85,11 @@ The weighted normal operator is written
 $$
 A^H W^H W A.
 $$
+
+H contains only the positive-sign, unit-modulus residual phase. It excludes
+first-order Fourier encoding, zeroth-order phase, NFFT centre correction,
+coil sensitivities, weights and $1/\sqrt{N_v}$ normalization. The raw field
+features are real and their temporal/spatial products are in cycles.
 
 For real non-negative square-root density weights, $W^H W=W^2$. For complex raw weights use $W^H W$, whose diagonal is `abs2.(weight)`.
 
@@ -95,7 +107,7 @@ The local rSVD sketch width is $L_{\mathrm{sk}}=L+p\leq\min(N_t,N_v)$; $\ell$ is
 | $Q_i^{\mathrm{add}}$ | Appended residual modes, equal to $S_{i,\mathrm{new}}$; distinct from the range basis $Q_i$ | $N_v\times r_i$ |
 | $B_i=H_i^H Q_i$ | Projected adjoint matrix | $N_v\times L_{\mathrm{sk}}$ |
 | $U_{i,L}$ | Retained local sample-domain factor | $N_t\times L$ |
-| $\widetilde V_i=V_{i,L}\Sigma_{i,L}$ | Retained spatial singular vectors with singular values absorbed | $N_v\times L$ |
+| $\widetilde V_i=V_{i,L}\Sigma_{i,L}$ | Retained projected spatial factor; equals $H_i^HU_{i,L}$ in exact arithmetic | $N_v\times L$ |
 | $Z_i$ | Spatial-factor residual after projection onto the existing shared basis | $N_v\times L$ |
 | $Z_i^{\mathrm{svd}}$ | Right rotation from the local projected SVD/Gram eigensystem | $L_{\mathrm{sk}}\times L_{\mathrm{sk}}$ |
 | $S_i$ | Incremental shared spatial basis after profile $i$; $R_i$ here is its column count | $N_v\times R_i$ |
@@ -133,6 +145,38 @@ q_i(j,:)=\frac{d_{0,ji}\,c_{\mathrm{ctr},ji}}{\sqrt{N_v}}
 $$
 
 $\tau$ refers to compression of retained local factors. $\epsilon_g$ refers to additional error relative to the already shared representation. Neither is an image-error tolerance. See the [algorithm and error derivation](/theory/low-rank#two-stage-approximation-error).
+
+### Joint adaptive low-rank quantities
+
+The [joint derivation](/theory/joint-adaptive-low-rank) uses the same H and
+distinguishes pure coefficients $\widehat q$ from folded operator coefficients
+$q$. Its factor-level function returns the pure coefficients under the Julia
+field name `q`.
+
+| Symbol | Meaning | Dimensions |
+| --- | --- | --- |
+| $u$ | Stacked actual time-row index, with samples fastest within a readout | $1,\ldots,N$ |
+| $\boldsymbol\alpha_u,\boldsymbol\beta_v$ | Real temporal and spatial residual-phase feature vectors | $d$ entries each |
+| $C_\beta$ | Covariance of spatial features over all masked voxels | $d\times d$ |
+| $d_{uw}$ | Covariance-based phase pseudometric between time states | cycles |
+| $K$ | Actual representative snapshot count in the derivation; bounded by the requested budget | positive integer |
+| $J$ | Number of distinct spatial coefficient-fitting points | positive integer |
+| $X$ | Weighted conjugated phase-snapshot matrix | $N_v\times K$ for K actual snapshots |
+| $Q_0$ | Numerically orthogonal snapshot parent | $N_v\times r_0$ |
+| $r_0$ | Actual retained parent width, limited by cap and numerical resolution | positive integer |
+| $P_0=Q_0Q_0^H$ | Orthogonal spatial projector when $Q_0^HQ_0=I$ | $N_v\times N_v$ |
+| $M_J$ | Selection matrix for J different fitting voxels | $J\times N_v$ |
+| $A_J=M_JQ_0$ | Sampled parent for coefficient recovery | $J\times r_0$ |
+| $\gamma_J=\|A_J^\dagger\|_2$ | Conditional gappy error-amplification factor; differs from $\kappa(A_J)$ | dimensionless |
+| $\widehat q_0$ | All-time gappy coefficients before final rotation | $N\times r_0$ |
+| $\widetilde H=\widehat q_0Q_0^H$ | Fitted parent approximation whose spectrum is recompressed | $N\times N_v$ |
+| $V_{q,R}$ | Leading right-singular directions of the all-time coefficient matrix | $r_0\times R$ |
+| $e_H$ | Relative Frobenius residual of the final pure-phase factors against original H | dimensionless |
+| $\epsilon_H$ | User target for original-H global relative Frobenius error | dimensionless |
+| $\delta$ | Statistical failure probability in an optional valid certificate; not epsilon_H | dimensionless |
+
+The subscript zero in $Q_0,\widehat q_0$ labels the joint parent representation.
+It does not refer to the spatially uniform physical phase $k_0$.
 
 ## Implementation array names
 
