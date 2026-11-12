@@ -1,8 +1,8 @@
 {
-  "version": "stable",
   "code_sha": "425f7df50decd64fbba16180e0c96970894dabfb",
   "docs_sha": "f949b4faef044f8550f687d2580f6fbdba99242d",
   "release": "v0.1.0",
+  "version": "stable",
   "preview": false,
   "api_map_sha256": "e051269f019493a890294a926c668de6c34a99b7a3346d5aecb051d2261d0223"
 }
