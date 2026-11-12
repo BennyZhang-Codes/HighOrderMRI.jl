@@ -48,6 +48,15 @@ report. An independent final audit is not silently inferred from internal checks
 The old `shared_basis_tol` and `global_basis_tol` meanings, precision and NFFT
 settings are unchanged.
 
+For an optional finite uniform-box voxel model, compute
+`a = HighOrderMRI.voxel_aperture(grid, k_first_order)` from the same prepared first-order
+coefficients used by the operator. Pass it as
+`recon_HOOp(op, Data, weight, recParams; encoding_weights=a)`; on CUDA, move `a`
+to the same backend as the raw weights. Only the encoding receives this factor;
+data receive the raw weights once. This integrates the linear phase over a voxel,
+and treats other spatial factors as constant inside it. Point-voxel reconstruction
+remains the default. Close the operator after its final use.
+
 ## Documentation
 
 The [development documentation](https://bennyzhang-codes.github.io/HighOrderMRI.jl/dev/)
