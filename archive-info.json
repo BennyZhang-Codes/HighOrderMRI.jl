@@ -2,7 +2,7 @@
   "dev_code_sha": "b81fec211094cd76a7557dd698ae4466a9264cb5",
   "main_code_sha": "98fe339b57e147370bacae959ded9b3cc45f097b",
   "schema_version": 1,
-  "source_ref": "refs/heads/dev_jinyuan",
-  "source_sha": "b81fec211094cd76a7557dd698ae4466a9264cb5",
+  "source_ref": "refs/heads/main",
+  "source_sha": "98fe339b57e147370bacae959ded9b3cc45f097b",
   "stable": "v0.1.0"
 }
