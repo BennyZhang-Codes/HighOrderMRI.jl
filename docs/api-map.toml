@@ -1,0 +1,1106 @@
+schema_version = 1
+# Source API and export ownership; generated fragments are build output.
+
+[[api]]
+id = "highordermri"
+binding = "HighOrderMRI"
+module = "HighOrderMRI"
+page = "api.md"
+anchor = "api-highordermri"
+status = "approved"
+note = "模块绑定；属于49个原@docs绑定之一，不计作一个可调用函数。"
+original_documenter = true
+
+[[api]]
+id = "grid"
+binding = "Grid"
+module = "HighOrderMRI"
+page = "reference/grid-basis.md"
+anchor = "api-grid"
+status = "approved"
+fragment = "grid.md"
+original_documenter = true
+
+[[api.parts]]
+kind = "type"
+title = "Type"
+anchor = "api-grid-type"
+
+[[api.parts]]
+kind = "method"
+title = "Centred grid"
+anchor = "api-grid-dimensions"
+argument_types = ["Int64", "Int64", "Int64", "T", "T", "T"]
+
+[[api.parts]]
+kind = "method"
+title = "Dictionary restoration"
+anchor = "api-grid-dictionary"
+argument_types = ["AbstractDict"]
+
+[[api]]
+id = "spherical-harmonics"
+binding = "SphericalHarmonics"
+module = "HighOrderMRI"
+page = "reference/grid-basis.md"
+anchor = "api-spherical-harmonics"
+status = "approved"
+fragment = "spherical-harmonics.md"
+original_documenter = true
+
+[[api]]
+id = "basisfunc-spha"
+binding = "basisfunc_spha"
+module = "HighOrderMRI"
+page = "reference/grid-basis.md"
+anchor = "api-basisfunc-spha"
+status = "approved"
+fragment = "basisfunc-spha.md"
+original_documenter = true
+
+[[api.parts]]
+kind = "method"
+title = "Several terms"
+anchor = "api-basisfunc-spha-matrix"
+argument_types = ["AbstractVector{T}", "AbstractVector{T}", "AbstractVector{T}", "AbstractVector{Int}"]
+
+[[api.parts]]
+kind = "method"
+title = "One term"
+anchor = "api-basisfunc-spha-vector"
+argument_types = ["AbstractVector{T}", "AbstractVector{T}", "AbstractVector{T}", "Int64"]
+
+[[api]]
+id = "highorderop"
+binding = "HighOrderOp"
+module = "HighOrderMRI"
+page = "reference/highorderop.md"
+anchor = "api-highorderop"
+status = "approved"
+fragment = "highorderop.md"
+original_documenter = true
+
+[[api.parts]]
+kind = "type"
+title = "Type"
+anchor = "api-highorderop-type"
+
+[[api.parts]]
+kind = "method"
+title = "Constructor"
+anchor = "api-highorderop-constructor"
+argument_types = ["Grid{T}", "AbstractArray{T,2}", "AbstractVector{T}"]
+
+[[api]]
+id = "highorderkernelop"
+binding = "HighOrderKernelOp"
+module = "HighOrderMRI"
+page = "reference/highorderkernelop.md"
+anchor = "api-highorderkernelop"
+status = "approved"
+fragment = "highorderkernelop.md"
+original_documenter = true
+
+[[api.parts]]
+kind = "type"
+title = "Type"
+anchor = "api-highorderkernelop-type"
+
+[[api.parts]]
+kind = "method"
+title = "Grid and trajectory constructor"
+anchor = "api-highorderkernelop-constructor"
+argument_types = ["Grid{T}", "AbstractArray{T,2}", "AbstractVector{T}"]
+
+[[api.parts]]
+kind = "method"
+title = "Internal operator adapter"
+anchor = "api-highorderkernelop-adapter"
+argument_types = ["HOOp{T}"]
+
+[[api]]
+id = "explicit-gpu-normal"
+binding = "explicit_gpu_normal"
+module = "HighOrderMRI"
+page = "reference/highorderkernelop.md"
+anchor = "api-explicit-gpu-normal"
+status = "approved"
+fragment = "explicit-gpu-normal.md"
+original_documenter = true
+
+[[api.parts]]
+kind = "method"
+title = "Resident public wrapper"
+anchor = "api-explicit-gpu-normal-public"
+argument_types = ["HighOrderKernelOp{T,F1,F2,S,O}"]
+
+[[api.parts]]
+kind = "method"
+title = "Internal single GPU"
+anchor = "api-explicit-gpu-normal-single"
+argument_types = ["ExplicitGPUOp"]
+
+[[api.parts]]
+kind = "method"
+title = "Internal multiple GPU"
+anchor = "api-explicit-gpu-normal-multi"
+argument_types = ["ExplicitMultiGPUOp"]
+
+[[api]]
+id = "highorderlowrankop"
+binding = "HighOrderLowRankOp"
+module = "HighOrderMRI"
+page = "reference/highorderlowrankop.md"
+anchor = "api-highorderlowrankop"
+status = "approved"
+fragment = "highorderlowrankop.md"
+original_documenter = true
+
+[[api.parts]]
+kind = "type"
+title = "Operator type"
+anchor = "api-highorderlowrankop-type"
+
+[[api.parts]]
+kind = "method"
+title = "Single-readout constructor"
+anchor = "api-highorderlowrankop-single-readout"
+argument_types = ["Grid{T}", "AbstractArray{T,2}", "AbstractArray{T,1}"]
+
+[[api.parts]]
+kind = "method"
+title = "Multiple-readout constructor"
+anchor = "api-highorderlowrankop-multi-readout"
+argument_types = ["Grid{T}", "AbstractArray{T,3}", "AbstractArray{T,2}"]
+
+[[api]]
+id = "rebuild-hoop"
+binding = "@rebuild_HOOp"
+module = "HighOrderMRI"
+page = "reference/resources.md"
+anchor = "api-rebuild-hoop"
+status = "approved"
+fragment = "rebuild-hoop.md"
+original_documenter = true
+
+[[api]]
+id = "coil-compression-transform"
+binding = "CoilCompressionTransform"
+module = "HighOrderMRI"
+page = "reference/coil-compression-transform.md"
+anchor = "api-coil-compression-transform"
+status = "approved"
+fragment = "coil-compression-transform.md"
+original_documenter = true
+
+[[api.parts]]
+kind = "type"
+title = "Type"
+anchor = "api-coil-compression-transform-type"
+
+[[api.parts]]
+kind = "method"
+title = "Compatibility constructor"
+anchor = "api-coil-compression-transform-compatibility"
+argument_types = ["Matrix{Complex{T}}", "Vector{T}", "T", "Union{Nothing,Matrix{Complex{T}}}"]
+
+[[api]]
+id = "estimate-noise-covariance"
+binding = "estimate_noise_covariance"
+module = "HighOrderMRI"
+page = "reference/estimate-noise-covariance.md"
+anchor = "api-estimate-noise-covariance"
+status = "approved"
+fragment = "estimate-noise-covariance.md"
+original_documenter = true
+
+[[api]]
+id = "noise-prewhitening-scale-factor"
+binding = "noise_prewhitening_scale_factor"
+module = "HighOrderMRI"
+page = "reference/noise-prewhitening-scale.md"
+anchor = "api-noise-prewhitening-scale-factor"
+status = "approved"
+fragment = "noise-prewhitening-scale-factor.md"
+original_documenter = true
+
+[[api]]
+id = "fit-coil-compression"
+binding = "fit_coil_compression"
+module = "HighOrderMRI"
+page = "reference/fit-coil-compression.md"
+anchor = "api-fit-coil-compression"
+status = "approved"
+fragment = "fit-coil-compression.md"
+original_documenter = true
+
+[[api]]
+id = "apply-coil-compression"
+binding = "apply_coil_compression"
+module = "HighOrderMRI"
+page = "reference/apply-coil-compression.md"
+anchor = "api-apply-coil-compression"
+status = "approved"
+fragment = "apply-coil-compression.md"
+original_documenter = true
+
+[[api]]
+id = "compress-coils"
+binding = "compress_coils"
+module = "HighOrderMRI"
+page = "reference/compress-coils.md"
+anchor = "api-compress-coils"
+status = "approved"
+fragment = "compress-coils.md"
+original_documenter = true
+
+[[api]]
+id = "recon-hoop"
+binding = "recon_HOOp"
+module = "HighOrderMRI"
+page = "reference/recon-hoop.md"
+anchor = "api-recon-hoop"
+status = "approved"
+fragment = "recon-hoop.md"
+original_documenter = true
+
+[[api]]
+id = "sampling-density"
+binding = "samplingDensity"
+module = "HighOrderMRI"
+page = "reference/sampling-density.md"
+anchor = "api-sampling-density"
+status = "approved"
+fragment = "sampling-density.md"
+dependency_docs = "exclude"
+original_documenter = true
+
+[[api]]
+id = "coil-combine-sos"
+binding = "CoilCombineSOS"
+module = "HighOrderMRI"
+page = "reference/coil-combine-sos.md"
+anchor = "api-coil-combine-sos"
+status = "approved"
+fragment = "coil-combine-sos.md"
+original_documenter = true
+
+[[api]]
+id = "girf-model"
+binding = "GIRFModel"
+module = "HighOrderMRI"
+page = "reference/girf-model.md"
+anchor = "api-girf-model"
+status = "approved"
+source_files = ["src/GIRF/GIRF.jl"]
+original_documenter = true
+
+[[api.parts]]
+kind = "type"
+title = "Model storage"
+anchor = "api-girf-model-type"
+
+[[api.parts]]
+kind = "method"
+title = "Constructor"
+anchor = "api-girf-model-constructor"
+argument_types = ["AbstractArray{Complex{T}, 3}", "AbstractVector{T}"]
+
+[[api]]
+id = "apply-girf"
+binding = "apply_girf"
+module = "HighOrderMRI"
+page = "reference/apply-girf.md"
+anchor = "api-apply-girf"
+status = "approved"
+source_files = ["src/GIRF/apply_girf.jl", "src/GIRF/GIRF.jl"]
+original_documenter = true
+
+[[api.parts]]
+kind = "method"
+title = "Transfer array"
+anchor = "api-apply-girf-array"
+argument_types = ["AbstractArray{T, N}", "AbstractArray"]
+
+[[api.parts]]
+kind = "method"
+title = "Model wrapper"
+anchor = "api-apply-girf-model"
+argument_types = ["AbstractArray", "GIRFModel"]
+
+[[api]]
+id = "interp-traj-time"
+binding = "InterpTrajTime"
+module = "HighOrderMRI"
+page = "reference/interp-traj-time.md"
+anchor = "api-interp-traj-time"
+status = "approved"
+source_files = ["src/Synchronization/InterpTraj.jl"]
+original_documenter = true
+
+[[api.parts]]
+kind = "method"
+title = "Explicit ADC times"
+anchor = "api-interp-traj-time-explicit"
+argument_types = ["AbstractArray{T, 2}", "Real", "Real", "AbstractVector{T}"]
+
+[[api.parts]]
+kind = "method"
+title = "Equal sample intervals"
+anchor = "api-interp-traj-time-convenience"
+argument_types = ["AbstractArray{T, 2}", "Real", "Real"]
+
+[[api.parts]]
+kind = "method"
+title = "Multiple shots"
+anchor = "api-interp-traj-time-multishot"
+argument_types = ["AbstractArray{T, 3}", "Real", "AbstractVector{T}", "AbstractArray{T, 2}"]
+
+[[api]]
+id = "find-delay"
+binding = "FindDelay"
+module = "HighOrderMRI"
+page = "reference/find-delay.md"
+anchor = "api-find-delay"
+status = "approved"
+fragment = "find-delay.md"
+source_files = ["src/Synchronization/FindDelay.jl"]
+note = "Previously adopted source/page reviewed for consistency; unchanged in this batch."
+original_documenter = true
+
+[[api]]
+id = "find-delay-multishot"
+binding = "FindDelay_multishot"
+module = "HighOrderMRI"
+page = "reference/find-delay-multishot.md"
+anchor = "api-find-delay-multishot"
+status = "approved"
+source_files = ["src/Synchronization/FindDelay_multishot.jl"]
+note = "One docstring contains both exact overload signatures; no API parts needed."
+original_documenter = true
+
+[[api]]
+id = "complex-alignment-scale"
+binding = "complex_alignment_scale"
+module = "HighOrderMRI"
+page = "reference/image-metrics.md"
+anchor = "api-complex-alignment-scale"
+status = "approved"
+fragment = "complex-alignment-scale.md"
+source_files = ["src/utils/ImageMetrics.jl"]
+original_documenter = true
+
+[[api]]
+id = "raw-complex-nrmse"
+binding = "raw_complex_nrmse"
+module = "HighOrderMRI"
+page = "reference/image-metrics.md"
+anchor = "api-raw-complex-nrmse"
+status = "approved"
+fragment = "raw-complex-nrmse.md"
+source_files = ["src/utils/ImageMetrics.jl"]
+original_documenter = true
+
+[[api]]
+id = "aligned-complex-nrmse"
+binding = "aligned_complex_nrmse"
+module = "HighOrderMRI"
+page = "reference/image-metrics.md"
+anchor = "api-aligned-complex-nrmse"
+status = "approved"
+fragment = "aligned-complex-nrmse.md"
+source_files = ["src/utils/ImageMetrics.jl"]
+original_documenter = true
+
+[[api]]
+id = "magnitude-nrmse"
+binding = "magnitude_nrmse"
+module = "HighOrderMRI"
+page = "reference/image-metrics.md"
+anchor = "api-magnitude-nrmse"
+status = "approved"
+fragment = "magnitude-nrmse.md"
+source_files = ["src/utils/ImageMetrics.jl"]
+original_documenter = true
+
+[[api]]
+id = "magnitude-ssim"
+binding = "magnitude_ssim"
+module = "HighOrderMRI"
+page = "reference/image-metrics.md"
+anchor = "api-magnitude-ssim"
+status = "approved"
+fragment = "magnitude-ssim.md"
+source_files = ["src/utils/ImageMetrics.jl"]
+original_documenter = true
+
+[[api]]
+id = "gpu"
+binding = "gpu"
+module = "HighOrderMRI"
+page = "reference/utilities.md"
+anchor = "api-gpu"
+status = "approved"
+fragment = "gpu.md"
+source_files = ["src/utils/GPUFunctions.jl"]
+original_documenter = true
+
+[[api]]
+id = "cpu"
+binding = "cpu"
+module = "HighOrderMRI"
+page = "reference/utilities.md"
+anchor = "api-cpu"
+status = "approved"
+fragment = "cpu.md"
+source_files = ["src/utils/GPUFunctions.jl"]
+original_documenter = true
+
+[[api]]
+id = "f32"
+binding = "f32"
+module = "HighOrderMRI"
+page = "reference/utilities.md"
+anchor = "api-f32"
+status = "approved"
+fragment = "f32.md"
+source_files = ["src/utils/GPUFunctions.jl"]
+original_documenter = true
+
+[[api]]
+id = "f64"
+binding = "f64"
+module = "HighOrderMRI"
+page = "reference/utilities.md"
+anchor = "api-f64"
+status = "approved"
+fragment = "f64.md"
+source_files = ["src/utils/GPUFunctions.jl"]
+original_documenter = true
+
+[[api]]
+id = "grad2traj"
+binding = "grad2traj"
+module = "HighOrderMRI"
+page = "reference/utilities.md"
+anchor = "api-grad2traj"
+status = "approved"
+fragment = "grad2traj.md"
+source_files = ["src/utils/conversion.jl"]
+original_documenter = true
+
+[[api]]
+id = "traj2grad"
+binding = "traj2grad"
+module = "HighOrderMRI"
+page = "reference/utilities.md"
+anchor = "api-traj2grad"
+status = "approved"
+fragment = "traj2grad.md"
+source_files = ["src/utils/conversion.jl"]
+original_documenter = true
+
+[[api]]
+id = "imresize-real"
+binding = "imresize_real"
+module = "HighOrderMRI"
+page = "reference/utilities.md"
+anchor = "api-imresize-real"
+status = "approved"
+fragment = "imresize-real.md"
+source_files = ["src/utils/ImageResize.jl"]
+original_documenter = true
+
+[[api]]
+id = "imresize-complex"
+binding = "imresize_complex"
+module = "HighOrderMRI"
+page = "reference/utilities.md"
+anchor = "api-imresize-complex"
+status = "approved"
+fragment = "imresize-complex.md"
+source_files = ["src/utils/ImageResize.jl"]
+original_documenter = true
+
+[[api]]
+id = "get-center-range"
+binding = "get_center_range"
+module = "HighOrderMRI"
+page = "reference/utilities.md"
+anchor = "api-get-center-range"
+status = "approved"
+fragment = "get-center-range.md"
+source_files = ["src/utils/ImageProcess.jl"]
+original_documenter = true
+
+[[api]]
+id = "get-center-crop"
+binding = "get_center_crop"
+module = "HighOrderMRI"
+page = "reference/utilities.md"
+anchor = "api-get-center-crop"
+status = "approved"
+fragment = "get-center-crop.md"
+source_files = ["src/utils/ImageProcess.jl"]
+original_documenter = true
+
+[[api]]
+id = "get-factors"
+binding = "get_factors"
+module = "HighOrderMRI"
+page = "reference/utilities.md"
+anchor = "api-get-factors"
+status = "approved"
+fragment = "get-factors.md"
+source_files = ["src/utils/utils.jl"]
+original_documenter = true
+
+[[api]]
+id = "plt-plot"
+binding = "plt_plot"
+module = "HighOrderMRI"
+page = "reference/plotting.md"
+anchor = "api-plt-plot"
+status = "approved"
+fragment = "plt-plot.md"
+source_files = ["src/plot/plt_plot.jl"]
+original_documenter = true
+
+[[api]]
+id = "plt-scatter"
+binding = "plt_scatter"
+module = "HighOrderMRI"
+page = "reference/plotting.md"
+anchor = "api-plt-scatter"
+status = "approved"
+fragment = "plt-scatter.md"
+source_files = ["src/plot/plt_scatter.jl"]
+original_documenter = true
+
+[[api]]
+id = "plt-image"
+binding = "plt_image"
+module = "HighOrderMRI"
+page = "reference/plotting.md"
+anchor = "api-plt-image"
+status = "approved"
+fragment = "plt-image.md"
+source_files = ["src/plot/plt_image.jl"]
+original_documenter = true
+
+[[api.parts]]
+kind = "method"
+title = "Matrix"
+anchor = "api-plt-image-matrix"
+argument_types = ["AbstractArray{<:Real, 2}"]
+
+[[api.parts]]
+kind = "method"
+title = "Volume"
+anchor = "api-plt-image-volume"
+argument_types = ["AbstractArray{<:Real, 3}"]
+
+[[api.parts]]
+kind = "method"
+title = "Image collection"
+anchor = "api-plt-image-image-collection"
+argument_types = ["Vector{<:AbstractArray}"]
+
+[[api]]
+id = "plt-b0map"
+binding = "plt_B0map"
+module = "HighOrderMRI"
+page = "reference/plotting.md"
+anchor = "api-plt-b0map"
+status = "approved"
+fragment = "plt-b0map.md"
+source_files = ["src/plot/plt_B0map.jl"]
+original_documenter = true
+
+[[api.parts]]
+kind = "method"
+title = "Matrix"
+anchor = "api-plt-b0map-matrix"
+argument_types = ["AbstractArray{<:Real, 2}"]
+
+[[api.parts]]
+kind = "method"
+title = "Volume"
+anchor = "api-plt-b0map-volume"
+argument_types = ["AbstractArray{<:Real, 3}"]
+
+[[api.parts]]
+kind = "method"
+title = "Image collection"
+anchor = "api-plt-b0map-image-collection"
+argument_types = ["Vector{<:AbstractArray}"]
+
+[[api]]
+id = "plt-kspha"
+binding = "plt_kspha"
+module = "HighOrderMRI"
+page = "reference/plotting.md"
+anchor = "api-plt-kspha"
+status = "approved"
+fragment = "plt-kspha.md"
+source_files = ["src/plot/plt_kspha.jl"]
+original_documenter = true
+
+[[api]]
+id = "plt-ksphas"
+binding = "plt_ksphas"
+module = "HighOrderMRI"
+page = "reference/plotting.md"
+anchor = "api-plt-ksphas"
+status = "approved"
+fragment = "plt-ksphas.md"
+source_files = ["src/plot/plt_kspha.jl"]
+original_documenter = true
+
+[[api]]
+id = "plt-bfield"
+binding = "plt_bfield"
+module = "HighOrderMRI"
+page = "reference/plotting.md"
+anchor = "api-plt-bfield"
+status = "approved"
+fragment = "plt-bfield.md"
+source_files = ["src/plot/plt_bfield.jl"]
+original_documenter = true
+
+[[api]]
+id = "plt-bfield-com"
+binding = "plt_bfield_com"
+module = "HighOrderMRI"
+page = "reference/plotting.md"
+anchor = "api-plt-bfield-com"
+status = "approved"
+fragment = "plt-bfield-com.md"
+source_files = ["src/plot/plt_bfield.jl"]
+original_documenter = true
+
+[[api]]
+id = "plt-grad"
+binding = "plt_grad"
+module = "HighOrderMRI"
+page = "reference/plotting.md"
+anchor = "api-plt-grad"
+status = "approved"
+note = "All four root GIRF and MRIGeometry geometry methods in one block; geometry page links here and does not duplicate the include."
+fragment = "plt-grad.md"
+source_files = ["src/plot/plt_grad.jl", "MRIGeometry/src/plot/plt_grad.jl"]
+original_documenter = true
+
+[[api.parts]]
+kind = "method"
+title = "GIRF matrix"
+anchor = "api-plt-grad-girf-matrix"
+argument_types = ["AbstractMatrix", "GIRFModel"]
+
+[[api.parts]]
+kind = "method"
+title = "GIRF shots"
+anchor = "api-plt-grad-girf-shots"
+argument_types = ["AbstractArray{T, 3}", "GIRFModel"]
+
+[[api.parts]]
+kind = "method"
+title = "Nominal gradient matrix"
+anchor = "api-plt-grad-geometry-matrix"
+argument_types = ["AbstractMatrix", "Geometry"]
+
+[[api.parts]]
+kind = "method"
+title = "Nominal gradient readouts"
+anchor = "api-plt-grad-geometry-readouts"
+argument_types = ["AbstractArray{T, 3}", "Geometry"]
+
+[[api]]
+id = "mosaic"
+binding = "mosaic"
+module = "HighOrderMRI"
+page = "reference/plotting.md"
+anchor = "api-mosaic"
+status = "approved"
+fragment = "mosaic.md"
+source_files = ["src/plot/mosaic.jl"]
+original_documenter = true
+
+[[api.parts]]
+kind = "method"
+title = "Volume"
+anchor = "api-mosaic-volume"
+argument_types = ["<untyped>"]
+
+[[api.parts]]
+kind = "method"
+title = "Image collection"
+anchor = "api-mosaic-image-collection"
+argument_types = ["Vector{<:AbstractArray}"]
+
+[[api]]
+id = "release-highorder-normal-backend"
+binding = "release_highorder_normal_backend!"
+module = "HighOrderMRI"
+page = "reference/resources.md"
+anchor = "api-release-highorder-normal-backend"
+status = "approved"
+fragment = "release-highorder-normal-backend.md"
+original_documenter = false
+
+[[api]]
+id = "ho-img-scale"
+binding = "HO_img_scale"
+module = "HighOrderMRI"
+page = "reference/image-metrics.md"
+anchor = "api-ho-img-scale"
+fragment = "ho-img-scale.md"
+status = "approved"
+source_files = ["src/utils/ImageMetrics.jl"]
+original_documenter = false
+
+[[api]]
+id = "ho-mse"
+binding = "HO_MSE"
+module = "HighOrderMRI"
+page = "reference/image-metrics.md"
+anchor = "api-ho-mse"
+fragment = "ho-mse.md"
+status = "approved"
+source_files = ["src/utils/ImageMetrics.jl"]
+original_documenter = false
+
+[[api]]
+id = "ho-rmse"
+binding = "HO_RMSE"
+module = "HighOrderMRI"
+page = "reference/image-metrics.md"
+anchor = "api-ho-rmse"
+fragment = "ho-rmse.md"
+status = "approved"
+source_files = ["src/utils/ImageMetrics.jl"]
+original_documenter = false
+
+[[api]]
+id = "ho-nrmse"
+binding = "HO_NRMSE"
+module = "HighOrderMRI"
+page = "reference/image-metrics.md"
+anchor = "api-ho-nrmse"
+fragment = "ho-nrmse.md"
+status = "approved"
+source_files = ["src/utils/ImageMetrics.jl"]
+original_documenter = false
+
+[[api]]
+id = "ho-ssim"
+binding = "HO_SSIM"
+module = "HighOrderMRI"
+page = "reference/image-metrics.md"
+anchor = "api-ho-ssim"
+fragment = "ho-ssim.md"
+status = "approved"
+source_files = ["src/utils/ImageMetrics.jl"]
+original_documenter = false
+
+[[api]]
+id = "normalization"
+binding = "normalization"
+module = "HighOrderMRI"
+page = "reference/utilities.md"
+anchor = "api-normalization"
+fragment = "normalization.md"
+status = "approved"
+source_files = ["src/utils/ImageProcess.jl"]
+original_documenter = false
+
+[[api]]
+id = "standardization"
+binding = "standardization"
+module = "HighOrderMRI"
+page = "reference/utilities.md"
+anchor = "api-standardization"
+fragment = "standardization.md"
+status = "approved"
+source_files = ["src/utils/ImageProcess.jl"]
+original_documenter = false
+
+[[api]]
+id = "get-mask"
+binding = "get_mask"
+module = "HighOrderMRI"
+page = "reference/utilities.md"
+anchor = "api-get-mask"
+fragment = "get-mask.md"
+status = "approved"
+source_files = ["src/utils/utils.jl"]
+original_documenter = false
+
+[[api]]
+id = "struct-to-dict"
+binding = "struct_to_dict"
+module = "HighOrderMRI"
+page = "reference/utilities.md"
+anchor = "api-struct-to-dict"
+fragment = "struct-to-dict.md"
+status = "approved"
+source_files = ["src/utils/io.jl"]
+original_documenter = false
+
+[[api]]
+id = "convert-fft"
+binding = "convert_fft"
+module = "HighOrderMRI"
+page = "reference/utilities.md"
+anchor = "api-convert-fft"
+fragment = "convert-fft.md"
+status = "approved"
+source_files = ["src/Recon/recon_ifft.jl"]
+original_documenter = false
+
+[[api]]
+id = "convert-ifft"
+binding = "convert_ifft"
+module = "HighOrderMRI"
+page = "reference/utilities.md"
+anchor = "api-convert-ifft"
+fragment = "convert-ifft.md"
+status = "approved"
+source_files = ["src/Recon/recon_ifft.jl"]
+original_documenter = false
+
+[[exports]]
+binding = "DCS2RPS"
+module = "HighOrderMRI"
+disposition = "reexport"
+source_module = "MRIGeometry"
+note = "Device inverse and inherited vendor limitations covered."
+page = "reference/geometry.md"
+anchor = "geometry-and-grid-apis"
+status = "documented"
+source_files = ["MRIGeometry/src/Grid.jl"]
+
+[[exports]]
+binding = "Geometry"
+module = "HighOrderMRI"
+disposition = "reexport"
+source_module = "MRIGeometry"
+note = "Both constructors, precision/shape/units, mutable derived state and vendor placeholders covered."
+page = "reference/geometry.md"
+anchor = "geometry-and-grid-apis"
+status = "documented"
+source_files = ["MRIGeometry/src/geometry/Geometry.jl"]
+
+[[exports]]
+binding = "MRIGeometry"
+module = "HighOrderMRI"
+disposition = "reexport"
+source_module = "MRIGeometry"
+note = "Module/re-export namespace, not a constructor."
+page = "reference/geometry.md"
+anchor = "geometry-and-grid-apis"
+status = "documented"
+source_files = ["MRIGeometry/src/MRIGeometry.jl"]
+
+[[exports]]
+binding = "PCS2RPS"
+module = "HighOrderMRI"
+disposition = "reexport"
+source_module = "MRIGeometry"
+note = "Transpose inverse formula and limitations covered."
+page = "reference/geometry.md"
+anchor = "geometry-and-grid-apis"
+status = "documented"
+source_files = ["MRIGeometry/src/Grid.jl"]
+
+[[exports]]
+binding = "RPS2DCS"
+module = "HighOrderMRI"
+disposition = "reexport"
+source_module = "MRIGeometry"
+note = "Device affine and inherited vendor limitations covered."
+page = "reference/geometry.md"
+anchor = "geometry-and-grid-apis"
+status = "documented"
+source_files = ["MRIGeometry/src/Grid.jl"]
+
+[[exports]]
+binding = "RPS2PCS"
+module = "HighOrderMRI"
+disposition = "reexport"
+source_module = "MRIGeometry"
+note = "Affine formula, final-axis shape, units, precision and orthogonality covered."
+page = "reference/geometry.md"
+anchor = "geometry-and-grid-apis"
+status = "documented"
+source_files = ["MRIGeometry/src/Grid.jl"]
+
+[[exports]]
+binding = "export_nifti"
+module = "HighOrderMRI"
+disposition = "reexport"
+source_module = "MRIGeometry"
+note = "All four overloads, file names/types/affine/units and confirmed vector-overload failures covered."
+page = "reference/geometry.md"
+anchor = "nifti-export"
+status = "documented"
+source_files = ["MRIGeometry/src/ExportNIfTI.jl"]
+
+[[exports]]
+binding = "gen_RPS_grid"
+module = "HighOrderMRI"
+disposition = "reexport"
+source_module = "MRIGeometry"
+note = "Both overloads, voxel centres, types/shape/units and positive input preconditions covered."
+page = "reference/geometry.md"
+anchor = "geometry-and-grid-apis"
+status = "documented"
+source_files = ["MRIGeometry/src/Grid.jl"]
+
+[[exports]]
+binding = "get_geometry"
+module = "HighOrderMRI"
+disposition = "reexport"
+source_module = "MRIGeometry"
+note = "Raw metadata keys, mm->m, grouping/order, indices and return vector covered."
+page = "reference/geometry.md"
+anchor = "geometry-and-grid-apis"
+status = "documented"
+source_files = ["MRIGeometry/src/geometry/get_geometry.jl"]
+
+[[exports]]
+binding = "grad_DCS2Nominal"
+module = "HighOrderMRI"
+disposition = "reexport"
+source_module = "MRIGeometry"
+note = "Transpose inverse assumes orthogonal rotations/polarity; units unchanged."
+page = "reference/geometry.md"
+anchor = "gradient-coordinate-conversion"
+status = "documented"
+source_files = ["MRIGeometry/src/GradConversion.jl"]
+
+[[exports]]
+binding = "grad_Nominal2DCS"
+module = "HighOrderMRI"
+disposition = "reexport"
+source_module = "MRIGeometry"
+note = "Full rotation/polarity formula, dim default, shape/units, no GIRF claim covered."
+page = "reference/geometry.md"
+anchor = "gradient-coordinate-conversion"
+status = "documented"
+source_files = ["MRIGeometry/src/GradConversion.jl"]
+
+[[exports]]
+binding = "merge"
+module = "HighOrderMRI"
+disposition = "reexport"
+source_module = "MRIGeometry"
+note = "Base.merge geometry method only; gapped/slab limitation and geometry-only return covered."
+page = "reference/geometry.md"
+anchor = "slice-and-slab-assembly"
+status = "documented"
+source_files = ["MRIGeometry/src/geometry/merge.jl"]
+
+[[exports]]
+binding = "merge_motsa"
+module = "HighOrderMRI"
+disposition = "reexport"
+source_module = "MRIGeometry"
+note = "Actual mip/blend/discard semantics, invalid-method limitation, sizes/return covered."
+page = "reference/geometry.md"
+anchor = "slice-and-slab-assembly"
+status = "documented"
+source_files = ["MRIGeometry/src/MultiSlab.jl"]
+
+[[exports]]
+binding = "merge_multislabs"
+module = "HighOrderMRI"
+disposition = "reexport"
+source_module = "MRIGeometry"
+note = "Inputs/overlap/sort/output and unvalidated physical assumptions covered."
+page = "reference/geometry.md"
+anchor = "slice-and-slab-assembly"
+status = "documented"
+source_files = ["MRIGeometry/src/MultiSlab.jl"]
+
+[[exports]]
+binding = "plt_geometry"
+module = "HighOrderMRI"
+disposition = "reexport"
+source_module = "MRIGeometry"
+note = "Single and vector input, supported spaces, figure/units and limits covered."
+page = "reference/geometry.md"
+anchor = "geometry-plotting"
+status = "documented"
+source_files = ["MRIGeometry/src/plot/plt_geometry.jl"]
+
+[[exports]]
+binding = "plt_grid"
+module = "HighOrderMRI"
+disposition = "reexport"
+source_module = "MRIGeometry"
+note = "Shapes/unit/display parameters, no coordinate transform, RPS/XYZ limits covered."
+page = "reference/geometry.md"
+anchor = "geometry-plotting"
+status = "documented"
+source_files = ["MRIGeometry/src/plot/plt_grid.jl"]
+
+[[exports]]
+binding = "plt_images"
+module = "HighOrderMRI"
+disposition = "known_issue"
+issue = "PG-11"
+page = "reference/plotting.md"
+note = "Export declaration without a defined binding in this code baseline; not a callable API."
+
+[[exports]]
+binding = "plt_trajs"
+module = "HighOrderMRI"
+disposition = "known_issue"
+issue = "PG-11"
+page = "reference/plotting.md"
+note = "Export declaration without a defined binding in this code baseline; not a callable API."
+
+[[exports]]
+binding = "resample"
+module = "HighOrderMRI"
+disposition = "reexport"
+source_module = "MRIGeometry"
+note = "All four overloads, defaults, masks/RSS, shapes/types, singleton and oversample limits covered."
+page = "reference/geometry.md"
+anchor = "resampling"
+status = "documented"
+source_files = ["MRIGeometry/src/Resample.jl"]
+
+[[exports]]
+binding = "spha_basis"
+module = "HighOrderMRI"
+disposition = "documented"
+page = "reference/grid-basis.md"
+note = "Exported mutable metadata array; not a function and not a const binding. Source docstring plus display-array explanation; no callable signature validation."
+
+[[exports]]
+binding = "spha_basis_latex"
+module = "HighOrderMRI"
+disposition = "documented"
+page = "reference/grid-basis.md"
+note = "Exported mutable metadata array; not a function and not a const binding. Source docstring plus display-array explanation; no callable signature validation."
+
+[[exports]]
+binding = "spha_color"
+module = "HighOrderMRI"
+disposition = "documented"
+page = "reference/grid-basis.md"
+note = "Exported mutable metadata array; not a function and not a const binding. Source docstring plus display-array explanation; no callable signature validation."
+
+[[references]]
+label = "LowRankTheory"
+target = "/theory/low-rank"
+
+[[references]]
+label = "MultiGPU"
+target = "/guide/multi-gpu"
+
+[[references]]
+label = "Resources"
+target = "/reference/resources"
