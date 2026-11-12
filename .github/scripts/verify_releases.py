@@ -20,10 +20,26 @@ def validate_release_metadata(metadata, version):
         raise ValueError(f"Stable documentation requires published, non-prerelease {version}")
 
 
+def formal_releases(published):
+    return [r for r in published if re.fullmatch(r"v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", r.get("tag_name", ""))
+            and r.get("draft") is False and r.get("prerelease") is False and r.get("published_at")]
+
+
+def validate_release_catalog(config, published):
+    expected = {r["tag_name"] for r in formal_releases(published)}
+    if not expected <= {r["version"] for r in config["releases"]}:
+        raise ValueError("Every published formal release must remain in versions.json; synchronize versions first")
+
+
 def verify(docs, allow_unpublished=False):
     docs = Path(docs).resolve()
     repo = docs.parent
     config = json.loads((docs / "versions.json").read_text())
+    if not allow_unpublished:
+        pages = json.loads(subprocess.check_output([
+            "gh", "api", "--paginate", "--slurp", "repos/BennyZhang-Codes/HighOrderMRI.jl/releases?per_page=100",
+        ], text=True))
+        validate_release_catalog(config, [r for page in pages for r in page])
     for release in config["releases"]:
         version, code, source = release["version"], release["code_sha"], release["docs_sha"]
         if not re.fullmatch(r"v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", version):

@@ -32,6 +32,23 @@ def site_fixture(root):
 
 
 class PolicyTests(unittest.TestCase):
+    def test_main_is_required_and_bound_to_its_own_commit(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            site = Path(temporary) / "site"
+            manifest = site_fixture(site)
+            code = dict(CODE, main_sha="d" * 40)
+            with self.assertRaisesRegex(ValueError, "every configured"):
+                archive.validate_site(site, code, RELEASES)
+            row = dict(version="main", code_sha=code["main_sha"], docs_sha=None, preview=False)
+            manifest["versions"].append(row)
+            (site / "main").mkdir()
+            (site / "main/index.html").write_text("main")
+            (site / "main/version.json").write_text(json.dumps(row))
+            (site / "versions.json").write_text(json.dumps(manifest))
+            self.assertEqual(archive.validate_site(site, code, RELEASES), manifest)
+            with self.assertRaisesRegex(ValueError, "source"):
+                archive.validate_site(site, dict(code, main_sha="e" * 40), RELEASES)
+
     def test_only_trusted_source_contexts_publish(self):
         for event in ("push", "workflow_dispatch"):
             archive.validate_context(archive.REPOSITORY, event, archive.SOURCE_REF)

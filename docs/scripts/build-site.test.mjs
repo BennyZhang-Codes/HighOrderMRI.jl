@@ -102,13 +102,27 @@ test('failed release build preserves the previous complete artifact', t => {
   assert.equal(existsSync(join(f.docs, '.generated/version-build')), false)
 })
 
-test('formal builds require matching tags and retain every formal tag', t => {
+test('formal builds require matching registered tags; unpublished tags are not releases', t => {
   const f = fixture(t)
   assert.throws(() => f.invoke([]), /git failed/)
   f.git('tag', 'v0.1.0')
   assert.equal(f.invoke([]).preview, false)
   f.git('tag', 'v0.0.9')
-  assert.throws(() => f.invoke([]), /Every formal version tag/)
+  assert.equal(f.invoke([]).preview, false)
+})
+
+test('main and dev use their own code commits and appear in version navigation', t => {
+  const f = fixture(t)
+  writeFileSync(join(f.docs, 'code-version.json'), JSON.stringify({ schema_version: 1, code_sha: f.sha, main_sha: 'b'.repeat(40) }))
+  const result = f.invoke()
+  assert.deepEqual(result.versions.map(version => version.version), ['dev', 'main', 'v0.1.0', 'stable'])
+  assert.equal(result.versions.find(version => version.version === 'main').code_sha, 'b'.repeat(40))
+  assert.equal(readFileSync(join(f.docs, '.pages/main/index.html'), 'utf8'), 'new dev prose')
+  const call = f.calls.find(call => call.command === process.execPath && call.options.env.DOCS_VERSION === 'main')
+  assert.equal(call.options.env.DOCS_BASE, '/HighOrderMRI.jl/main/')
+  assert.ok(JSON.parse(call.options.env.DOCS_VERSION_ITEMS).some(item => item.text === 'main'))
+  writeFileSync(join(f.docs, 'code-version.json'), JSON.stringify({ schema_version: 1, code_sha: f.sha, main_sha: '../unsafe' }))
+  assert.throws(() => f.invoke(), /main_sha/)
 })
 
 test('retry restores a completed artifact after an interrupted replacement', t => {

@@ -1,9 +1,24 @@
 import json
+from pathlib import Path
+import tempfile
 import unittest
-from check_live_pages import CheckError, Response, check_version_index
+from check_live_pages import CheckError, Response, check_version_index, expected_versions
 
 
 class PublishedVersionTests(unittest.TestCase):
+    def test_main_has_independent_live_source_identity(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "code-version.json"
+            path.write_text(json.dumps(dict(schema_version=1, code_sha="a" * 40, main_sha="d" * 40)))
+            (root / "versions.json").write_text(json.dumps(dict(stable="v0.1.0", releases=[dict(version="v0.1.0", code_sha="b" * 40, docs_sha="c" * 40)])))
+            stable, rows = expected_versions(path)
+            self.assertEqual(stable, "v0.1.0")
+            self.assertEqual(rows[1], dict(version="main", code_sha="d" * 40, docs_sha=None))
+            path.write_text(json.dumps(dict(schema_version=1, code_sha="a" * 40, main_sha="invalid")))
+            with self.assertRaises(CheckError):
+                expected_versions(path)
+
     def setUp(self):
         self.records = [{"version": "dev", "code_sha": "a" * 40, "docs_sha": None},
                         {"version": "v0.1.0", "code_sha": "b" * 40, "docs_sha": "c" * 40}]

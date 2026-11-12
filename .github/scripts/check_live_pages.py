@@ -198,6 +198,11 @@ def expected_versions(config_path):
     code = load_code_sha(config_path)
     config = json.loads(Path(config_path).with_name("versions.json").read_text())
     records = [{"version": "dev", "code_sha": code, "docs_sha": None}]
+    branches = json.loads(Path(config_path).read_text())
+    if "main_sha" in branches:
+        if not isinstance(branches["main_sha"], str) or not re.fullmatch(r"[0-9a-f]{40}", branches["main_sha"]):
+            raise CheckError("code-version.json requires a full lowercase main_sha")
+        records.append({"version": "main", "code_sha": branches["main_sha"], "docs_sha": None})
     for release in config["releases"]:
         records.append(dict(release))
     stable = next(release for release in config["releases"] if release["version"] == config["stable"])

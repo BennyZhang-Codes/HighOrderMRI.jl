@@ -22,6 +22,7 @@ export function loadVersions(docsRoot) {
   const code = JSON.parse(readFileSync(join(docsRoot, 'code-version.json'), 'utf8'))
   const config = JSON.parse(readFileSync(join(docsRoot, 'versions.json'), 'utf8'))
   if (code.schema_version !== 1 || !shaPattern.test(code.code_sha)) throw new Error('Invalid dev code_sha.')
+  if (code.main_sha !== undefined && !shaPattern.test(code.main_sha)) throw new Error('Invalid main_sha.')
   if (config.schema_version !== 1 || !Array.isArray(config.releases)) throw new Error('Invalid versions.json.')
   const seen = new Set()
   const releases = config.releases.map(release => {
@@ -33,7 +34,11 @@ export function loadVersions(docsRoot) {
   }).sort((a, b) => compareVersions(b.version, a.version))
   const stable = releases.find(release => release.version === config.stable)
   if (!stable || releases[0].version !== stable.version) throw new Error('Stable must select the newest configured formal release.')
-  const targets = [{ version: 'dev', code_sha: code.code_sha, docs_sha: null }, ...releases, { ...stable, version: 'stable', release: stable.version }]
+  const targets = [
+    { version: 'dev', code_sha: code.code_sha, docs_sha: null },
+    ...(code.main_sha ? [{ version: 'main', code_sha: code.main_sha, docs_sha: null }] : []),
+    ...releases, { ...stable, version: 'stable', release: stable.version },
+  ]
   return { schema_version: 1, stable: stable.version, releases, targets }
 }
 

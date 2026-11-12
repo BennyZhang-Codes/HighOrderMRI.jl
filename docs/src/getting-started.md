@@ -156,22 +156,30 @@ npm run docs:build-site --prefix docs -- --preview
 npm run docs:preview --prefix docs
 ```
 
-The complete preview includes `dev`, `stable`, and all configured versions at `http://localhost:8775/HighOrderMRI.jl/`. The root URL opens stable. Candidates carry a visible preview label and use exact clean code checkouts.
+The complete preview includes `dev`, `main`, `stable`, and all configured versions at `http://localhost:8775/HighOrderMRI.jl/`. The root URL opens stable. Candidates carry a visible preview label and use exact clean code checkouts.
 
-`docs/code-version.json` pins the development code commit. `docs/versions.json` records each formal version's code and documentation commits and the current stable version. When versions use different code commits, prepare one checkout per SHA under a directory supplied through `DOCS_CODE_ROOT`. Release page content, figures, and API mappings come from their frozen documentation commits. The shared theme supplies the version navigation.
+`docs/code-version.json` pins the `dev_jinyuan` commit as `code_sha` and the `main` commit as `main_sha`. `docs/versions.json` records each formal version's code and documentation commits and the current stable version. When versions use different code commits, prepare one checkout per SHA under a directory supplied through `DOCS_CODE_ROOT`. Release page content, figures, and API mappings come from their frozen documentation commits. The shared theme supplies the version navigation.
 
 A formal build omits `--preview`. It requires matching code tags and preserves every configured historical version. The publishing workflow additionally verifies that each configured release is published and is not a prerelease. API generation and page checks run for each version.
 
 The `docs` branch owns the editable website source and version registry.
 After every version passes its checks, the workflow commits the complete
 generated site to `gh-pages` and deploys that exact archive commit. `gh-pages`
-contains the `dev`, `stable` and release directories; it is maintained by the
+contains the `dev`, `main`, `stable` and release directories; it is maintained by the
 workflow and is not edited as Markdown source. Archive updates retain Git
 history and reject removal or source-identity changes of published releases.
 Pull requests build candidates without writing the archive or deploying;
-superseded source builds do not publish. API docstrings remain on the code
-branches, and new formal versions are registered with their frozen code and
-documentation SHAs in `versions.json`.
+superseded source builds do not publish.
+
+After code documentation checks pass, pushes to `dev_jinyuan` update `dev/`
+and pushes to `main` update `main/`. A published, non-prerelease `vX.Y.Z`
+release registers its version directory and advances `stable/` to the newest
+formal release. Tags without a published formal release do not advance stable.
+The workflow updates only the two SHA registry files on `docs`, then explicitly
+dispatches its build. Each new release freezes the documentation commit at its
+first registration; existing release identities are retained. API pages are
+generated from the selected code, while handwritten theory and guides remain
+editable on `docs`.
 
 To edit interactively, run `npm run docs:generate-api --prefix docs -- --preview` before `npm run docs:dev --prefix docs`; regenerate after source docstring changes. The API fragments are disposable output and are not edited or committed.
 

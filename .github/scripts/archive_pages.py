@@ -47,6 +47,9 @@ def validate_site(site, code, releases):
     require(all(re.fullmatch(SHA, s) for pair in expected.values() for s in pair), "Invalid release SHA")
     require(re.fullmatch(SHA, code["code_sha"]), "Invalid dev code SHA")
     expected.update(dev=(code["code_sha"], None), stable=expected[releases["stable"]])
+    if "main_sha" in code:
+        require(re.fullmatch(SHA, code["main_sha"]), "Invalid main code SHA")
+        expected["main"] = (code["main_sha"], None)
     rows = manifest.get("versions", [])
     require(len(rows) == len(expected) and {r.get("version") for r in rows} == set(expected),
             "The archive must contain every configured version exactly once")
@@ -100,11 +103,15 @@ def publish(repo, site, source_sha, manifest):
         prior = json.loads(git(repo, "show", f"{parent}:versions.json"))
         preserve_releases(prior, manifest)
     (site / ".nojekyll").touch()
-    (site / "archive-info.json").write_text(json.dumps({
+    info = {
         "schema_version": 1, "source_branch": "docs", "source_sha": source_sha,
         "dev_code_sha": next(r["code_sha"] for r in manifest["versions"] if r["version"] == "dev"),
         "stable": manifest["stable"],
-    }, indent=2) + "\n")
+    }
+    main = next((r for r in manifest["versions"] if r["version"] == "main"), None)
+    if main:
+        info["main_code_sha"] = main["code_sha"]
+    (site / "archive-info.json").write_text(json.dumps(info, indent=2) + "\n")
     with tempfile.TemporaryDirectory() as temporary:
         env = dict(os.environ, GIT_INDEX_FILE=str(Path(temporary) / "index"))
         git(repo, "read-tree", "--empty", env=env)

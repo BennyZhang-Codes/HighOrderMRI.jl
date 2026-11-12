@@ -51,7 +51,7 @@ function pageFingerprint(directory) {
 
 export function buildSite({ argv = process.argv.slice(2), env = process.env, docsRoot = defaultDocsRoot, run = spawnSync, prepare = prepareApi, log = console.log } = {}) {
   if (argv.length === 1 && ['--help', '-h'].includes(argv[0])) {
-    log('Build dev, stable and all releases in versions.json. Use --preview for an unpublished candidate. DOCS_CODE_PATH or DOCS_CODE_ROOT is required.')
+    log('Build dev, main, stable and all releases in versions.json. Use --preview for an unpublished candidate. DOCS_CODE_PATH or DOCS_CODE_ROOT is required.')
     return null
   }
   if (argv.length > 1 || (argv.length === 1 && argv[0] !== '--preview')) throw new Error('Only --preview is supported by the complete-site builder.')
@@ -63,9 +63,6 @@ export function buildSite({ argv = process.argv.slice(2), env = process.env, doc
       const commit = runChecked(run, 'git', ['rev-parse', '--verify', `refs/tags/${release.version}^{commit}`], { cwd: dirname(root), env, encoding: 'utf8' }).trim()
       if (commit !== release.code_sha) throw new Error(`Tag ${release.version} does not match its code_sha.`)
     }
-    const tags = runChecked(run, 'git', ['tag', '--list', 'v*'], { cwd: dirname(root), env, encoding: 'utf8' }).trim().split('\n')
-    const configured = new Set(plan.releases.map(release => release.version))
-    if (tags.some(tag => /^v\d+\.\d+\.\d+$/.test(tag) && !configured.has(tag))) throw new Error('Every formal version tag must remain in versions.json.')
   }
   const temporary = join(root, '.generated', 'version-build')
   const stage = join(temporary, 'pages')
@@ -81,6 +78,7 @@ export function buildSite({ argv = process.argv.slice(2), env = process.env, doc
   const items = [
     { text: `stable · ${plan.stable}`, link: `${siteUrl}/stable/` },
     { text: 'dev', link: `${siteUrl}/dev/` },
+    ...(plan.targets.some(target => target.version === 'main') ? [{ text: 'main', link: `${siteUrl}/main/` }] : []),
     ...plan.releases.map(release => ({ text: release.version, link: `${siteUrl}/${release.version}/` })),
   ]
   const records = []
