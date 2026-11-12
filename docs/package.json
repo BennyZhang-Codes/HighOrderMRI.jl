@@ -1,0 +1,19 @@
+{
+  "name": "highordermri-docs",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "docs:dev": "vitepress src",
+    "docs:build": "node build-site.mjs",
+    "docs:build-site": "node build-site.mjs",
+    "docs:preview": "python3 scripts/serve-site.py",
+    "docs:generate-api": "node scripts/prepare-api.mjs",
+    "docs:build-dev": "node scripts/build-dev.mjs",
+    "docs:check-tools": "node --test scripts/*.test.mjs"
+  },
+  "devDependencies": {
+    "markdown-it-mathjax3": "4.3.2",
+    "mermaid": "11.17.1",
+    "vitepress": "2.0.0-alpha.19"
+  }
+}

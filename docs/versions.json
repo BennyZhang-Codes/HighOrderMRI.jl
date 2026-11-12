@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "stable": "v0.1.0",
+  "releases": [
+    {
+      "version": "v0.1.0",
+      "code_sha": "425f7df50decd64fbba16180e0c96970894dabfb",
+      "docs_sha": "f949b4faef044f8550f687d2580f6fbdba99242d"
+    }
+  ]
+}
