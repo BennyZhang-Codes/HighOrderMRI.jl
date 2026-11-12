@@ -242,6 +242,8 @@ end
         shared_noadd_check::Bool = false ,
         global_basis_tol :: Union{Nothing,T} = nothing ,
         shared_basis_method:: Symbol = :rsvd ,
+        epsilon_H :: Union{Nothing,Real} = nothing ,
+        adaptive_options :: NamedTuple = (;) ,
         joint_snapshots :: Int = 256 ,
         joint_samples :: Int = 512 ,
         joint_roi_tol :: Union{Nothing,T} = nothing ,
@@ -257,9 +259,28 @@ CPU arrays, local rSVD, a shared spatial basis, and single-device execution.
 The keyword `normal_distribution` selects reconstruction execution;
 `rsvd_distribution` independently selects how the factors are built.
 
-This documentation describes `shared_basis_method=:rsvd`. The `:joint`
-option and `joint_*` keywords are retained in the exact signature above for
-completeness, but their algorithm and behavior are outside this reference.
+`shared_basis_method=:adaptive, epsilon_H=0.01` opts into experimental
+global-H rank selection. It builds a stable snapshot master, fits all actual
+time rows, then uses blocked QR/small SVD and paired residual checks to select
+the final shared rank. K, J and the parent cap start at 128, 512 and 32;
+only a failed check triggers bounded expansion. `shared_rank_max` remains
+the hard parent cap. `adaptive_options` forwards resource and evaluation
+keywords to `adaptive_spatial_basis`; `rsvd_seed` and `rsvd_chunk`
+provide its seed and chunk size. No NFFT setting changes.
+
+The target is the global relative Frobenius error of the pure residual H
+over all readouts and masked voxels. It excludes k0, first-order NFFT,
+center phase, CSM, weights and normalization. The checks are empirical:
+`sqrt(mean(loss)+4SE)` is a heuristic, not a probability certificate or an
+image-error guarantee. `joint_basis_report` receives construction, empirical,
+external-audit and certification states without retaining factor arrays.
+Budget failure fills that report and throws instead of constructing an
+operator from partial factors. Existing `shared_basis_tol` and
+`global_basis_tol` retain their old meanings; adaptive setup requires
+`global_basis_tol=nothing` and does not impose `joint_roi_tol`.
+
+The older `:joint` method and its `joint_*` sampling controls remain available
+with their existing per-readout validation semantics.
 
 # Inputs and coordinate convention
 
@@ -406,7 +427,8 @@ has no separate `primary_gpu` keyword. Request at least two IDs for
   observation rows.
 - `:rank` divides shared temporal/spatial columns and coil-map storage while
   retaining complete host master factors. It requires shared layout and
-  voxel-distributed ordinary rSVD with Gram finalization. At most
+  either voxel-distributed ordinary rSVD with Gram finalization or adaptive
+  global-H setup. At most
   `min(length(gpus),shared_rank,nCha)` workers are used. For each coil and
   sample batch, partial forward signals are copied to host buffers, summed,
   and broadcast to the workers before weighting and the adjoint. This retains
@@ -510,6 +532,8 @@ function HighOrderLowRankOp(
     shared_noadd_check::Bool                       = false                                   ,
     global_basis_tol  :: Union{Nothing,T}          = nothing                                 ,
     shared_basis_method:: Symbol                    = :rsvd                                   ,
+    epsilon_H         :: Union{Nothing,Real}        = nothing                                 ,
+    adaptive_options  :: NamedTuple                = (;)                                     ,
     joint_snapshots   :: Int                       = 256                                     ,
     joint_samples     :: Int                       = 512                                     ,
     joint_roi_tol     :: Union{Nothing,T}          = nothing                                 ,
@@ -555,7 +579,21 @@ function HighOrderLowRankOp(
         basis_layout === :per_readout || throw(ArgumentError("CPU factor storage requires basis_layout=:per_readout"))
         arrayType == CuArray || throw(ArgumentError("CPU factor storage with a GPU cache requires arrayType=CuArray"))
     end
-    shared_basis_method in (:rsvd, :joint) || throw(ArgumentError("shared_basis_method must be :rsvd or :joint"))
+    shared_basis_method in (:rsvd, :joint, :adaptive) || throw(ArgumentError("shared_basis_method must be :rsvd, :joint or :adaptive"))
+    use_adaptive_basis = shared_basis_method === :adaptive
+    if use_adaptive_basis
+        isnothing(joint_basis_report) || (joint_basis_report[] = (
+            construction_status=:not_computed, empirical_status=:not_evaluated,
+            certification_status=:not_requested, external_audit_status=:not_requested,
+            error_metric=:global_relative_frobenius, failure_reason=:not_completed, rank=0))
+        isnothing(epsilon_H) && throw(ArgumentError("Adaptive basis requires epsilon_H"))
+        isfinite(epsilon_H) && 0 < epsilon_H < 1 || throw(ArgumentError("epsilon_H must lie in (0,1)"))
+        isnothing(joint_roi_tol) || throw(ArgumentError("Adaptive basis uses global H error, not joint_roi_tol"))
+        any(k -> k in (:epsilon_H, :arrayType, :seed, :chunk_size, :rank_max), keys(adaptive_options)) &&
+            throw(ArgumentError("Use the constructor keywords for epsilon_H, arrayType, rsvd_seed, rsvd_chunk and shared_rank_max"))
+    else
+        isnothing(epsilon_H) && isempty(adaptive_options) || throw(ArgumentError("epsilon_H and adaptive_options require shared_basis_method=:adaptive"))
+    end
     if basis_layout === :per_readout
         shared_basis_method === :rsvd || throw(ArgumentError("basis_layout=:per_readout requires shared_basis_method=:rsvd"))
         isnothing(global_basis_tol) || throw(ArgumentError("basis_layout=:per_readout does not support global_basis_tol"))
@@ -564,7 +602,7 @@ function HighOrderLowRankOp(
     length(unique(gpus)) == length(gpus) || throw(ArgumentError("gpus contains duplicate GPU ids: $gpus"))
 
     is_gpu = arrayType == CuArray
-    use_joint_basis = shared_basis_method === :joint
+    use_joint_basis = shared_basis_method in (:joint, :adaptive)
     if use_joint_basis
         isnothing(global_basis_tol) || throw(ArgumentError("shared_basis_method=:joint requires global_basis_tol=nothing to preserve its validation"))
         rsvd_distribution !== :voxel || throw(ArgumentError("Joint basis setup uses the primary device; use rsvd_distribution=:auto or :single"))
@@ -580,8 +618,8 @@ function HighOrderLowRankOp(
     !use_joint_basis && (rsvd_distribution === :voxel || (rsvd_distribution === :auto && is_gpu && length(gpus) > 1 && rsvd_finalize === :gram && rsvd_backend === :kernel))
 
     if normal_distribution === :rank
-        basis_layout === :shared && use_distributed_rsvd || throw(ArgumentError(
-            "normal_distribution=:rank requires shared, voxel-distributed rSVD"))
+        basis_layout === :shared && (use_distributed_rsvd || use_adaptive_basis) || throw(ArgumentError(
+            "normal_distribution=:rank requires shared, voxel-distributed rSVD or adaptive basis"))
     end
 
     if shared_noadd_check
@@ -688,6 +726,17 @@ function HighOrderLowRankOp(
         )
         shared_rank = L_rank
         shared_errors = T[]
+    elseif use_adaptive_basis
+        result = adaptive_spatial_basis(times_host, fieldmap_host, bf_err_host, kspha_err_host;
+            epsilon_H, arrayType, rank_max=effective_shared_rank_max,
+            seed=rsvd_seed, chunk_size=rsvd_chunk, adaptive_options...)
+        joint_report = (; (k => v for (k, v) in pairs(result) if k ∉ (:q, :S))...)
+        isnothing(joint_basis_report) || (joint_basis_report[] = joint_report)
+        result.construction_status === :computed || error("Adaptive basis budget exhausted: $(result.failure_reason)")
+        q = normal_distribution === :rank ? result.q : arrayType(result.q)
+        basis = normal_distribution === :rank ? result.S : arrayType(result.S)
+        shared_rank = result.rank
+        shared_errors = [sqrt(result.checks.a2[shared_rank])]
     elseif use_joint_basis
         q, basis, joint_report = joint_spatial_basis(
             times_host, fieldmap_host, bf_err_host, kspha_err_host;
