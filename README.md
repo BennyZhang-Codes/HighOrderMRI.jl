@@ -15,16 +15,22 @@ for numerical reference and a matrix-free shared-subspace operator for large
 
 ## Features
 
-- Expanded signal encoding through third-order real solid-harmonic terms.
-- Parallel imaging, static off-resonance correction, and reconstruction masks.
+- Expanded signal encoding with real solid-harmonic terms through third order
+  and optional concomitant-field phase terms.
+- 2D and 3D parallel imaging with static off-resonance correction.
 - `HighOrderOp`: array-based explicit evaluation on CPU or CUDA.
-- `HighOrderKernelOp`: explicit CUDA kernels, cuBLAS blocks, and optional phase
-  caching; `gpus` selects one or more GPUs through the same interface.
-- `HighOrderLowRankOp`: per-dynamic matrix-free rSVD, adaptive global shared
-  spatial basis, and a global-trajectory NFFT.
-- Optional voxel-distributed multi-GPU rSVD setup and channel-, readout-,
-  or shared-rank-distributed execution; see the multi-GPU guide for restrictions.
-- GIRF-based field prediction and model-based field/data synchronization
+- `HighOrderKernelOp`: explicit CUDA kernels, GPU-resident cuBLAS backends,
+  and optional phase caching.
+- `HighOrderLowRankOp`: matrix-free residual-phase approximation with shared
+  or per-readout spatial bases and NFFT-based Fourier encoding.
+- Single- and multi-GPU CUDA execution for explicit and low-rank operators,
+  including distributed low-rank factor construction.
+- Global SVD coil compression with optional receive-noise prewhitening,
+  using the same transform for data and coil-sensitivity maps.
+- Weighted iterative reconstruction through `recon_HOOp`, with solver and
+  regularization choices from RegularizedLeastSquares.jl.
+- GIRF-based prediction of dynamic field coefficients.
+- Model-based field/data synchronization for 2D acquisitions
   ([Dubovan and Baron, 2023](https://doi.org/10.1002/mrm.29460)).
 
 ## How to Cite
