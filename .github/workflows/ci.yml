@@ -5,9 +5,11 @@ on:
     branches:
       - main
       - dev_jinyuan
+      - benchmark
   pull_request:
     branches:
       - main
+      - benchmark
   workflow_dispatch:
 
 permissions:
@@ -55,3 +57,47 @@ jobs:
           Pkg.status()
       - name: Run test suite
         run: julia --color=yes --project=. -e 'using Pkg; Pkg.test()'
+
+  benchmark-test:
+    name: Benchmark Julia ${{ matrix.label }}
+    if: github.ref == 'refs/heads/benchmark' || github.head_ref == 'benchmark' || github.base_ref == 'benchmark'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      CUDA_VISIBLE_DEVICES: ''
+      MPLBACKEND: Agg
+      JULIA_LOAD_PATH: '@:@stdlib'
+      JULIA_NUM_THREADS: '1'
+      JULIA_NUM_PRECOMPILE_TASKS: '2'
+      OPENBLAS_NUM_THREADS: '1'
+      HIGHORDER_2D_CC_FONT_FAMILY: DejaVu Sans
+      HIGHORDER_3D_CC_FONT_FAMILY: DejaVu Sans
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - julia-version: "1.12.0"
+            label: "minimum supported"
+          - julia-version: "1"
+            label: "latest stable"
+
+    steps:
+      - uses: actions/checkout@v7
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: ${{ matrix.julia-version }}
+          show-versioninfo: "true"
+      - uses: julia-actions/cache@v3
+        with:
+          delete-old-caches: false
+      - name: Instantiate benchmark environment
+        shell: julia --color=yes --project=benchmark {0}
+        run: |
+          using Pkg
+          Pkg.instantiate(; allow_autoprecomp=false)
+          Pkg.build("Conda")
+          ENV["PYTHON"] = ""
+          Pkg.build("PyCall")
+          Pkg.status()
+      - name: Run benchmark CPU regression tests
+        run: julia --startup-file=no --color=yes --project=benchmark benchmark/test/runtests.jl
