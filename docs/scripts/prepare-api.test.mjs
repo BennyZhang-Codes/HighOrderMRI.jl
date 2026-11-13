@@ -7,18 +7,19 @@ import { prepareApi } from './prepare-api.mjs'
 
 const sha = 'd141e7dc48e8d18380050aaa970ee4ae364d916d'
 
-function fixture(t, { rootIsCheckout = true, head = sha, branch = null, dirty = '', missingGenerator = false, exportStatus = 0 } = {}) {
+function fixture(t, { rootIsCheckout = true, head = sha, branch = null, dirty = '', missingGenerator = false, legacyGenerator = false, exportStatus = 0 } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'highordermri-docs-entry-'))
   t.after(() => rmSync(dir, { recursive: true, force: true }))
   const code = join(dir, 'code')
   const docs = join(dir, 'docs')
   const output = join(docs, '.generated', 'api')
   mkdirSync(join(code, 'src'), { recursive: true })
-  mkdirSync(join(code, 'scripts', 'docs'), { recursive: true })
+  const tools = legacyGenerator ? join(code, 'scripts', 'docs') : join(code, 'docs', 'scripts')
+  mkdirSync(tools, { recursive: true })
   mkdirSync(output, { recursive: true })
   writeFileSync(join(code, 'Project.toml'), 'name = "HighOrderMRI"\nuuid = "065cb43a-79ab-4c63-92af-604ac7366864"\n\n[deps]\n')
   writeFileSync(join(code, 'src', 'HighOrderMRI.jl'), 'module HighOrderMRI\nend\n')
-  if (!missingGenerator) writeFileSync(join(code, 'scripts', 'docs', 'export_api.jl'), '# fixture only; never executed\n')
+  if (!missingGenerator) writeFileSync(join(tools, 'export_api.jl'), '# fixture only; never executed\n')
   writeFileSync(join(docs, 'package.json'), JSON.stringify({ name: 'highordermri-docs', devDependencies: { vitepress: '2.0.0-alpha.19' } }))
   writeFileSync(join(docs, 'code-version.json'), JSON.stringify({ schema_version: 1, code_sha: sha }))
   writeFileSync(join(docs, 'api-map.toml'), 'schema_version = 1\n')
@@ -78,7 +79,7 @@ test('formal build refuses changed docstrings', (t) => {
 })
 
 test('formal build refuses untracked source and tools', (t) => {
-  const f = fixture(t, { dirty: '?? scripts/docs/export_api.jl\n' })
+  const f = fixture(t, { dirty: '?? docs/scripts/export_api.jl\n' })
   assert.throws(() => f.invoke(), /require a clean code checkout/)
 })
 
@@ -91,6 +92,24 @@ test('missing exporter requires a code commit containing the tool', (t) => {
   const f = fixture(t, { missingGenerator: true })
   assert.throws(() => f.invoke(), /code commit containing this tool/)
   assert.equal(f.calls.filter((x) => x.command !== 'git').length, 0)
+})
+
+test('historical code uses its own legacy exporter when only frontend scripts have moved', (t) => {
+  const f = fixture(t, { legacyGenerator: true })
+  mkdirSync(join(f.code, 'docs', 'scripts'), { recursive: true })
+  writeFileSync(join(f.code, 'docs', 'scripts', 'prepare-api.mjs'), '// frontend only\n')
+  f.invoke()
+  const call = f.calls.find(x => x.command === 'fixture-julia')
+  assert.equal(call.args[2], join(f.code, 'scripts', 'docs', 'export_api.jl'))
+})
+
+test('prefers the consolidated exporter in the selected code checkout', (t) => {
+  const f = fixture(t)
+  mkdirSync(join(f.code, 'scripts', 'docs'), { recursive: true })
+  writeFileSync(join(f.code, 'scripts', 'docs', 'export_api.jl'), '# old exporter\n')
+  f.invoke()
+  const call = f.calls.find(x => x.command === 'fixture-julia')
+  assert.equal(call.args[2], join(f.code, 'docs', 'scripts', 'export_api.jl'))
 })
 
 test('validates full code SHA and package identity', (t) => {
@@ -120,7 +139,7 @@ test('preview passes safe argv/env, does not claim ancestor HEAD, and is determi
   assert.equal(call.options.env.JULIA_DEPOT_PATH, '/private/depot')
   assert.equal(call.options.env.JULIA_PKG_PRECOMPILE_AUTO, '0')
   assert.deepEqual(call.args, [
-    '--startup-file=no', `--project=${f.code}`, join(f.code, 'scripts', 'docs', 'export_api.jl'),
+    '--startup-file=no', `--project=${f.code}`, join(f.code, 'docs', 'scripts', 'export_api.jl'),
     '--map', join(f.docs, 'api-map.toml'), '--output', f.output, '--code-root', f.code,
     '--code-sha', sha, '--mode', 'preview', '--only', 'find-delay',
   ])

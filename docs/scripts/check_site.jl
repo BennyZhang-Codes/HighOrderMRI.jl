@@ -1,4 +1,4 @@
-include(joinpath(@__DIR__, "..", "..", "docs", "publish", "PublicationTools.jl"))
+include(joinpath(@__DIR__, "..", "publish", "PublicationTools.jl"))
 
 if abspath(PROGRAM_FILE) == @__FILE__
     try
