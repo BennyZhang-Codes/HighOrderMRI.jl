@@ -10,9 +10,8 @@ This guide walks through installation, a small CPU encoding problem, and a CG re
 
 The package resolves `MRIGeometry` from its included local source tree. These
 development pages are bound to the code SHA shown by the site's source links.
-Install from a separate clone of `dev_jinyuan` for the documented opt-in Joint
-adaptive low-rank path; `main` may not yet contain it. For an exact reproduction,
-check out the displayed source SHA before instantiating.
+Install from a clone of `dev_jinyuan` for the development documentation. For an
+exact reproduction, check out the displayed source SHA before instantiating.
 
 ```bash
 git clone --branch dev_jinyuan https://github.com/BennyZhang-Codes/HighOrderMRI.jl.git HighOrderMRI-code
@@ -28,7 +27,7 @@ Start Julia in that environment:
 julia --project=.
 ```
 
-Run the Julia blocks below in order. The `docs` branch supplies the VitePress website; use the package checkout and its Julia project to run reconstruction code.
+Run the Julia blocks below in order. Website sources and tools live in the package checkout's `docs/` directory; generated versions are archived on `gh-pages`. Use the package's Julia project to run reconstruction code.
 
 ## First CPU operator
 

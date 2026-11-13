@@ -98,7 +98,7 @@ export function prepareApi({ argv = process.argv.slice(2), env = process.env, do
       throw new Error('code-version.json requires schema_version=1 and a full lowercase 40-character code_sha.')
     }
     if (!env.DOCS_CODE_PATH?.trim()) {
-      throw new Error('DOCS_CODE_PATH is required. Prepare the code checkout explicitly (CI must checkout code_sha); this tool never falls back to code on the docs branch.')
+      throw new Error('DOCS_CODE_PATH is required. Prepare the code checkout explicitly (CI must checkout code_sha); this tool never uses implementation source from the website inputs.')
     }
     const codeRoot = realpathSync(resolve(env.DOCS_CODE_PATH))
     if (!statSync(codeRoot).isDirectory()) throw new Error('DOCS_CODE_PATH must be a package directory.')
@@ -121,9 +121,11 @@ export function prepareApi({ argv = process.argv.slice(2), env = process.env, do
       if (source.head !== config.code_sha) throw new Error(`Code HEAD ${source.head} differs from configured code_sha ${config.code_sha}.`)
       if (!source.clean) throw new Error('Formal builds require a clean code checkout, including tracked code/docstrings and untracked files.')
     }
-    const generator = join(codeRoot, 'scripts', 'docs', 'export_api.jl')
+    // Historical code commits keep their exporter at scripts/docs.
+    let generator = join(codeRoot, 'docs', 'scripts', 'export_api.jl')
+    if (!existsSync(generator)) generator = join(codeRoot, 'scripts', 'docs', 'export_api.jl')
     if (!existsSync(generator) || !statSync(generator).isFile()) {
-      throw new Error(`Missing API exporter at ${generator}. Formal code_sha must refer to a code commit containing this tool; prepare and approve that commit before updating code-version.json. No fallback exporter will be used.`)
+      throw new Error(`Missing API exporter at ${generator}. Formal code_sha must refer to a code commit containing this tool; prepare and approve that commit before updating code-version.json. No exporter from another code checkout will be used.`)
     }
     const map = join(root, 'api-map.toml')
     requireFile(map, 'API migration manifest')
