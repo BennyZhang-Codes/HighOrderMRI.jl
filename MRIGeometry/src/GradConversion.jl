@@ -1,16 +1,13 @@
 """
     grad_Nominal2DCS(G_Nominal::AbstractArray{T, N}, geo::Geometry; dim::Int = N == 2 ? 1 : N, R_polarity::AbstractMatrix = geo.R_Nominal_RPS) where {T, N}
 
-Converts nominal sequence gradients to the physical device coordinate system (DCS).
-
-# Mathematical Mapping:
-`G_DCS = R_RPS_DCS * R_polarity * G_Nominal`
-
-# Arguments
-- `G_Nominal`: N-dimensional nominal gradient array (as programmed in the sequence).
-- `geo`: Geometry object.
-- `dim`: The dimension corresponding to the spatial axes (must have length 3).
-- `R_polarity`: The polarity mapping. Defaults to `geo.R_Nominal_RPS`.
+Rotate nominal sequence gradients into device coordinates, applying
+`geo.R_RPS_DCS * R_polarity` to the three-channel axis `dim`. The result
+preserves input shape; no unit conversion, time integration, GIRF response
+or measurement correction is applied. By default dim is 1 for matrices and
+N otherwise. Confirm the vendor polarity and geometry; placeholder mappings
+are not calibrated scanner support. An explicit R_polarity must be compatible
+with the chosen coordinate convention.
 """
 function grad_Nominal2DCS(
     G_Nominal::AbstractArray{T, N}, 
@@ -39,8 +36,11 @@ end
 """
     grad_DCS2Nominal(G_DCS::AbstractArray{T, N}, geo::Geometry; dim::Int = N == 2 ? 1 : N, R_polarity::AbstractMatrix = geo.R_Nominal_RPS) where {T, N}
 
-Converts physical gradients (DCS) back to the nominal sequence coordinate system.
-This performs the exact inverse operation of `grad_Nominal2DCS`.
+Apply `transpose(R_polarity)*transpose(geo.R_RPS_DCS)` along the three-channel
+axis, preserving shape and physical units. This is the inverse of the forward
+mapping only when both matrices are orthogonal. It does not invert a GIRF
+or estimate measured nominal gradients. Device mappings inherit Geometry's
+vendor limitations.
 """
 function grad_DCS2Nominal(
     G_DCS::AbstractArray{T, N}, 

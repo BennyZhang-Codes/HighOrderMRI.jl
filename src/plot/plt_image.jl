@@ -1,32 +1,24 @@
 """
-    fig = plt_image(img::AbstractArray{<:Real, 2}; kwargs...)
+    plt_image(
+        img::AbstractArray{<:Real, 2};
+        title = "",
+        width = 5,
+        vmaxp = 100,
+        vminp = 0,
+        vmax = nothing,
+        vmin = nothing,
+        cmap = "gray",
+        fontsize_title = 10,
+        color_facecolor = "#ffffff",
+        color_label = "#000000")
 
-# Description
-Plots an image array using matplotlib.
+Display a real matrix and return the Matplotlib figure. Width is approximately
+centimetres; height follows the matrix aspect ratio. No magnitude conversion
+is performed, so pass `abs.(image)` for a complex MRI image.
 
-# Arguments
-- `img`: (`::AbstractArray{<:Real, 2}`) `[nX, nY]`, image array to be plotted
-
-# Keywords
-- `title`: (`::String`, `=""`) figure's suptitle
-- `width`: (`::Real`, `=5`) figure's width (unit in centimeters roughly). The height is automatically scaled based on the image's aspect ratio.
-- `vmaxp`: (`::Real`, `=100`) percentile of maximum value to be used for window width/ window level
-- `vminp`: (`::Real`, `=0`) percentile of minimum value to be used for window width/ window level
-- `vmax`: (`::Real`, `=nothing`) maximum value to be used for window width/ window level
-- `vmin`: (`::Real`, `=nothing`) minimum value to be used for window width/ window level
-- `cmap`: (`::String`, `="gray"`) colormap to be used for plotting
-- `fontsize_title`: (`::Integer`, `=10`) font size of the title
-- `color_facecolor`: (`::String`, `="#ffffff"`) background color of the figure
-- `color_label`: (`::String`, `="#000000"`) color of the labels
-
-# Returns
-- `Figure`: a PyObject representing the figure
-
-# Examples
-```julia-repl
-julia> fig = plt_image(rand(100, 100))
-julia> fig.savefig("123.png", bbox_inches="tight", pad_inches=0, transparent=true)
-```
+If either `vmin` or `vmax` is nothing, the implementation recomputes both from
+`vminp`/`vmaxp` quantiles. Supply both explicit limits to retain either one.
+Font sizes are points; the function does not save or close its figure.
 """
 function plt_image(
     img::AbstractArray{<:Real, 2};
@@ -60,30 +52,13 @@ end
 
 
 """
-    fig = plt_image(imgs::AbstractArray{<:Real, 3}; dim=1, nRow=nothing, nCol=nothing, kwargs...)
+    plt_image(imgs::AbstractArray{<:Real, 3}; dim = 1, nRow = nothing, nCol = nothing, width = 2, kwargs...)
 
-Plots a sequence of image array as a mosaic using matplotlib by overloading `plt_image`.
-It stitches the 3D array into a 2D mosaic and then calls the 2D `plt_image` method.
-
-# Arguments
-- `imgs`: (`::AbstractArray{<:Real, 3}`) image array to be plotted
-- `dim`: (`::Int`, `=1`) dimension along which to plot the images
-
-# Keywords
-- `nRow`: (`::Union{Integer, Nothing}`, `=nothing`) number of rows in the mosaic grid
-- `nCol`: (`::Union{Integer, Nothing}`, `=nothing`) number of columns in the mosaic grid
-- `width`: (`::Real`, `=2`) width per subplot (unit in centimeters roughly). The total height is auto-scaled.
-- `kwargs...`: other keywords passed to the 2D `plt_image` function
-
-# Returns
-- `Figure`: a PyObject representing the figure
-
-# Examples
-```julia-repl
-julia> imgs = rand(10, 100, 100)
-julia> fig = plt_image(imgs, dim=1, nRow=2, nCol=5)
-julia> fig.savefig("123.png", bbox_inches="tight", pad_inches=0, transparent=true)
-```
+Tile a real 3D array using `mosaic`, then call the matrix `plt_image` method.
+`dim` selects the slice axis. If either grid size is nothing, both `nRow` and
+`nCol` are replaced by factors of the frame count. Width is approximately
+centimetres per tile column; the final matrix plot receives `width*nCol`.
+Remaining keywords are forwarded to the matrix method. Return its figure.
 """
 function plt_image(
     imgs::AbstractArray{<:Real, 3};
@@ -118,6 +93,14 @@ function plt_image(
     return fig
 end
 
+"""
+    plt_image(imgs::Vector{<:AbstractArray}; nRow = nothing, nCol = nothing, width = 2, kwargs...)
+
+Tile a nonempty vector of equally sized real images and call matrix `plt_image`.
+Elements must be 2D or 3D with a singleton third axis. If either grid size is
+nothing, both are chosen from the frame count. Width is approximately centimetres
+per tile column. Remaining keywords reach the matrix method. Return its figure.
+"""
 function plt_image(
     imgs::Vector{<:AbstractArray}; 
     nRow               = nothing  ,

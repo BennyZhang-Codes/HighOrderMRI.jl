@@ -16,6 +16,7 @@ include("LowRankApproximation/distributed_rsvd.jl")      # distributed randomize
 include("LowRankApproximation/distributed_factor_gather.jl")
 include("LowRankApproximation/shared_spatial_basis.jl")
 include("LowRankApproximation/joint_spatial_basis.jl")
+include("LowRankApproximation/adaptive_spatial_basis.jl")
 include("LowRankApproximation/distributed_shared_spatial_basis.jl")
 include("LowRankApproximation/regenerated_spatial_basis.jl")
 include("LowRankApproximation/per_readout_basis.jl")
@@ -23,4 +24,5 @@ include("LowRankApproximation/per_readout_cache.jl")
 include("LowRankApproximation/streaming_nfft_plan.jl")
 include("HighOrderLowRankOp.jl")    # low rank approximation of temporal-spatial varing phase
 include("LowRankApproximation/multi_gpu_normal_operator.jl")
+include("LowRankApproximation/rank_sharded_shared.jl")
 include("Explicit/multi_gpu_operator.jl")

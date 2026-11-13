@@ -33,6 +33,18 @@ end
 # Preserve the original four-argument constructor for callers that manually
 # truncate or copy a transform. When a covariance is present, infer the scalar
 # from C' * Ψ * C = sI so bandwidth-corrected transforms retain their metadata.
+"""
+    CoilCompressionTransform(compression_matrix::Matrix{Complex{T}},
+        singular_values::Vector{T},
+        retained_energy::T,
+        noise_covariance::Union{Nothing, Matrix{Complex{T}}}) where T <: AbstractFloat
+
+Construct a transform from an existing compression matrix and metadata.
+When `noise_covariance` is present, infer `prewhitening_scale_factor` from the
+mean diagonal of `Cᴴ Ψ C`; otherwise use one. This compatibility constructor
+records supplied values without refitting or validating the transform.
+Prefer [`fit_coil_compression`](@ref) for fitting a consistent transform.
+"""
 function CoilCompressionTransform(
     compression_matrix :: Matrix{Complex{T}},
     singular_values    :: Vector{T},
@@ -61,7 +73,9 @@ Base.show(io::IO, transform::CoilCompressionTransform{T}) where {T} = begin
     println(io, "retained_energy : $(transform.retained_energy)$scale_description")
 end
 """
-    noise_prewhitening_scale_factor(acquisition_dwell_time, noise_dwell_time; receiver_bandwidth_ratio=1,)
+    noise_prewhitening_scale_factor(acquisition_dwell_time::Real,
+        noise_dwell_time::Real;
+        receiver_bandwidth_ratio::Real = 1)
 
 Compute the dimensionless correction used when a noise prescan and the MRI
 acquisition have different sampling intervals or effective receiver
@@ -98,7 +112,9 @@ function noise_prewhitening_scale_factor(
 end
 
 """
-    estimate_noise_covariance(noise_data; coil_dim=ndims(noise_data), center=true) -> Matrix
+    estimate_noise_covariance(noise_data::AbstractArray{Complex{T}};
+        coil_dim::Integer = ndims(noise_data),
+        center::Bool = true) where T <: AbstractFloat
 
 Estimate the complex receive-noise covariance from noise-only samples. All
 dimensions other than `coil_dim` are flattened into independent observations.
@@ -180,8 +196,12 @@ function _coil_last_matrix(array::AbstractArray{<:Complex}, coil_dim::Integer)
 end
 
 """
-    fit_coil_compression(calibration_data; coil_dim=ndims(calibration_data), n_virtual_coils=nothing,
-        energy_threshold=nothing, noise_covariance=nothing, prewhitening_scale_factor=1) -> CoilCompressionTransform
+    fit_coil_compression(calibration_data::AbstractArray{Complex{T}};
+        coil_dim::Integer = ndims(calibration_data),
+        n_virtual_coils::Union{Nothing, Integer} = nothing,
+        energy_threshold::Union{Nothing, Real} = nothing,
+        noise_covariance::Union{Nothing, AbstractMatrix} = nothing,
+        prewhitening_scale_factor::Real = 1) where T <: AbstractFloat
 
 Fit an SVD-based coil-compression transform. All dimensions other than
 `coil_dim` are treated as calibration observations. Pass either an explicit
@@ -261,7 +281,9 @@ function fit_coil_compression(
 end
 
 """
-    apply_coil_compression(array, transform; coil_dim=ndims(array))
+    apply_coil_compression(array::AbstractArray{Complex{T}},
+        transform::CoilCompressionTransform;
+        coil_dim::Integer = ndims(array)) where T <: AbstractFloat
 
 Apply `transform` along `coil_dim` and return an `Array` with that dimension
 replaced by the virtual-coil count. The input coil count must equal
@@ -284,10 +306,14 @@ function apply_coil_compression(
 end
 
 """
-    compress_coils(data, csm;
-        data_coil_dim=ndims(data), csm_coil_dim=ndims(csm), n_virtual_coils=nothing,
-        energy_threshold=nothing, noise_covariance=nothing, prewhitening_scale_factor=1
-    ) -> compressed_data, compressed_csm, transform
+    compress_coils(data::AbstractArray{Complex{T}},
+        csm::AbstractArray{Complex{T}};
+        data_coil_dim::Integer = ndims(data),
+        csm_coil_dim::Integer = ndims(csm),
+        n_virtual_coils::Union{Nothing, Integer} = nothing,
+        energy_threshold::Union{Nothing, Real} = nothing,
+        noise_covariance::Union{Nothing, AbstractMatrix} = nothing,
+        prewhitening_scale_factor::Real = 1) where T <: AbstractFloat
 
 Fit a coil-compression transform from `data` and apply it consistently to
 both `data` and `csm`. Pass exactly one of `n_virtual_coils` and
@@ -298,6 +324,10 @@ bandwidth differs from the MRI acquisition. For
 calibration-region fitting, call
 [`fit_coil_compression`](@ref) on a calibration view and then apply the result
 to both full arrays with [`apply_coil_compression`](@ref).
+
+Return `(compressed_data, compressed_csm, transform)`. Both arrays are CPU
+`Array`s even when the inputs are CUDA arrays; transfer them after fitting if
+the chosen encoding backend requires GPU inputs.
 """
 function compress_coils(
     data                      :: AbstractArray{Complex{T}}                   ,

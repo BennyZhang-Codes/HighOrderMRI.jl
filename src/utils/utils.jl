@@ -19,16 +19,12 @@ include("io.jl")
 export struct_to_dict
 
 """
-    factor_a, factor_b = get_factors(num::Int64)
+    get_factors(num::Int64)::Tuple{Int64, Int64}
 
-# Description
-    Get the factors of a number, Where a * b = num, make the difference between a and b as small as possible.
-
-# Arguments
-- `num::Int64`: The number whose factors are to be found.
-
-# Returns
-- `Tuple{Int64,Int64}`: (a, b), a < b. A tuple containing the two factors of the number.
+For a positive `Int64`, return an ascending pair `(a, b)` with `a*b == num`
+selected near the square root. The pair satisfies `a <= b`, including square
+numbers. Use positive input; the implementation has no explicit domain guard
+for zero or negative values.
 """
 function get_factors(num::Int64)::Tuple{Int64,Int64}
     num_sqrt = Int64(ceil(sqrt(num)))
@@ -49,6 +45,14 @@ end
 export get_factors
 
 
+"""
+    get_mask(image; threshold = 0)
+
+Return a Boolean array of the input shape whose entries satisfy
+`abs(image) > threshold`. The comparison is strict; values equal to the
+threshold are excluded. This is an intensity threshold, not a geometry or
+noise-estimation mask. NaN magnitudes compare false.
+"""
 function get_mask(image; threshold=0)
     image = abs.(image);
     mask = zeros(size(image));

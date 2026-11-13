@@ -3,28 +3,20 @@ using PyPlot
 using LinearAlgebra
 
 """
-    plt_grad(G_nominal::AbstractMatrix, geo::Geometry; kwargs...)
+    plt_grad(G_nominal::AbstractMatrix, geo::Geometry; dt::Float64 = 1.0e-5, t::Union{Nothing, AbstractVector} = nothing, boundaries::Vector{Int} = Int[], gamma::Float64 = 42.575575, title = "", width = 24, height = 15, fontsize_title = 13, fontsize_label = 12, color_facecolor = "#FFFFFF", color_label = "#000000")
 
-Visualizes the transformation from nominal gradient design to physical (DCS) gradients.
-Delegates the mathematical mapping entirely to `grad_Nominal2DCS`.
-Units are automatically converted from Hz/m to mT/m.
+Plot nominal gradient values before polarity mapping, in logical RPS, and
+after rotation into DCS. This Geometry overload applies coordinate/polarity
+transforms only; it does not predict a GIRF response or measure actual scanner
+gradients. The current third panel is labelled "Actual Gradient Waveform (DCS)" even
+though it contains only transformed nominal values.
 
-# Layout
-Generates a 3x1 subplot figure (Vertical stack) with a shared Y-axis and bottom-only X-axis:
-1. **Nominal DCS**: The raw gradient waveforms directly from the sequence design.
-2. **Nominal RPS**: The logical gradient waveforms after applying the vendor-specific baseline polarity mapping.
-3. **Actual DCS**: The true physical gradients applied to the scanner coils.
-
-# Arguments
-- `G_nominal::AbstractMatrix`: The input nominal gradient array. Must have one dimension of size 3 (spatial axes). 
-- `geo::Geometry`: The `Geometry` object containing spatial transformations.
-
-# Keyword Arguments
-- `dt::Float64`: Dwell time in seconds. Default is `10e-6`.
-- `t::AbstractVector`: Optional custom time vector in seconds. Overrides `dt` if provided.
-- `boundaries::Vector{Int}`: Indices for drawing vertical dashed lines to separate segments.
-- `gamma::Float64`: Gyromagnetic ratio in MHz/T. Default is `42.575575`.
-- `title::String`: Figure title.
+Input is a matrix with a three-channel axis; when both axes have length three,
+axis one is chosen. Values are assumed in Hz/m, divided by gamma*1000 for
+mT/m display; gamma is in MHz/T. dt and optional t are in seconds, displayed
+in milliseconds. t overrides dt. Boundaries mark segment endpoints and reset
+displayed local time; they do not alter data. width and height are in centimetres.
+Returns a PyPlot figure. Interpretation depends on Geometry's vendor mapping.
 """
 function plt_grad(
     G_nominal::AbstractMatrix, 
@@ -182,13 +174,14 @@ function plt_grad(
 end
 
 """
-    plt_grad(G_nominal::AbstractArray{T, 3}, geo::Geometry; dim_dynamic::Int=3, kwargs...) where T
+    plt_grad(G_nominal::AbstractArray{T, 3}, geo::Geometry; dim_dynamic::Int = 1, kwargs...) where T
 
-Overload for 3D gradient arrays (e.g., `[Spatial, Time, Dynamic]`).
-Automatically permutes and concatenates the array along the `dim_dynamic` axis into a 2D matrix, 
-and passes it to the core 2D `plt_grad` function.
-
-Automatically calculates segment boundaries (vertical dashed lines) for each dynamic segment.
+Concatenate a three-dimensional nominal-gradient array into segments for the
+matrix Geometry plotting method. The actual default dynamic axis is 1.
+The spatial axis is inferred from a size-three axis outside dim_dynamic;
+choose an unambiguous layout. Remaining keywords are forwarded and segment
+boundaries are inserted automatically. No GIRF prediction is performed;
+the result is a PyPlot figure of coordinate-transformed nominal gradients.
 """
 function plt_grad(
     G_nominal::AbstractArray{T, 3}, 

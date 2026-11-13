@@ -1,12 +1,19 @@
 """
-    get_geometry(raw::RawAcquisitionData; T=Float64, D=Int64) -> Vector{Geometry{T}}
+    get_geometry(raw::RawAcquisitionData; T::Type{<:AbstractFloat} = Float64, D::Type{<:Integer} = Int64)
 
-A universal function to extract an array of `Geometry` objects from MRI raw data.
-Automatically adapts to 2D single-slice, 2D multi-slice, 3D single-slab, and 3D multi-slab 
-by reading ISMRMRD reconSpace parameters directly.
+Read geometry records from `RawAcquisitionData`. Returns
+`Vector{Geometry{T,D}}`, one item per distinct rounded profile geometry.
+It uses systemVendor, reconFOV, reconSize and patientPosition from raw.params,
+and position/read_dir/phase_dir/slice_dir from profile headers. FOV and centre
+are converted from millimetres to metres; slice labels are shifted from zero
+to one based. reconSize[3]==1 selects Dimension=2, otherwise Dimension=3.
 
-# Returns
-- A `Vector{Geometry{T}}` where the length corresponds to the number of unique slices or slabs.
+Profiles are grouped at four decimal places in the original metadata units;
+the returned geometry uses the first original values in each group. Entries
+follow first occurrence, not a guaranteed physical order. The function does
+not return the profile-to-geometry index map, validate every ISMRMRD producer,
+or verify the vendor transform tables. Required metadata must be present and
+its coordinate definitions must match the conventions used here.
 """
 function get_geometry(
     raw::RawAcquisitionData; 

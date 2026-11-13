@@ -12,6 +12,8 @@ include("InhomogeneityData.jl")
 include("recon_HOOp.jl")
 export recon_HOOp
 
+include("voxel_aperture.jl")
+
 include("recon_ifft.jl")
 export convert_fft, convert_ifft
 

@@ -1,157 +1,57 @@
-# References and source notes
+# References
 
-## Scientific background
+This page collects the literature cited throughout the documentation. Use the topic index to choose a starting point, then follow the linked guide for the package's equations, assumptions, and implementation choices. Constructor arguments and defaults are listed in the [API reference](/api).
 
-1. Wilm BJ, Barmet C, Pruessmann KP. Fast higher-order MR image
-   reconstruction using singular-vector separation. *IEEE Transactions on
-   Medical Imaging*. 2012;31:1396–1403.
-   [doi:10.1109/TMI.2012.2190991](https://doi.org/10.1109/TMI.2012.2190991)
-2. Lee NG, Ramasawmy R, Lim Y, Campbell-Washburn AE, Nayak KS. MaxGIRF:
-   Image reconstruction incorporating concomitant field and gradient impulse
-   response function effects. *Magnetic Resonance in Medicine*.
-   2022;88:691–710.
-   [doi:10.1002/mrm.29232](https://doi.org/10.1002/mrm.29232)
-3. Halko N, Martinsson PG, Tropp JA. Finding structure with randomness:
-   Probabilistic algorithms for constructing approximate matrix
-   decompositions. *SIAM Review*. 2011;53:217–288.
-   [doi:10.1137/090771806](https://doi.org/10.1137/090771806)
-4. Dubovan PI, Baron CA. Model-based determination of the synchronization
-   delay between MRI and trajectory data. *Magnetic Resonance in Medicine*.
-   2023;89:721–728.
-   [doi:10.1002/mrm.29460](https://doi.org/10.1002/mrm.29460)
-5. Robison RK, Devaraj A, Pipe JG. Fast, simple gradient delay estimation for
-   spiral MRI. *Magnetic Resonance in Medicine*. 2010;63:1683–1690.
-   [doi:10.1002/mrm.22327](https://doi.org/10.1002/mrm.22327)
-6. Rosenzweig S, Holme HCM, Uecker M. Simple auto-calibrated gradient delay
-   estimation from few spokes using radial intersections (RING). *Magnetic
-   Resonance in Medicine*. 2019;81:1898–1906.
-   [doi:10.1002/mrm.27506](https://doi.org/10.1002/mrm.27506)
-7. Ianni JD, Grissom WA. Trajectory Auto-Corrected image reconstruction.
-   *Magnetic Resonance in Medicine*. 2016;76:757–768.
-   [doi:10.1002/mrm.25916](https://doi.org/10.1002/mrm.25916)
-8. Eckart C, Young G. The approximation of one matrix by another of lower
-   rank. *Psychometrika*. 1936;1:211–218.
-   [doi:10.1007/BF02288367](https://doi.org/10.1007/BF02288367)
-9. Huang F, Vijayakumar S, Li Y, Hertel S, Duensing GR. A software channel
-   compression technique for faster reconstruction with many channels.
-   *Magnetic Resonance Imaging*. 2008;26:133–141.
-   [doi:10.1016/j.mri.2007.04.010](https://doi.org/10.1016/j.mri.2007.04.010)
-10. Buehrer M, Pruessmann KP, Boesiger P, Kozerke S. Array compression for MRI
-    with large coil arrays. *Magnetic Resonance in Medicine*.
-    2007;57:1131–1139.
-    [doi:10.1002/mrm.21237](https://doi.org/10.1002/mrm.21237)
-11. Zhang T, Pauly JM, Vasanawala SS, Lustig M. Coil compression for
-    accelerated imaging with Cartesian sampling. *Magnetic Resonance in
-    Medicine*. 2013;69:571–582.
-    [doi:10.1002/mrm.24267](https://doi.org/10.1002/mrm.24267)
-12. Kellman P, McVeigh ER. Image reconstruction in SNR units: A general method
-    for SNR measurement. *Magnetic Resonance in Medicine*.
-    2005;54:1439–1447.
-    [doi:10.1002/mrm.20713](https://doi.org/10.1002/mrm.20713)
+## Reading by topic
 
-### Coil-compression implementation boundary
+| Topic | Starting references | Package guide |
+|:--|:--|:--|
+| Higher-order encoding and singular-vector separation | [1](#ref-1), [2](#ref-2), [3](#ref-3) | [Encoding model](/theory/encoding-model) |
+| Randomized low-rank approximation and truncated SVD | [4](#ref-4), [5](#ref-5), [21](#ref-21) | [Low-rank shared subspace](/theory/low-rank) |
+| Parallel factorization and shared-subspace foundations | [22](#ref-22), [23](#ref-23) | [Low-rank shared subspace](/theory/low-rank#relation-to-previous-methods) |
+| Snapshot POD, gappy fitting and QR point selection | [25](#ref-25), [26](#ref-26), [16](#ref-16), [17](#ref-17) | [Joint adaptive low-rank](/theory/joint-adaptive-low-rank) |
+| Phase-aware covering and global residual certification | [27](#ref-27), [29](#ref-29) | [Selection and audit](/theory/joint-adaptive-low-rank#rank-selection-and-final-audit) |
+| Spectral truncation and MRI separable approximations | [5](#ref-5), [28](#ref-28), [30](#ref-30) | [Error budget and related work](/theory/joint-adaptive-low-rank#full-time-recompression-and-total-error) |
+| Field monitoring and gradient impulse responses | [6](#ref-6), [7](#ref-7) | [Field preprocessing and synchronization](/guide/field-preprocessing) |
+| Field/data synchronization and related trajectory-correction methods | [8](#ref-8), [9](#ref-9), [10](#ref-10), [11](#ref-11) | [Field preprocessing and synchronization](/guide/field-preprocessing) |
+| Receive-channel compression and noise weighting | [12](#ref-12), [13](#ref-13), [14](#ref-14), [15](#ref-15) | [Coil compression](/guide/coil-compression) |
+| Explicit phase storage and GPU reconstruction | [24](#ref-24) | [Relation to the non-Fourier SENSE preprint](/guide/performance#relation-to-the-non-fourier-sense-preprint) |
 
-HighOrderMRI implements the global software PCA/SVD family represented by
-Huang et al. When a receive-noise covariance is provided, it first performs a
-right Cholesky whitening and then retains leading right singular vectors. For
-calibration matrix ``D``, noise-prescan covariance ``\Psi_{noise}``, and
-bandwidth/dwell-time scale
-``s=(T_{acq}/T_{noise})R_{BW}``, the effective acquisition covariance is
-``\Psi_{acq}=\Psi_{noise}/s``. The returned combined matrix is ``C=WV_r``,
-with ``W^H\Psi_{acq}W=I`` and therefore ``C^H\Psi_{acq}C=I``. The default
-``s=1`` preserves the previous convention. The same ``C`` is applied to
-measured data and CSM. Truncated
-SVD supplies the Eckart--Young optimum only for the stated whitened Frobenius
-objective and one global linear transform; this is not a blanket optimum for
-parallel-imaging g-factor or every sampling geometry.
+Entries 2 and 14 identify published errata; consult those corrections when using the papers. Reference 24 links to the cited preprint version.
 
-The bandwidth/dwell-time scale convention was cross-checked against the
-[ISMRMRD Python coil utilities](https://github.com/ismrmrd/ismrmrd-python-tools/blob/master/ismrmrdtools/coils.py)
-and
-[mrpro prewhitening documentation](https://docs.mrpro.rocks/_autosummary/mrpro.algorithms.prewhiten_kspace.html).
-HighOrderMRI uses the complex covariance convention ``E[n^Hn]`` and therefore
-does not silently add the separate ``\sqrt{2}`` normalization used by some SNR
-scaling pipelines.
+## Bibliography
 
-Zhang et al.'s GCC is included as an important comparison, not as an
-implementation citation. GCC exploits nonsubsampled Cartesian dimensions and
-uses aligned spatially varying transforms. The current arbitrary-trajectory
-operators require one global right-side coil transform, so silently labelling
-the implementation as GCC would be incorrect. A future GCC implementation
-would require an explicit hybrid-space/operator interface and separate
-validation.
+Reference numbers and `ref-N` anchors are shared across the site.
 
-The legacy synchronization implementation was cross-checked against the
-authors' public [MatMRI `findDelAuto`
-source](https://gitlab.com/cfmm/matlab/matmri/-/blob/master/findDel/findDelAuto.m),
-including its five-point derivative, sign-change acceleration update, and
-final-delay return rule. The current Julia interface does not expose the
-reference implementation's coarse-search initialization or a maximum outer
-iteration count.
-
-The local singular-vector separation and randomized range-finding stages build
-on prior work. HighOrderMRI's implementation-specific extension is the
-streaming recompression of dynamic-specific weighted spatial factors into an
-adaptive shared basis, its coupling to a global-trajectory NFFT, and the
-matrix-free multi-GPU execution strategy. The documentation does not claim
-that low-rank higher-order encoding, randomized SVD, or shared subspaces are
-new mathematical concepts.
-
-## Internal design sources
-
-The theory and implementation pages synthesize the following project Notion
-pages, last consulted on 2026-08-03:
-
-- [HighOrderMRI.jl](https://app.notion.com/p/3ab5433ed4de80bf9f6afdb373afc4e3)
-- [HighOrderMRI.jl Methods: High-order Encoding, LowRank, and multi-GPU
-  implementation](https://app.notion.com/p/3a95433ed4de8160b038fe8c7e2bc455)
-- [HighOrderLowRankOp: SVD separation and global shared spatial
-  basis](https://app.notion.com/p/3ac5433ed4de8147aeb3cb6afc9c51b6)
-- [Global shared spatial subspace: novelty, evidence strength, and publication
-  strategy](https://app.notion.com/p/3ab5433ed4de814eaeaee15e4db75f80)
-- [Phase 0 encoding-model convention test record,
-  2026-07-24](https://app.notion.com/p/3a75433ed4de81aaa759dc22c61d063b)
-- [HighOrderMRI.jl MRM Toolbox manuscript experiment
-  design](https://app.notion.com/p/3a95433ed4de815eb9a3e28cc2d09592)
-
-These links may require access to the project's Notion workspace. They are
-design records, not a replacement for source code, tests, or peer-reviewed
-references.
-
-Where a note and the current implementation differ, the current source and
-regression tests take precedence. In particular, the explicit multi-GPU
-operator currently shards masked voxels and reduces partial forward signals;
-it does not shard forward samples as described in an earlier explanatory
-note.
-
-## Documentation and deployment model
-
-The organization and deployment workflow were informed by
-[KomaMRI.jl](https://github.com/JuliaHealth/KomaMRI.jl): separate
-getting-started, tutorial/how-to, explanation, and API material; a dedicated
-`docs/Project.toml`; source-backed API pages; and automated deployment from
-GitHub Actions. HighOrderMRI uses Documenter.jl's native HTML renderer rather
-than KomaMRI's larger DocumenterVitepress/Literate/Pluto stack because the
-current package does not yet require generated notebooks or interactive
-VitePress components.
-
-Useful infrastructure references:
-
-- [Documenter.jl guide](https://documenter.juliadocs.org/stable/man/guide/)
-- [Hosting Documenter.jl output on
-  GitHub](https://documenter.juliadocs.org/stable/man/hosting/)
-- [KomaMRI.jl documentation](https://juliahealth.org/KomaMRI.jl/stable/)
-
-## Validation boundary
-
-The documented equations are checked against current array shapes, term
-ranges, kernels, and convention tests. Published documentation should still
-distinguish:
-
-- internal consistency with the explicit operator;
-- approximation error relative to that operator;
-- independent numerical validation against a directly constructed matrix;
-- physical validation against simulation or measured reference data.
-
-Only the last two can close the strongest claims of absolute numerical and
-physical accuracy.
+<ol class="homri-references">
+  <li id="ref-1">Wilm BJ, Barmet C, Pavan M, Pruessmann KP. Higher order reconstruction for MRI in the presence of spatiotemporal field perturbations. <em>Magn Reson Med</em>. 2011;65:1690-1701. <a href="https://doi.org/10.1002/mrm.22767" target="_blank" rel="noreferrer">doi:10.1002/mrm.22767</a></li>
+  <li id="ref-2">Wilm BJ, Barmet C, Pruessmann KP. Fast higher-order MR image reconstruction using singular-vector separation. <em>IEEE Trans Med Imaging</em>. 2012;31:1396-1403. <a href="https://doi.org/10.1109/TMI.2012.2190991" target="_blank" rel="noreferrer">doi:10.1109/TMI.2012.2190991</a> Erratum: <em>IEEE Trans Med Imaging</em>. 2012;31(9):1833, listed in the <a href="https://pubmed.ncbi.nlm.nih.gov/22434798/" target="_blank" rel="noreferrer">PubMed record</a>.</li>
+  <li id="ref-3">Lee NG, Ramasawmy R, Lim Y, Campbell-Washburn AE, Nayak KS. MaxGIRF: Image reconstruction incorporating concomitant field and gradient impulse response function effects. <em>Magn Reson Med</em>. 2022;88:691-710. <a href="https://doi.org/10.1002/mrm.29232" target="_blank" rel="noreferrer">doi:10.1002/mrm.29232</a></li>
+  <li id="ref-4">Halko N, Martinsson PG, Tropp JA. Finding structure with randomness: Probabilistic algorithms for constructing approximate matrix decompositions. <em>SIAM Rev</em>. 2011;53:217-288. <a href="https://doi.org/10.1137/090771806" target="_blank" rel="noreferrer">doi:10.1137/090771806</a></li>
+  <li id="ref-5">Eckart C, Young G. The approximation of one matrix by another of lower rank. <em>Psychometrika</em>. 1936;1:211-218. <a href="https://doi.org/10.1007/BF02288367" target="_blank" rel="noreferrer">doi:10.1007/BF02288367</a></li>
+  <li id="ref-6">Barmet C, De Zanche N, Pruessmann KP. Spatiotemporal magnetic field monitoring for MR. <em>Magn Reson Med</em>. 2008;60:187-197. <a href="https://doi.org/10.1002/mrm.21603" target="_blank" rel="noreferrer">doi:10.1002/mrm.21603</a></li>
+  <li id="ref-7">Vannesjo SJ, Haeberlin M, Kasper L, et al. Gradient system characterization by impulse response measurements with a dynamic field camera. <em>Magn Reson Med</em>. 2013;69:583-593. <a href="https://doi.org/10.1002/mrm.24263" target="_blank" rel="noreferrer">doi:10.1002/mrm.24263</a></li>
+  <li id="ref-8">Dubovan PI, Baron CA. Model-based determination of the synchronization delay between MRI and trajectory data. <em>Magn Reson Med</em>. 2023;89:721-728. <a href="https://doi.org/10.1002/mrm.29460" target="_blank" rel="noreferrer">doi:10.1002/mrm.29460</a></li>
+  <li id="ref-9">Robison RK, Devaraj A, Pipe JG. Fast, simple gradient delay estimation for spiral MRI. <em>Magn Reson Med</em>. 2010;63:1683-1690. <a href="https://doi.org/10.1002/mrm.22327" target="_blank" rel="noreferrer">doi:10.1002/mrm.22327</a></li>
+  <li id="ref-10">Rosenzweig S, Holme HCM, Uecker M. Simple auto-calibrated gradient delay estimation from few spokes using Radial Intersections (RING). <em>Magn Reson Med</em>. 2019;81:1898-1906. <a href="https://doi.org/10.1002/mrm.27506" target="_blank" rel="noreferrer">doi:10.1002/mrm.27506</a></li>
+  <li id="ref-11">Ianni JD, Grissom WA. Trajectory auto-corrected image reconstruction. <em>Magn Reson Med</em>. 2016;76:757-768. <a href="https://doi.org/10.1002/mrm.25916" target="_blank" rel="noreferrer">doi:10.1002/mrm.25916</a></li>
+  <li id="ref-12">Huang F, Vijayakumar S, Li Y, Hertel S, Duensing GR. A software channel compression technique for faster reconstruction with many channels. <em>Magn Reson Imaging</em>. 2008;26:133-141. <a href="https://doi.org/10.1016/j.mri.2007.04.010" target="_blank" rel="noreferrer">doi:10.1016/j.mri.2007.04.010</a></li>
+  <li id="ref-13">Buehrer M, Pruessmann KP, Boesiger P, Kozerke S. Array compression for MRI with large coil arrays. <em>Magn Reson Med</em>. 2007;57:1131-1139. <a href="https://doi.org/10.1002/mrm.21237" target="_blank" rel="noreferrer">doi:10.1002/mrm.21237</a></li>
+  <li id="ref-14">Kellman P, McVeigh ER. Image reconstruction in SNR units: A general method for SNR measurement. <em>Magn Reson Med</em>. 2005;54:1439-1447. <a href="https://doi.org/10.1002/mrm.20713" target="_blank" rel="noreferrer">doi:10.1002/mrm.20713</a> Erratum: <em>Magn Reson Med</em>. 2007;58(1):211-212. <a href="https://doi.org/10.1002/mrm.21261" target="_blank" rel="noreferrer">doi:10.1002/mrm.21261</a>.</li>
+  <li id="ref-15">Zhang T, Pauly JM, Vasanawala SS, Lustig M. Coil compression for accelerated imaging with Cartesian sampling. <em>Magn Reson Med</em>. 2013;69:571-582. <a href="https://doi.org/10.1002/mrm.24267" target="_blank" rel="noreferrer">doi:10.1002/mrm.24267</a></li>
+  <li id="ref-16">Drmač Z, Gugercin S. A new selection operator for the discrete empirical interpolation method—Improved a priori error bound and extensions. <em>SIAM J Sci Comput</em>. 2016;38:A631-A648. <a href="https://doi.org/10.1137/15M1019271" target="_blank" rel="noreferrer">doi:10.1137/15M1019271</a></li>
+  <li id="ref-17">Peherstorfer B, Drmač Z, Gugercin S. Stability of discrete empirical interpolation and gappy proper orthogonal decomposition with randomized and deterministic sampling points. <em>SIAM J Sci Comput</em>. 2020;42:A2837-A2864. <a href="https://doi.org/10.1137/19M1307391" target="_blank" rel="noreferrer">doi:10.1137/19M1307391</a></li>
+  <li id="ref-18">Compton R, Osher S, Bouchard LS. Hybrid regularization for MRI reconstruction with static field inhomogeneity correction. <em>Inverse Probl Imaging</em>. 2013;7:1215-1233. <a href="https://doi.org/10.3934/ipi.2013.7.1215" target="_blank" rel="noreferrer">doi:10.3934/ipi.2013.7.1215</a></li>
+  <li id="ref-19">Lee NG, Cui SX, Nayak KS. Cartesian MaxGIRF: Model-based EPI reconstruction incorporating gradient nonlinearity and concomitant field effects. <em>Magn Reson Med</em>. 2026;95:1044-1067. First published online 2025. <a href="https://doi.org/10.1002/mrm.70113" target="_blank" rel="noreferrer">doi:10.1002/mrm.70113</a></li>
+  <li id="ref-20">Tian R, Scheffler K. Group-Patch Joint Compression: Compressing dynamic B0 and static RF spatial modulations across k-space subregion groups for highly accelerated MRI. <em>Magn Reson Med</em>. Published online 2026. <a href="https://doi.org/10.1002/mrm.70439" target="_blank" rel="noreferrer">doi:10.1002/mrm.70439</a></li>
+  <li id="ref-21">Yu W, Gu Y, Li Y. Efficient randomized algorithms for the fixed-precision low-rank matrix approximation. <em>SIAM J Matrix Anal Appl</em>. 2018;39:1339-1359. <a href="https://doi.org/10.1137/17M1141977" target="_blank" rel="noreferrer">doi:10.1137/17M1141977</a></li>
+  <li id="ref-22">Demmel J, Grigori L, Hoemmen M, Langou J. Communication-optimal parallel and sequential QR and LU factorizations. <em>SIAM J Sci Comput</em>. 2012;34:A206-A239. <a href="https://doi.org/10.1137/080731992" target="_blank" rel="noreferrer">doi:10.1137/080731992</a></li>
+  <li id="ref-23">Himpe C, Leibner T, Rave S. Hierarchical approximate proper orthogonal decomposition. <em>SIAM J Sci Comput</em>. 2018;40:A3267-A3292. <a href="https://doi.org/10.1137/16M1085413" target="_blank" rel="noreferrer">doi:10.1137/16M1085413</a></li>
+  <li id="ref-24">Bianchi S, Pruessmann KP. A GPU-enhanced workflow for non-Fourier SENSE reconstruction. <em>arXiv</em> [preprint]. 2026;<a href="https://arxiv.org/abs/2604.09233v1" target="_blank" rel="noreferrer">2604.09233v1</a>. Submitted April 10, 2026. <a href="https://doi.org/10.48550/arXiv.2604.09233" target="_blank" rel="noreferrer">doi:10.48550/arXiv.2604.09233</a>. <a href="https://arxiv.org/html/2604.09233v1#Sx4.SSx5" target="_blank" rel="noreferrer">Implementation section</a>.</li>
+  <li id="ref-25">Sirovich L. Turbulence and the dynamics of coherent structures. Part I: Coherent structures. <em>Q Appl Math</em>. 1987;45:561-571. <a href="https://doi.org/10.1090/qam/910462" target="_blank" rel="noreferrer">doi:10.1090/qam/910462</a></li>
+  <li id="ref-26">Everson R, Sirovich L. Karhunen-Loève procedure for gappy data. <em>J Opt Soc Am A</em>. 1995;12:1657-1664. <a href="https://doi.org/10.1364/JOSAA.12.001657" target="_blank" rel="noreferrer">doi:10.1364/JOSAA.12.001657</a>. <a href="https://empslocal.ex.ac.uk/people/staff/reverson/uploads/Site/gappy.pdf" target="_blank" rel="noreferrer">Author manuscript</a>.</li>
+  <li id="ref-27">Gonzalez TF. Clustering to minimize the maximum intercluster distance. <em>Theor Comput Sci</em>. 1985;38:293-306. <a href="https://doi.org/10.1016/0304-3975(85)90224-5" target="_blank" rel="noreferrer">doi:10.1016/0304-3975(85)90224-5</a></li>
+  <li id="ref-28">Mirsky L. Symmetric gauge functions and unitarily invariant norms. <em>Q J Math</em>. 1960;11:50-59. <a href="https://doi.org/10.1093/qmath/11.1.50" target="_blank" rel="noreferrer">doi:10.1093/qmath/11.1.50</a></li>
+  <li id="ref-29">Maurer A, Pontil M. Empirical Bernstein bounds and sample variance penalization. <em>Proceedings of the 22nd Annual Conference on Learning Theory (COLT)</em>. 2009. <a href="https://arxiv.org/abs/0907.3740" target="_blank" rel="noreferrer">arXiv:0907.3740</a>. Theorem 4 gives the fixed-function bounded-loss inequality discussed here.</li>
+  <li id="ref-30">Sutton BP, Noll DC, Fessler JA. Fast, iterative image reconstruction for MRI in the presence of field inhomogeneities. <em>IEEE Trans Med Imaging</em>. 2003;22:178-188. <a href="https://doi.org/10.1109/TMI.2002.808360" target="_blank" rel="noreferrer">doi:10.1109/TMI.2002.808360</a></li>
+</ol>

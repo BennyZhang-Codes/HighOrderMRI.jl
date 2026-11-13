@@ -1,155 +1,52 @@
 # API reference
 
-This page lists the documented public API. HighOrderMRI also re-exports
-MRIGeometry.jl functionality; consult the corresponding source docstrings for
-geometry conversion, resampling, NIfTI export, and plotting details.
+The API reference is organized as a set of short pages, following the same separation used by established Julia MRI documentation: each page focuses on one public type, constructor, or closely related function family. Scientific derivations and validation requirements remain in the [Theory](/theory/encoding-model) and [Guide](/guide/operators) sections.
 
-```@docs
-HighOrderMRI
-```
+<!--@include: ../.generated/api/highordermri.md-->
 
-## Grid and field basis
+## Encoding model and operators
 
-```@docs
-Grid
-SphericalHarmonics
-basisfunc_spha
-```
-
-## Encoding operators
-
-```@docs
-HighOrderOp
-HighOrderKernelOp
-explicit_gpu_normal
-HighOrderLowRankOp
-@rebuild_HOOp
-```
-
-### Automatic joint shared basis
-
-The existing local rSVD construction remains the default. To opt into joint
-phase snapshots and automatic selection of the final shared rank:
-
-```julia
-report = Ref{Any}()
-op = HighOrderLowRankOp(grid, kspha, times;
-    fieldmap, csm, mask,
-    shared_basis_method=:joint,
-    shared_basis_tol=Float32(1e-2),
-    shared_rank_max=256,
-    joint_snapshots=512,
-    joint_samples=512,
-    joint_basis_report=report,
-    global_basis_tol=nothing,
-)
-report[].rank
-maximum(report[].audit_errors)
-maximum(report[].roi_errors)
-```
-
-Match tolerance types to the input precision. Existing `arrayType`, `gpus`,
-`normal_distribution` and reconstruction options still apply. Joint setup
-runs on the primary GPU or CPU; it does not use voxel-distributed rSVD.
-`L_rank` does not truncate local factors in this mode. `rsvd_chunk` bounds
-temporary phase matrices. The requested `joint_snapshots` budget is used
-before choosing rank, subject to available phase geometries. The result uses
-the existing operator, NFFT and normal implementations, including all rank
-cross terms.
-
-Here `shared_basis_tol` constrains a sampled original-phase matrix error for
-each profile, unlike the incremental compression error of the default path.
-The search tests rank 1 and blocks of eight, then audits the completed factors
-on fresh time samples. Selection reserves 10% of each requested tolerance for
-sampling variation; the final audit still uses the requested tolerance and
-can fail. This heuristic is not a proof of the minimum rank or an image-error
-guarantee. Reports include the seed, fitting/validation/audit indices and the
-per-profile errors; tiny inputs record when time samples must be reused.
-
-High-|B0| voxels receive an additional diagnostic. Set
-`joint_roi_tol=Float32(1e-2)` to require that region to pass as well. Without
-this option, an excessive ROI error is reported and warned about. In the EPI
-experiment, a random-voxel 1% pass did **not** imply a high-B0-region 1% pass.
-Rank/sample exhaustion and failed audits throw, with diagnostics in `report`;
-no partially validated operator is returned. Post-audit `global_basis_tol`
-compression is rejected because it would change the checked factors.
+- [`Grid` and `basisfunc_spha`](/reference/grid-basis): physical reconstruction grid and real solid-harmonic basis evaluation.
+- [`HighOrderOp`](/reference/highorderop): array-based explicit field-aware encoding.
+- [`HighOrderKernelOp`](/reference/highorderkernelop): legacy/direct CUDA kernels and resident blocked/cached cuBLAS, with `gpus` selecting single- or multi-GPU execution.
+- [`explicit_gpu_normal`](/reference/highorderkernelop#weighted-normal): resident weighted normal from raw square-root weights; distinct from `normalOperator(op,D)` with an already squared diagonal.
+- [`HighOrderLowRankOp`](/reference/highorderlowrankop): low-rank residual-phase representation with shared or independent per-readout factors, including bounded streaming/regeneration and rank-sharded multi-GPU execution.
 
 ## Reconstruction
 
-```@docs
-CoilCompressionTransform
-estimate_noise_covariance
-noise_prewhitening_scale_factor
-fit_coil_compression
-apply_coil_compression
-compress_coils
-recon_HOOp
-samplingDensity
-CoilCombineSOS
-```
+- [`recon_HOOp`](/reference/recon-hoop): iterative reconstruction wrapper, raw sample-weight convention, CPU/CUDA input requirements, and backend cleanup.
+- [`samplingDensity`](/reference/sampling-density): square-root sampling-density weights for non-Cartesian reconstruction.
+
+- [`CoilCombineSOS`](/reference/coil-combine-sos): root-sum-of-squares combination along the selected coil dimension.
+
+## Coil compression
+
+- [`CoilCompressionTransform`](/reference/coil-compression-transform): fitted linear receive-coil transform.
+- [`estimate_noise_covariance`](/reference/estimate-noise-covariance): complex receive-noise covariance estimation.
+- [`noise_prewhitening_scale_factor`](/reference/noise-prewhitening-scale): dwell-time / receiver-bandwidth scale factor.
+- [`fit_coil_compression`](/reference/fit-coil-compression): fit global SVD or noise-whitened SVD compression.
+- [`apply_coil_compression`](/reference/apply-coil-compression): apply a fitted transform along a selected coil dimension.
+- [`compress_coils`](/reference/compress-coils): fit one transform and apply it consistently to data and CSM.
 
 ## Field prediction and synchronization
 
-```@docs
-GIRFModel
-apply_girf
-InterpTrajTime
-FindDelay
-FindDelay_multishot
-```
+- [`GIRFModel`](/reference/girf-model): typed frequency-domain GIRF representation.
+- [`apply_girf`](/reference/apply-girf): predict realized field channels from nominal physical gradients.
+- [`InterpTrajTime`](/reference/interp-traj-time): interpolate field/trajectory coefficients to requested ADC times.
+- [`FindDelay`](/reference/find-delay): single-acquisition model-based field/data synchronization.
+- [`FindDelay_multishot`](/reference/find-delay-multishot): shared-delay estimation for multi-shot data.
 
-## Reconstruction metrics
+## Geometry
 
-```@docs
-complex_alignment_scale
-raw_complex_nrmse
-aligned_complex_nrmse
-magnitude_nrmse
-magnitude_ssim
-```
+- [MRIGeometry](/reference/geometry): physical coordinates, slab handling, resampling and NIfTI export, including current restrictions.
 
-The compatibility functions `HO_MSE`, `HO_RMSE`, `HO_NRMSE`, `HO_SSIM`, and
-`HO_img_scale` use reference-first argument order. Prefer the explicitly named
-metric functions above in new code.
+## Metrics and utilities
 
-## Array and signal utilities
+- [Reconstruction metrics](/reference/image-metrics): raw and aligned complex NRMSE, magnitude NRMSE, SSIM, and compatibility helpers.
+- [Array and signal utilities](/reference/utilities): CPU/GPU conversion, trajectory-gradient conversion, resizing, cropping, and factor helpers.
+- [Plotting helpers](/reference/plotting): common visualization functions.
+- [Resource lifecycle](/reference/resources): explicit cleanup and safe replacement of large low-rank operators.
 
-```@docs
-gpu
-cpu
-f32
-f64
-grad2traj
-traj2grad
-imresize_real
-imresize_complex
-get_center_range
-get_center_crop
-get_factors
-```
-
-## Plotting
-
-```@docs
-plt_plot
-plt_scatter
-plt_image
-plt_B0map
-plt_kspha
-plt_ksphas
-plt_bfield
-plt_bfield_com
-plt_grad
-mosaic
-```
-
-## Resource cleanup
-
-A `HighOrderLowRankOp` with `normal_distribution=:channel` owns its
-multi-GPU normal backend. Release it with:
-
-```julia
-close(op)
-# equivalent:
-release_highorder_normal_backend!(op)
-```
+::: tip Reference vs. methods
+Use these pages to check calling conventions and returned objects. Use [Symbols and notation](/theory/symbols), the [expanded encoding model](/theory/encoding-model), [low-rank shared subspace](/theory/low-rank), and the relevant Guide page when interpreting units, phase conventions, approximation parameters, or validation requirements.
+:::

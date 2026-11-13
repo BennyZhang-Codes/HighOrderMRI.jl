@@ -1,14 +1,12 @@
 """
-    get_fov_faces(grid::Array{<:Real,4}; spacing=nothing, R=nothing)
+    get_fov_faces(grid::Array{<:Real, 4}; spacing = nothing, R = nothing)
 
-Extract the exact 3D physical bounding box faces and RPS spanning vectors from a voxel grid.
-Perfectly handles half-voxel shifts for true outer boundaries.
-
-# Returns
-A NamedTuple containing:
-- `faces`: Vector of 6 faces (each face is a Vector of 4 3D points) for Poly3DCollection.
-- `points`: 3x8 Matrix of the 8 extreme corner points (useful for global bounding box).
-- `vectors`: NamedTuple `(origin, r, p, s)` containing the RPS corner origin and 3 span vectors.
+Internal helper returning `(faces,points,vectors)` for plotting. Input grid
+coordinates and optional spacing are in metres; output coordinates are in
+millimetres. With spacing and R, half-voxel extensions use those values;
+otherwise they are inferred from endpoint differences. Singleton dimensions
+need explicit spacing and R to represent nonzero thickness. The grid must
+describe a regular parallelepiped; this does not infer arbitrary warped FOVs.
 """
 function get_fov_faces(grid::Array{<:Real,4}; spacing=nothing, R=nothing)
     # 1. Extract Voxel Centers (Converted to mm)

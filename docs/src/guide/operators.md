@@ -1,49 +1,37 @@
-# Choose an operator
+# Encoding operators
 
-All HighOrderMRI encoding operators are linear operators with image-vector
-columns and sample-vector rows. Select the implementation from the problem
-size, required reference accuracy, and available hardware.
+HighOrderMRI.jl provides three linear-operator implementations of the field-aware signal model. The appropriate implementation depends on whether the calculation requires an explicit reference, resident CUDA/cuBLAS execution, or repeated large-scale evaluations using the low-rank approximation.
 
-## Comparison
+## Implementations
 
 | | `HighOrderOp` | `HighOrderKernelOp` | `HighOrderLowRankOp` |
 |---|---|---|---|
-| Target model | Explicit | Explicit | Approximation of residual phase |
+| Signal model | Explicit | Explicit | Residual-phase approximation |
 | Dynamics per object | One | One | One or many |
 | CPU | Yes | No | Yes |
-| CUDA | Array operations | Direct kernels or cuBLAS | NFFT + fused/chunked rSVD |
-| Multi-GPU | No | Voxel shards (legacy) or sample shards (resident) | Optional voxel-sharded setup and channel-sharded normal operator |
-| Main cost | Sample–voxel phase matrix blocks | Repeated sample–voxel phase evaluation | Setup plus ``R N_c`` NFFTs per forward/adjoint |
-| Recommended role | Debugging and small CPU/GPU work | Explicit numerical reference | Large iterative reconstruction |
+| CUDA | Array operations | Direct kernels or resident cuBLAS | NFFT + rSVD setup |
+| Multi-GPU | No | Legacy voxel shards or resident sample shards | Voxel-sharded rSVD; channel- or readout-sharded normal |
+| Dominant numerical cost | Sample–voxel phase blocks | Repeated sample–voxel phase evaluation | Setup plus $RN_c$ NFFTs for shared or $N_{\mathrm{ro}}LN_c$ for per-readout |
+| Typical numerical role | Small explicit calculations and derivative products | Explicit GPU reference and iterative reconstruction | Repeated large-scale forward/adjoint evaluations |
 
-For iterative explicit reconstruction, `HighOrderKernelOp` also provides
-resident GPU workspaces and solver storage with `backend=:direct`, `:blocked`,
-`:cached`, or `:cached_full`. Use `gpus=[id]` for one GPU or `gpus=[id1,id2]`
-for several GPUs; the implementation is selected automatically. The default
-`backend=:legacy` preserves the original kernels and CPU solver storage.
-Select a backend from measurements at the actual voxel, sample, and coil
-counts; the low-rank path's speed advantage depends on the explicit reference.
+The explicit operators target the same signal model. `HighOrderLowRankOp` changes only the numerical representation of the residual spatial phase term; the first-order Fourier trajectory remains in the NFFT.
 
-## Shared inputs
+## Common inputs
 
 For a grid of size `(nX,nY,nZ)`:
 
-- `fieldmap`: `(nX,nY,nZ)` or `(nX,nY)` when `nZ == 1`;
-- `csm`: `(nX,nY,nZ,nCha)` or `(nX,nY,nCha)` when `nZ == 1`;
+- `fieldmap`: `(nX,nY,nZ)`, or `(nX,nY)` when `nZ == 1`;
+- `csm`: `(nX,nY,nZ,nCha)`, or `(nX,nY,nCha)` when `nZ == 1`;
 - `mask`: the spatial grid shape;
 - `k_nominal`: first-order coefficients ordered as `kx`, `ky`, `kz`;
-- `recon_terms`: order-selection string described in the [encoding
-  model](../theory/encoding-model.md).
+- `recon_terms`: order-selection string defined in the [expanded encoding model](../theory/encoding-model.md#selecting-field-orders);
+- `concomitant`: optional integrated coefficients `(4,nSam)` for the explicit/single-dynamic operators or `(4,nSam,nDyn)` for dynamic LowRank, ordered as `z²`, `x²+y²`, `xz`, `yz`. Supply cycles/m² in the grid frame and origin; see [concomitant phase](/theory/encoding-model#optional-concomitant-phase).
 
-The operator column count is always `prod(grid.matrixSize)`, even when a mask
-is used. Values outside the mask are ignored by the encoding and restored as
-zeros by the adjoint.
+The operator column count is always `prod(grid.matrixSize)`. A mask removes background voxels from the encoding calculation, while the adjoint restores unencoded voxels as zeros in the full image vector.
 
-## Shared coil compression
+## Coil compression
 
-All encoding operators accept compressed data and CSM without an
-operator-specific interface. First fit a [`CoilCompressionTransform`](@ref),
-then apply the same matrix along the data and CSM coil dimensions:
+All three operators accept compressed data and compressed CSM through the same interface. Fit one `CoilCompressionTransform` and apply the same right-side transform to the data and sensitivity maps:
 
 ```julia
 data_cc, csm_cc, transform = compress_coils(
@@ -58,26 +46,25 @@ op = HighOrderOp(grid, kspha, times; csm=csm_cc, arrayType=Array)
 image = recon_HOOp(op, data_cc, weights, rec_params)
 ```
 
-The same `csm_cc` can instead be supplied to `HighOrderKernelOp` or
-`HighOrderLowRankOp`. Compression preserves the signal equation because a
-single right-side coil transform is applied to both measured signals and
-sensitivity maps. Do not independently fit or phase-align those two
-transforms.
+The same `csm_cc` can be supplied to `HighOrderKernelOp` or `HighOrderLowRankOp`. Using one transform for both acquired signals and coil sensitivities preserves the transformed signal equation; independently fitted transforms generally do not.
 
-When representative noise-only samples are available, obtain
-`noise_covariance = estimate_noise_covariance(noise_data; coil_dim=...)` and
-pass it as shown. This makes the retained global subspace noise-whitened; an
-omitted covariance assumes independent, equal-variance channels.
+When representative noise-only samples are available, estimate
 
-## Array-based explicit operator
+```julia
+noise_covariance = estimate_noise_covariance(noise_data; coil_dim=...)
+```
 
-Use `arrayType=Array` for a CPU reference:
+before fitting the transform. Omitting the covariance corresponds to an independent, equal-variance noise model. The whitening and compression equations are given in [Coil compression](/guide/coil-compression).
+
+## `HighOrderOp`: array-based explicit evaluation
+
+A CPU explicit operator can be constructed with:
 
 ```julia
 op = HighOrderOp(
     grid,
-    kspha,  # (nTerm, nSam)
-    times;  # (nSam,)
+    kspha,
+    times;
     fieldmap,
     csm,
     mask,
@@ -88,7 +75,7 @@ op = HighOrderOp(
 )
 ```
 
-Use `arrayType=CuArray` for array-based CUDA execution:
+Array-based CUDA execution is selected with:
 
 ```julia
 using CUDA
@@ -104,19 +91,14 @@ op = HighOrderOp(
 )
 ```
 
-`nBlock` divides samples into smaller explicit phase blocks. More blocks
-reduce peak temporary memory but add launch and allocation overhead.
+`nBlock` divides the samples into explicit phase blocks. Increasing the number of blocks reduces peak temporary memory at the cost of additional launches and allocations.
 
-Passing `kspha_dt` changes the forward action to the time-derivative product
-``B x`` used internally by [`FindDelay`](@ref). The current adjoint action is
-still the ordinary encoding adjoint; consequently, an operator constructed
-with `kspha_dt` must not be treated as a general linear derivative operator or
-used in an adjointness test. The legacy synchronization routine uses only its
-forward action.
+Supplying `kspha_dt` changes the forward action to the time-derivative product $Bx$ used internally by `FindDelay`. The adjoint remains the ordinary encoding adjoint. An operator constructed with `kspha_dt` should therefore not be interpreted as a general derivative linear operator, and do not use that forward/adjoint pair in adjoint-based solves or normal products.
 
-## Explicit CUDA kernel
+The array-based CUDA helpers can downcast Float64 input vectors internally.
+For a Float64 explicit reference, use `arrayType=Array`.
 
-`HighOrderKernelOp` requires CUDA:
+## `HighOrderKernelOp`: explicit CUDA evaluation
 
 ```julia
 using CUDA
@@ -134,38 +116,31 @@ reference_op = HighOrderKernelOp(
 )
 ```
 
-With the default `backend=:legacy`, masked voxels are split into approximately equal contiguous ranges. Every GPU
-produces a partial forward signal, which is summed on the host; the adjoint
-collects the disjoint voxel shards. This changes data placement, not the
-mathematical model.
+With the default `backend=:legacy`, masked voxels are divided into approximately equal contiguous ranges. Each GPU evaluates a partial forward signal; these partial signals are summed on the host. For the adjoint, disjoint voxel results are gathered into their original masked positions. Resident backends instead partition samples across GPUs, as described below. Both decompositions preserve the explicit phase model.
 
-Use this operator as a numerical reference only after checking the same grid,
-mask, field coefficients, coil maps, normalization, and reconstruction
-settings as the candidate operator.
+For a controlled comparison with another implementation, the grid, mask, field coefficients, coil maps, normalization, and reconstruction settings should be identical.
 
-The current `kspha_dt` forward path of `HighOrderKernelOp` falls back to the
-array-based CPU derivative implementation. Its adjoint retains the ordinary
-kernel encoding action described above. Use
-`HighOrderOp(...; arrayType=CuArray, kspha_dt=...)` when the derivative forward
-product must run on CUDA. Resident backends require ordinary encoding:
-`kspha_dt` requires `backend=:legacy`. Optional `concomitant` phase is supported
-by both legacy and resident backends.
+When `kspha_dt` is supplied, the current derivative forward path falls back to the array-based CPU derivative implementation. Its adjoint remains the ordinary kernel encoding adjoint. Use `HighOrderOp(...; arrayType=CuArray, kspha_dt=...)` when the derivative forward product itself must execute on CUDA. Derivative mode requires `backend=:legacy` and ignores `concomitant`; ordinary legacy and resident encoding support supplied concomitant phase.
+
+The legacy Float64 adjoint can exceed its fixed CUDA launch register budget.
+The resident direct backend caps Float64 adjoint threads separately.
 
 ## GPU-resident explicit reconstruction
 
-Construct spatial model inputs on the host, then keep data, weights, and
-solver vectors on the GPU selected during construction:
+Use the same public `HighOrderKernelOp` with `backend=:direct`, `:blocked`, `:cached`, or `:cached_full`. `gpus=[id]` selects one GPU and multiple IDs select the internal multi-GPU implementation. The default remains `backend=:legacy`; choose a resident backend explicitly.
 
 ```julia
 using CUDA
 
+CUDA.math_mode!(CUDA.PEDANTIC_MATH)
 op = HighOrderKernelOp(grid, kspha, times;
     fieldmap, csm, mask,
-    gpus=[0],
+    gpus=[0, 1],
     backend=:blocked,
     phase_backend=:gemm,
     gemm_backend=:cublas,
     block_size=1024,
+    phase_cache_bytes=0,
 )
 try
     image = recon_HOOp(op, CuArray(ComplexF32.(data_matrix)),
@@ -175,45 +150,21 @@ finally
 end
 ```
 
-Use model and data precision consistently (`Float32`/`ComplexF32` above).
-`gpus=[id]` selects one CUDA device; the default is `gpus=[0]`.
-IDs are zero-based and relative to `CUDA_VISIBLE_DEVICES` when that variable
-filters the device list. Pass multiple IDs to the same constructor to select multi-GPU execution;
-its first ID owns solver vectors. The resident implementation types are internal.
-`block_size` counts sample rows, whereas the older `nBlock` keyword counts
-blocks. The operator's specialized `normalOperator` generates each complex
-phase block once and reuses it for all coils and both matrix products.
+Use Float32 model inputs with ComplexF32 data, or matching Float64/ComplexF64 inputs. Construct the model from host arrays. The first selected GPU owns the data, weights, and solver vectors; the CPU receives only the returned image. IDs are zero-based and relative to `CUDA_VISIBLE_DEVICES` when the visible list is filtered.
 
-`backend=:direct` reuses the existing CUDA kernels. `:cached` retains the full
-complex ``P`` but applies it in sample blocks; `:cached_full` applies the same
-cached matrix with one full GEMM per forward or adjoint. Cache initialization
-is blocked in both modes. Include ``8N_tN_v`` bytes for ComplexF32 ``P`` plus
-the real phase block, model, coil buffers, solver, and library workspace when
-checking feasibility. Cached setup belongs in one-shot reconstruction timing.
+`block_size` counts sample rows, whereas legacy `nBlock` counts blocks. A blocked normal generates each complex phase block once and reuses it for all coils, forward multiplication, weighting, and adjoint multiplication. `:direct` uses direct encoding kernels; `:cached` stores the complete phase matrix but applies it in blocks; `:cached_full` uses one full GEMM per forward/adjoint. The two full-cache modes initialize in blocks.
 
-When the full matrix cannot fit, `backend=:blocked` also accepts
-`phase_cache_bytes`, for example `phase_cache_bytes=8 * 2^30`. It retains a
-prefix of complete complex phase blocks up to that byte limit and regenerates
-the remaining blocks. The default is zero. This changes storage and repeated
-work without truncating samples or approximating the encoding. The cache
-limit excludes the model, scratch, solver, and library storage; initialization
-still belongs in total time. Partial caching is distinct from retaining the
-complete matrix with `:cached` or `:cached_full`.
+For ComplexF32, the full complex matrix requires `8 * nSam * count(mask)` bytes, before phase scratch, CSM, coil images, data, solver, and library workspace. Feasibility must hold on each participating GPU. Include cache initialization and all required transfers in complete reconstruction timing.
 
-[`explicit_gpu_normal`](@ref) accepts raw weights and squares them once.
-`normalOperator(op, D)` expects the already squared diagonal ``D=W^H W``;
-`normalOperator(W ∘ op)` supplies it automatically. Regularization remains in
-the solver. Operators and their derived normals share mutable workspaces
-and must be used sequentially; close the operator after the final use.
+With `backend=:blocked`, `phase_cache_bytes` limits a cached prefix on each GPU separately; zero is the default. The budget counts only complex phase entries and rounds down to complete sample blocks. Remaining samples are regenerated. It does not reduce the problem or approximate the phase, and excludes other workspaces. Tune the budget and block size together on the complete problem.
 
-For sample-distributed execution on several GPUs, use
-[`HighOrderKernelOp`](@ref) as described in
-[Multi-GPU execution](multi-gpu.md#GPU-resident-sample-distributed-explicit-operator).
+`explicit_gpu_normal(op; weights)` accepts raw square-root weights and squares them once. `normalOperator(op, D)` instead accepts the already squared diagonal `D=WᴴW`; `normalOperator(W ∘ op)` supplies that diagonal automatically. Regularization remains in the solver. See the [API](/reference/highorderkernelop#weighted-normal).
 
-## Low-rank operator
+Operators and their normals share mutable workspaces. Use them sequentially and call `close(op)` after the final use, including after `recon_HOOp`. For multi-GPU sample partitioning, see [Multi-GPU execution](/guide/multi-gpu#resident-explicit-encoding-sample-decomposition).
 
-The dynamic constructor accepts `(nTerm,nSam,nDyn)` coefficients and
-`(nSam,nDyn)` times:
+## `HighOrderLowRankOp`: shared spatial representation
+
+The dynamic constructor accepts `(nTerm,nSam,nDyn)` field coefficients and `(nSam,nDyn)` sampling times:
 
 ```julia
 lowrank_op = HighOrderLowRankOp(
@@ -236,10 +187,9 @@ lowrank_op = HighOrderLowRankOp(
 )
 ```
 
-A two-dimensional `kspha` and vector `times` are accepted by a convenience
-overload that inserts a singleton dynamic dimension.
+A two-dimensional `kspha` array and vector `times` are accepted by a convenience overload that inserts a singleton dynamic dimension.
 
-For single-GPU CUDA:
+For single-GPU CUDA execution:
 
 ```julia
 lowrank_op = HighOrderLowRankOp(
@@ -257,13 +207,84 @@ lowrank_op = HighOrderLowRankOp(
 )
 ```
 
-The fused CUDA rSVD backend requires
-`L_rank + rsvd_oversample <= 32`. The final shared rank is not subject to this
-kernel-width limit.
+The fused CUDA backend handles wide sketches by batching columns in groups
+of 16; a sketch of at most
+16 columns still uses one launch per product. Matrix-dimension limits still
+apply. The final shared rank is separate from the sketch width.
 
-## Validate an operator
+### Independent per-readout factors
 
-For random complex vectors `x` and `y`, check adjointness:
+Use `basis_layout=:per_readout` for a local singular-vector baseline without
+shared-space compression. For a factor bank that fits host RAM but exceeds
+device memory:
+
+```julia
+lowrank_op = HighOrderLowRankOp(grid, kspha_dynamic, times_dynamic;
+    fieldmap, csm, mask,
+    arrayType=CuArray,
+    gpus=[0, 1],
+    basis_layout=:per_readout,
+    L_rank=10,
+    rsvd_oversample=5,
+    rsvd_backend=:kernel,
+    rsvd_finalize=:gram,
+    rsvd_distribution=:voxel,
+    per_readout_storage=:cpu,
+    per_readout_cache_size=5,
+    normal_distribution=:readout,
+)
+```
+
+Each readout retains its local rank-$L$ temporal and spatial factors. The
+bounded GPU queue streams factors ahead of use; the complete spatial bank
+still occupies host RAM. If that bank also exceeds host memory, change
+`per_readout_storage` to `:regenerate`. This keeps Q/Z and generates spatial
+factors into bounded GPU slots, with `per_readout_host_cache_bytes=0` by
+default. Lookahead can overlap work but does not remove regeneration cost.
+
+For an approximation comparison, first vary only `basis_layout`, holding
+the local rank, seed, field model, precision, weights, and solver fixed.
+Then measure storage and scheduling choices separately. Shared compression
+parameters are inactive in the per-readout layout. See the
+[parameter reference](/reference/highorderlowrankop#per-readout-parameters),
+[factorization](/theory/low-rank#independent-per-readout-representation), and
+[readout-distributed normal](/guide/multi-gpu#iterative-reconstruction-readout-distributed-normal-operator).
+
+### Construction scope {#automatic-joint-shared-basis}
+
+This guide covers the regular `shared_basis_method=:rsvd` paths. Joint
+construction, its tests and its algorithm evaluation are outside this guide's
+reviewed scope. Its keywords remain visible in the exact source signatures;
+no joint configuration or validation claim is made here.
+
+## Implementation paths
+
+The public constructors select the following paths in the current implementation:
+
+| Entry point or setting | Implementation path |
+|:--|:--|
+| Common field preparation | `basisfunc_spha` builds spatial columns; `prep_kspha` selects the original harmonic rows; `prep_concomitant` appends optional coefficient rows and spatial columns. |
+| `HighOrderKernelOp`, `backend=:legacy` | `prod_HighOrderKernelOp` and `ctprod_HighOrderKernelOp` submit the original CUDA kernels. |
+| Resident `HighOrderKernelOp` | One GPU constructs the internal `ExplicitGPUOp`; multiple GPUs construct `ExplicitMultiGPUOp`. Both remain behind the public `HighOrderKernelOp(...; gpus=...)` interface. |
+| Resident matrix normal | `explicit_gpu_normal!` reuses each phase block for forward and adjoint GEMMs; `explicit_gemm!` calls native cuBLAS when `gemm_backend=:cublas`. Multi-GPU workers evaluate sample shards and reduce image contributions. |
+| `HighOrderLowRankOp`, shared rSVD | Local rSVD products feed incremental shared-basis updates; the resulting `q` and `basis` drive NFFT forward/adjoint products. |
+| `HighOrderLowRankOp`, per-readout | `per_readout_basis` skips shared compression. `PerReadoutCache` supplies CPU-stored or regenerated factors to the NFFT loop. |
+| Distributed LowRank normal | `normalOperator` calls `ensure_highorder_normal_backend!` lazily. `local_highorder_normal!` selects shared, resident per-readout, or streamed per-readout evaluation. |
+| `recon_HOOp` | Forms `E = W ∘ HOOp`, requests `normalOperator(E)`, constructs the configured solver, and solves against weighted data. |
+
+These helper types and functions describe internal dispatch, not additional
+public operator names. Source entry points are
+[`HighOrderKernelOp.jl`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/d141e7dc48e8d18380050aaa970ee4ae364d916d/src/EncodingOperator/HighOrderKernelOp.jl),
+[`explicit_gpu_operator.jl`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/d141e7dc48e8d18380050aaa970ee4ae364d916d/src/EncodingOperator/Explicit/explicit_gpu_operator.jl),
+[`HighOrderLowRankOp.jl`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/d141e7dc48e8d18380050aaa970ee4ae364d916d/src/EncodingOperator/HighOrderLowRankOp.jl),
+[`per_readout_basis.jl`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/d141e7dc48e8d18380050aaa970ee4ae364d916d/src/EncodingOperator/LowRankApproximation/per_readout_basis.jl),
+[`per_readout_cache.jl`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/d141e7dc48e8d18380050aaa970ee4ae364d916d/src/EncodingOperator/LowRankApproximation/per_readout_cache.jl),
+[`multi_gpu_normal_operator.jl`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/d141e7dc48e8d18380050aaa970ee4ae364d916d/src/EncodingOperator/LowRankApproximation/multi_gpu_normal_operator.jl),
+and [`recon_HOOp.jl`](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/d141e7dc48e8d18380050aaa970ee4ae364d916d/src/Recon/recon_HOOp.jl).
+
+## Numerical consistency checks
+
+For random complex vectors `x` and `y`, the adjoint identity can be evaluated as:
 
 ```julia
 using LinearAlgebra, Random
@@ -277,6 +298,4 @@ adjoint_error =
     max(abs(dot(op * x, y)), eps(Float32))
 ```
 
-When comparing a low-rank operator to an explicit reference, report raw
-forward, adjoint, and normal-operator relative errors before reporting
-image-only metrics.
+When evaluating a low-rank operator against an explicit implementation, report the raw forward, adjoint, and normal-operator relative errors before relying on image-domain metrics alone. The complete comparison hierarchy is described in [Scientific validation strategy](/guide/validation).

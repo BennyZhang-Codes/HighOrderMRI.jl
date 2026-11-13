@@ -1,24 +1,19 @@
 """
-    geo = Geometry(SystemVendor, Dimension, FOV, MatrixSize, PatientPosition, T_PCS, R_RPS_PCS)
+    Geometry{T <: AbstractFloat, D <: Integer}
 
-# Description
-    The `Geometry{T}` struct holds information about the spatial configuration of an MRI scan, 
-    supporting generic floating-point precision (e.g., Float32 or Float64), and handles 
-    vendor-specific device coordinate transformations.
+Mutable acquisition geometry containing RPS (read/phase/slice), PCS
+(patient LPS) and DCS (device) transforms. FOV and translations are in metres;
+MatrixSize has three positive counts and rotations act on column coordinates.
+`T_PCS` is the volume or slice centre, not its first voxel centre. `Idx_Slice`
+is a one-based acquisition label, not a physical sorting coordinate.
 
-# Arguments
-- `SystemVendor`: (`::String`) Scanner manufacturer (e.g., "Siemens", "GE", "Philips").
-- `Dimension`: (`::Int`) Scan dimensionality; 2 for 2D or 3 for 3D acquisitions.
-- `FOV`: (`::Vector{T}`, `[m]`) Field of view in the order [Read, Phase, Slice].
-- `MatrixSize`: (`::Vector{Int}`) Number of voxels per dimension [Read, Phase, Slice].
-- `PatientPosition`: (`::String`) Patient orientation string (e.g., "HFS", "FFP", etc.).
-- `T_PCS`: (`::Vector{T}`, `[m]`) Physical center position of the slice in PCS.
-- `T_DCS`: (`::Vector{T}`, `[m]`) Physical center position of the slice in DCS.
-- `R_RPS_PCS`: (`::Matrix{T}`) Rotation matrix from logical RPS to Patient PCS.
-- `R_PCS_DCS`: (`::Matrix{T}`) Rotation matrix from Patient PCS to Device DCS.
-- `R_RPS_DCS`: (`::Matrix{T}`) Rotation matrix from logical RPS to Device DCS.
-- `R_Nominal_RPS`: (`::Matrix{T}`) Vendor-specific polarity matrix mapping Nominal design to true RPS.
-- `Idx_Slice`: (`::Int`) 1-based index of the current slice/slab in the scan.
+The object stores both original and derived transforms. Direct field mutation
+does not recompute dependent fields, and the constructor does not fully check
+positive sizes, orthogonality or consistency. Keep all fields consistent.
+GE, PHILIPS and UIH entries in RotMat are placeholders; their default device
+mapping and gradient polarity are not verified vendor support. Siemens
+conventions also require confirmation against the acquisition's coordinate
+definition. See [Geometry](/reference/geometry) before exporting physical data.
 """
 mutable struct Geometry{T <: AbstractFloat, D <: Integer}
     SystemVendor    :: String
@@ -36,11 +31,23 @@ mutable struct Geometry{T <: AbstractFloat, D <: Integer}
 end
 
 """
-    Geometry(SystemVendor, Dimension, FOV, MatrixSize, PatientPosition, T_PCS, R_RPS_PCS)
+    Geometry(SystemVendor::String, Dimension::D, FOV::AbstractVector{T}, MatrixSize::AbstractVector{D}, PatientPosition::String, T_PCS::AbstractVector{T}, R_RPS_PCS::AbstractMatrix{T}, Idx_Slice::D) where {T <: AbstractFloat, D <: Integer}
 
-Outer constructor for `Geometry`.
-It automatically infers the highest precision floating-point type `T` from the inputs, 
-selects the vendor-specific transformation matrix, and pre-calculates the DCS mapping.
+    Geometry(d::AbstractDict; T::Type{<:AbstractFloat} = Float64, D::Type{<:Integer} = Int)
+
+Construct a geometry from physical metadata or a dictionary of stored fields.
+In the positional form, FOV and T_PCS have length three, R_RPS_PCS is 3×3,
+and MatrixSize has length three. FOV, centre and rotation must share the same
+floating-point type T; dimension, matrix counts and Idx_Slice share integer
+type D. There is no automatic highest-precision promotion. Vendor names are
+uppercased; patient-position keys must match the vendor table. Derived fields
+are `R_RPS_DCS=R_PCS_DCS*R_RPS_PCS` and `T_DCS=R_PCS_DCS*T_PCS`.
+
+The dictionary form defaults to Float64/Int and reads all stored fields,
+including derived transforms, rather than recalculating them. Required keys
+are the Geometry field names. It does not validate that those fields agree.
+The positional constructor uses currently unverified placeholder device
+matrices for GE/PHILIPS/UIH. Neither form proves physical vendor correctness.
 """
 function Geometry(
     SystemVendor    :: String                 ,

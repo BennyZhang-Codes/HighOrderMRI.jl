@@ -2,28 +2,48 @@ import MRIReco.MRIBase: samplingDensity
 export samplingDensity
 
 """
-    samplingDensity(tr::AbstractArray{T,2}, shape::Tuple) where T
-    returns the sampling density for non-Cartersian trajectories.
+    samplingDensity(tr::AbstractArray{T, 2},
+        shape::Tuple; normalize::Bool=false) where T
 
-# Arguments
-- `tr::AbstractArray{T,2}`: 2D k-space trajectory.
-- `shape::Tuple`: Shape of the image to reconstruct.
+Compute square-root sampling-density weights for a non-Cartesian trajectory.
+`tr` must be dimension-by-sample `(length(shape), nSam)`, with real floating-point
+coordinates and at least one nonzero finite value. `shape` is the Cartesian
+reconstruction size, with positive dimensions. This overload normalizes all
+trajectory coordinates by `2*maximum(abs.(tr))`, constructs a CPU Float64 NFFT
+plan (`m=2`, `σ=2`), and uses 10 density-compensation iterations.
 
-# Returns
-- `weights::Vector{Complex{T}}`: Sample density function (SDF) of the k-space trajectory.
+Return `Vector{Complex{T}}` of length `nSam`, containing the square root of the
+computed density. Pass these weights once to [`recon_HOOp`](@ref), which applies
+them to both data and encoding. They are not the already squared normal
+weights. An all-zero trajectory has undefined normalization in the current
+implementation; anisotropic physical coordinates must be prepared consistently
+before calling this helper. It is a convenience estimate, not an absolute
+physical quadrature normalization.
 
-# Example
+Set `normalize=true` to divide the square-root weights by their root-mean-square
+value, so that the mean of the raw density `abs2.(weights)` is one. The default
+retains the historical scale. This changes the scale of the data fidelity term:
+to preserve an existing L2-regularized objective, divide its regularization
+coefficient by the original mean density as well. With zero regularization, a
+global weight rescaling leaves the exact least-squares solution unchanged; it
+does not improve the exact condition number or remove nonuniform weighting.
+
 ```julia
-julia> tr = randn(100,2);
-julia> shape = (128,128);
-julia> weights = samplingDensity(tr, shape);
+tr = [collect(range(-0.45, 0.45; length=32))'; zeros(1, 32)]
+weights = samplingDensity(tr, (8, 8))
 ```
 """
-function samplingDensity(tr::AbstractArray{T,2}, shape::Tuple) where T
+function samplingDensity(tr::AbstractArray{T,2}, shape::Tuple; normalize::Bool=false) where T
     C = maximum(2*abs.(tr[:]));  #Normalize k-space to -.5 to .5 for NUFFT
     tr = tr ./ C;
     plan = plan_nfft(Float64.(tr), shape, m=2, σ=2)
     weights = Complex{T}.(sqrt.(sdc(plan, iters=10)))
+    if normalize
+        scale = norm(weights) / sqrt(T(length(weights)))
+        isfinite(scale) && scale > zero(T) ||
+            throw(ArgumentError("density weights must have a finite positive RMS"))
+        weights ./= scale
+    end
     return weights
 end
 

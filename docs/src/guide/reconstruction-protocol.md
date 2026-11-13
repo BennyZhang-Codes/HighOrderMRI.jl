@@ -1,261 +1,60 @@
-# Reconstruction protocol
+# Reconstruction conventions
 
-!!! info "Protocol status"
-    Phase 0 convention freeze · Version 1 · Last updated 2026-07-24
+Use the same conventions throughout data preparation, operator construction and reconstruction. This page is a practical checklist for comparing implementations; it does not prescribe a particular experiment or report dataset results. Detailed definitions are in [Symbols and notation](/theory/symbols) and the [encoding model](/theory/encoding-model).
 
-This document defines the conventions that must remain fixed when comparing
-nominal, conventional, explicit high-order, and low-rank high-order
-reconstructions. Any intentional change requires a protocol-version increment,
-an explanation in the experiment manifest, and regeneration of affected
-results.
+## Encoding model
 
-## 1. Encoding model
+The package uses positive forward phase, in cycles before multiplication by $2\pi$, and conjugate phase and coil sensitivities in the adjoint. Masked-voxel normalization is $1/\sqrt{N_v}$. These are project conventions, not the only valid MRI Fourier convention.
 
-For receive channel `c`, sample `j`, and masked voxel `v`, the explicit
-forward model is
+LowRank approximates the residual encoding while retaining Fourier encoding on its active NFFT axes. In 2D, the remaining $k_z z$ term belongs to the residual; do not assume all three first-order terms are evaluated by a 2D NFFT.
 
-```text
-y[j,c] = 1/sqrt(nVox) *
-         sum_v x[v] * csm[v,c] *
-         exp(+2πim * phase[j,v])
-```
+Optional concomitant coefficients must be time-integrated and use the documented basis and units. `recon_terms` selects the original solid-harmonic rows; it does not independently switch concomitant contributions.
 
-with
+## Spatial grid
 
-```text
-phase[j,v] = times[j] * fieldmap[v] +
-             sum_term kspha[term,j] * basis[v,term].
-```
+Use coordinates, field maps, masks and coil sensitivities in the same frame and physical units. The default axis $a$ of length $N_a$ and spacing $\Delta_a$ has voxel centres
 
-The phase is measured in cycles before multiplication by `2π`. The forward
-phase sign is positive. The adjoint uses the conjugate phase.
+$$
+r_{a,n}=\left(n-\frac{N_a+1}{2}\right)\Delta_a,\qquad n=1,\ldots,N_a.
+$$
 
-`HighOrderLowRankOp` preserves this model. Its higher-order and off-resonance
-phase matrix is approximated by rSVD and a global shared spatial basis; its
-first-order terms are evaluated by AbstractNFFTs, and its spatially constant
-zeroth-order coefficient is folded into the temporal factor `q`.
+Odd grids include zero; even grids use symmetric half-integer offsets. LowRank assumes its documented Cartesian lattice on NFFT axes. Editing a coordinate vector alone does not change the Fourier plan. Geometry export and resampling have additional [implementation limits](/reference/geometry).
 
-## 2. Spatial grid
+## Solid-harmonic term order
 
-For an axis of length `N` and voxel spacing `Δ`, `Grid` uses
+Keep `kspha` rows in the [documented order](/theory/encoding-model#solid-harmonic-basis-order). A coefficient times its spatial polynomial must give phase in cycles. The first row is spatially constant; rows 2–4 are x, y and z. Fieldmap values in Hz require time values in seconds. No implicit gyromagnetic-ratio conversion should be assumed when converting gradient waveforms.
 
-```text
-r[i] = (i - (N + 1)/2) * Δ,  i = 1,...,N.
-```
+## Input shapes and vector ordering
 
-Consequences:
+| Operator/input | Layout |
+| --- | --- |
+| Explicit `kspha`, `times` | `(nTerm,nSam)`, `(nSam,)` |
+| LowRank `kspha`, `times` | `(nTerm,nSam,nDyn)`, `(nSam,nDyn)` |
+| LowRank data | `(nSam,nDyn,nCha)` |
+| LowRank vector output | Samples vary fastest, then readouts, then coils. |
 
-- odd dimensions contain a voxel at zero;
-- even dimensions are symmetric about zero with centres at half-integers;
-- `grid.x`, `grid.y`, and `grid.z` use Julia column-major voxel ordering;
-- `Δx`, `Δy`, and `Δz` use the same physical-length unit as the spatial
-  spherical-harmonic basis.
+Here `nDyn` is the code's readout count, indexed by $i$ in the theory. The synchronization helpers accept coefficient arrays in their own documented orientation; transpose explicitly when crossing those interfaces. Match dimensional forms of the mask, fieldmap and CSM to the selected constructor rather than relying on arbitrary reshaping.
 
-Axis exchange and reversal must be applied before creating every compared
-operator. Images, masks, field maps, and sensitivity maps must undergo the
-same permutation/reversal.
+## Reconstruction-term selection
 
-## 3. Spherical-harmonic term order
+For nine coefficient rows, the three digits of `recon_terms` select zeroth, first and second order. Sixteen rows use four digits, adding third order. In the shared preparation path, disabled first-order measured coefficients are replaced by the supplied nominal trajectory; disabled zeroth and higher-order rows are zeroed. Check each constructor's actual default and nominal-trajectory requirements.
 
-The production term order is:
+## NFFT convention
 
-| Index | Spatial basis |
-|---:|---|
-| 1 | `1` |
-| 2 | `x` |
-| 3 | `y` |
-| 4 | `z` |
-| 5 | `x*y` |
-| 6 | `z*y` |
-| 7 | `3*z^2 - (x^2 + y^2 + z^2)` |
-| 8 | `x*z` |
-| 9 | `x^2 - y^2` |
-| 10–16 | third-order terms defined in `basisfunc_spha` |
+The physical Fourier coefficient is scaled by voxel spacing and negated to match the package's positive-phase model through the NFFT's negative-exponent convention. Even-axis centring corrections are part of the implementation. Use the [encoding derivation](/theory/encoding-model), not a second hand-maintained phase convention.
 
-The coefficients in `kspha` must be expressed in reciprocal units consistent
-with the corresponding spatial basis so that every product contributes phase
-in cycles.
+## Weights and regularization
 
-## 4. Input shapes and vector ordering
+`recon_HOOp` takes raw sample weights $W$; its data term is
 
-### Explicit single-dynamic operator
+$$
+\lVert W(Ax-y)\rVert_2^2,
+$$
 
-- `kspha`: `(nTerm, nSam)`
-- `times`: `(nSam,)`
-- `fieldmap`: `(nX, nY, nZ)` or `(nX, nY)` when `nZ == 1`
-- `csm`: `(nX, nY, nZ, nCha)` or `(nX, nY, nCha)` when `nZ == 1`
-- `mask`: `(nX, nY, nZ)` or `(nX, nY)` when `nZ == 1`
-- output layout: `(nSam, nCha)`, vectorized with samples first
+with normal $A^H W^H W A$. `samplingDensity` returns square-root density weights. Do not square these again before passing them to the reconstruction wrapper. Direct optimized normal interfaces have their own documented squared-diagonal contract.
 
-### Low-rank dynamic operator
+The unregularized normal is positive semidefinite; positive definiteness and a unique solution require additional rank/regularization conditions. Fix the regularizer and inner solver settings before comparing operators. Keep image-domain phase or intensity alignment separate from raw complex reconstruction error.
 
-- `kspha`: `(nTerm, nSam, nDyn)`
-- `times`: `(nSam, nDyn)`
-- spatial inputs: same convention as the explicit operator
-- output layout: `(nSam, nDyn, nCha)`, vectorized with samples first,
-  then dynamics, then channels
+## Reproducibility and interpretation
 
-The input arrays are read-only model inputs. `prep_kspha` returns a prepared
-copy and must not mutate the caller's coefficients.
-
-## 5. Reconstruction-term selection
-
-For `nTerm == 9`, `recon_terms` has three binary digits:
-
-```text
-zeroth order, first order, second order
-```
-
-For `nTerm == 16`, it has four binary digits:
-
-```text
-zeroth order, first order, second order, third order
-```
-
-Rules:
-
-- disabled zeroth-, second-, or third-order coefficients are set to zero;
-- disabling the first-order measured coefficients replaces them with
-  `k_nominal`;
-- omitting `recon_terms` enables all available orders;
-- only `0` and `1` are valid digits.
-
-The primary paper comparisons are:
-
-| Condition | First order | Static B0 | Dynamic higher order |
-|---|---|---|---|
-| Nominal | nominal | off | off |
-| Conventional corrected | measured/GIRF | on | off |
-| Explicit HighOrder | measured/GIRF | on | on |
-| LowRank HighOrder | measured/GIRF | on | on, low-rank approximation |
-
-The exact strings used for every condition must be stored in the experiment
-configuration.
-
-## 6. NFFT convention
-
-AbstractNFFTs evaluates its forward transform with a negative Fourier
-exponent on integer grid indices. To reproduce the explicit positive-phase
-model, the physical first-order coefficient for axis `i` is converted to the
-NFFT node
-
-```text
-node_i = -k_i * Δ_i.
-```
-
-Each axis uses its own spacing. A common minimum spacing is not valid for an
-anisotropic grid.
-
-`nfft_center_correction=true` is the publication convention:
-
-- even dimensions receive the required half-voxel phase correction;
-- odd dimensions receive no centre correction.
-
-`nfft_center_correction=false` is legacy/debug behavior and must not be used
-for primary comparisons.
-
-## 7. Operator normalization
-
-Both explicit and LowRank forward/adjoint operators use
-
-```text
-1 / sqrt(nVox)
-```
-
-where `nVox = sum(mask)`. In `HighOrderLowRankOp`, this factor, the zeroth-order
-temporal phase, and the NFFT centre phase are folded into `q` once. No
-additional post-reconstruction normalization may be applied to make two
-operators agree.
-
-## 8. LowRank parameters
-
-The following quantities must be reported separately:
-
-- `L_rank`: local per-dynamic rSVD truncation rank;
-- `shared_rank`: final global shared spatial rank;
-- `shared_basis_tol`: adaptive shared-basis relative-error tolerance;
-- `rsvd_seed`;
-- `rsvd_oversample`;
-- `rsvd_finalize`;
-- `rsvd_backend`;
-- `rsvd_distribution`.
-
-The default seed schedule is deterministic: dynamic `d` uses
-`rsvd_seed + d - 1`.
-
-## 9. Solver freeze
-
-For a comparison, all methods must use identical:
-
-- data and weights;
-- sensitivity maps, field map, mask, and field coefficients;
-- reconstruction grid;
-- initial image;
-- regularizer and regularization strength;
-- solver and numerical precision;
-- iteration count and/or stopping criterion.
-
-Report both fixed-iteration timing and time to a common stopping criterion
-when evaluating performance.
-
-## 10. Primary error metrics
-
-The primary LowRank-vs-explicit metric is raw complex relative error:
-
-```text
-norm(x_lowrank - x_explicit) / norm(x_explicit).
-```
-
-The primary simulation metric is raw complex NRMSE against `x_truth`.
-
-No global complex scale, phase alignment, intensity rescaling, registration,
-or cropping may be applied to a primary metric. Aligned magnitude/phase
-metrics may be reported only as explicitly labelled secondary analyses.
-
-Also record:
-
-- magnitude NRMSE;
-- masked phase RMSE with a fixed magnitude threshold;
-- SSIM;
-- data-consistency residual;
-- predefined ROI errors;
-- adjoint identity error.
-
-## 11. Timing and memory
-
-- Separate Julia/CUDA compilation from steady-state execution.
-- Synchronize participating GPUs before and after timed regions.
-- Record setup, forward, adjoint, normal, CG, and end-to-end times.
-- Use at least five steady-state repetitions for final benchmarks and report
-  median and IQR.
-- Measure peak GPU memory externally through NVML or `nvidia-smi`.
-- Record GPU UUIDs, driver, CUDA version, Julia threads, and GPU workers.
-- Exclude runs affected by Xid errors, device loss, server restart, or
-  competing GPU processes.
-
-## 12. Required provenance
-
-Every result row must identify:
-
-- run and dataset IDs;
-- protocol/config version;
-- Git SHA and dirty-worktree state;
-- Julia, CUDA, package, and NFFT backend versions;
-- matrix size, resolution, samples, dynamics, channels, and terms;
-- field source;
-- method and all method-specific parameters;
-- solver settings;
-- GPU IDs and UUIDs;
-- timings, memory, convergence, and image metrics.
-
-Use `experiments/configs/phase0_reference.toml` as the starting manifest.
-
-## 13. Change control
-
-Changes to any convention above require:
-
-1. incrementing `protocol_version`;
-2. adding or updating a regression test;
-3. documenting why the change is scientifically necessary;
-4. identifying which previous results are invalidated;
-5. regenerating all invalidated primary results.
+Record the code revision, data preparation, units, coordinate transformations, mask, coil transform, weights, solver settings and LowRank approximation parameters. Apply a fitted coil transform consistently to data and CSM. A lower residual or a visually different image does not independently prove a more accurate physical model; use the [validation guide](/guide/validation).

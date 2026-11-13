@@ -1,32 +1,47 @@
 # Multi-GPU execution
 
-HighOrderMRI uses different decompositions for different phases of the
-workload:
+HighOrderMRI.jl can distribute operator construction and reconstruction over
+several NVIDIA GPUs. These stages use different decompositions. Choose the
+reconstruction strategy according to the arrays that must fit on each device;
+the sum of the GPUs' memory capacities does not establish that an operator fits.
 
-- `HighOrderKernelOp(...; backend=:legacy)` shards masked voxels;
-- its resident backends (`:direct`, `:blocked`, `:cached`, `:cached_full`)
-  shard samples and retain solver vectors on the first selected GPU;
-- distributed low-rank setup shards masked voxels;
-- the optional low-rank normal operator shards receive channels, or independent
-  readouts with `basis_layout=:per_readout`.
+For `HighOrderLowRankOp`, `rsvd_distribution` selects how the factors are built,
+and `normal_distribution` selects how the completed operator is evaluated during
+iterative reconstruction. The default reconstruction strategy is `:single`.
 
-These choices are complementary. Multi-GPU partitioning changes execution and
-communication, not the intended numerical approximation.
+## Choose a decomposition
+
+| Operator and stage | Selection | Distributed work and storage |
+|:--|:--|:--|
+| Explicit legacy encoding | `HighOrderKernelOp(...; backend=:legacy)` | Masked voxels; each worker retains its spatial rows. |
+| Explicit resident encoding | `backend=:direct`, `:blocked`, `:cached`, or `:cached_full` | Samples; each worker retains all masked voxels and coils for its sample range. |
+| Low-rank rSVD setup | `rsvd_distribution=:voxel` | Masked voxels during factor construction and shared-basis updates. |
+| Low-rank reconstruction | `normal_distribution=:single` | CPU execution with `arrayType=Array`, or primary-GPU execution with `CuArray`. |
+| Low-rank reconstruction | `normal_distribution=:channel` | Receive coils; shared temporal and spatial factors are retained in full on each worker. |
+| Low-rank reconstruction | `normal_distribution=:rank` | Shared temporal and spatial factor columns; coil-map columns are also distributed, and samples are processed in batches. |
+| Low-rank reconstruction | `normal_distribution=:readout` | Independent readouts; requires `basis_layout=:per_readout`. |
+
+Changing the GPU decomposition preserves the selected encoding representation,
+including its rank and phase terms. Floating-point reduction order can change.
+Low-rank approximation is controlled separately by the factor-construction
+parameters described in [Low-rank shared subspace](/theory/low-rank).
 
 ## Runtime requirements
 
-Use zero-based device IDs and start Julia with enough default threads:
+Start Julia with enough default threads for the selected workers. For example,
+to expose two physical GPUs and provide two worker threads plus a coordinator:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1,2,3 julia --threads=auto --project=.
+CUDA_VISIBLE_DEVICES=0,1 julia --threads=3 --project=.
 ```
 
-At least one default Julia thread per GPU worker is needed for effective
-overlap; one additional coordinator thread is recommended. With fewer
-threads, results remain mathematically valid, but kernel submission,
-transfers, and synchronization may occur in waves.
+Device IDs in `gpus` are zero based and relative to `CUDA_VISIBLE_DEVICES`.
+With `CUDA_VISIBLE_DEVICES=4,5`, use `gpus=[0, 1]` to select physical GPUs 4
+and 5. The public low-rank constructor uses `first(gpus)` as the primary GPU,
+which holds the solver vectors. It does not expose a separate `primary_gpu`
+keyword.
 
-Check the visible devices before allocating a large operator:
+Check CUDA before constructing an operator:
 
 ```julia
 using CUDA
@@ -35,199 +50,344 @@ CUDA.functional() || error("CUDA is not functional")
 collect(CUDA.devices())
 ```
 
-## Explicit operator
+Provide at least one default Julia thread per active GPU worker for effective
+concurrent submission; an additional coordinator thread is useful. Fewer threads
+can serialize transfers and kernel submission. GPU IDs must be unique.
 
-```julia
-op = HighOrderKernelOp(
-    grid,
-    kspha,
-    times;
-    fieldmap,
-    csm,
-    mask,
-    arrayType=CuArray,
-    gpus=[0, 1, 2, 3],
-)
-```
+## Legacy explicit encoding: voxel decomposition
 
-With the default `backend=:legacy`, the operator partitions `nVox` into contiguous ranges. Each device owns its
-field map, basis rows, coil-map rows, and workspaces. Forward partial signals
-are reduced on the host; adjoint voxel results are gathered into their
-original mask positions.
+`HighOrderKernelOp` uses voxel decomposition with the default `backend=:legacy`.
+Each GPU retains its field-map values, basis rows, coil-map rows, and workspaces.
+Partial forward signals are summed on the host; adjoint voxel results are
+gathered into their original masked positions. This backend uses CPU solver
+storage.
 
-### GPU-resident sample-distributed explicit operator
+## Resident explicit encoding: sample decomposition
+
+For resident solver storage and sample decomposition, select a resident backend:
 
 ```julia
 op = HighOrderKernelOp(grid, kspha, times;
     fieldmap, csm, mask,
-    gpus=[0, 1, 2, 3, 4],
+    gpus=[0, 1],
     backend=:blocked,
     phase_backend=:gemm,
     gemm_backend=:cublas,
     block_size=1024,
+    phase_cache_bytes=0,
 )
 ```
 
-Device IDs are relative to `CUDA_VISIBLE_DEVICES`. The first ID owns the CG
-vectors. With no visibility filter, `gpus=[1, 2, 4, 5, 6]` directly selects
-those CUDA device IDs. With `CUDA_VISIBLE_DEVICES=2,1,4,5,6`, use
-`gpus=[0, 1, 2, 3, 4]` to select the same devices with physical GPU 2 first.
-For a single GPU, `HighOrderKernelOp(...; gpus=[2], backend=:blocked)` selects device 2
-when no filter is set. The same public constructor selects the internal single-
-or multi-GPU implementation from `gpus`; no separate operator name is needed.
-Each persistent worker receives a contiguous sample range, the same
-masked voxels, and all coils. The weighted normal is the sum of the workers'
-local normal operators, with the same global voxel normalization as the
-single-GPU operator. Each complex phase block is generated once per local
-normal application and reused for the forward and adjoint products. Real and
-complex matrix products explicitly call cuBLAS.
+The first selected GPU owns the solver vectors. Each worker evaluates its
+contiguous sample range using the complete masked spatial model and all coils.
+The input image and partial output images pass through reusable host buffers;
+GPU peer access is not required. Forward samples are assembled in their original
+order, while adjoint and normal image contributions are summed.
 
-Reusable host buffers broadcast the image and reduce partial images. Forward
-and adjoint also assemble or split the sample-by-coil data in the original
-order. Communication does not transfer phase matrices and does not require
-peer access. Its measured cost belongs in reconstruction timing.
+`:blocked` reuses each complex phase block in both products of the weighted
+normal. `:direct` evaluates the direct kernels. `:cached` and `:cached_full`
+retain all local phase rows; `:cached_full` also uses a full sample-by-coil
+workspace. With `:blocked`, `phase_cache_bytes` optionally retains a prefix of
+complete phase blocks on each GPU. Its default is zero. The cache budget counts
+complex phase entries, so include model arrays, scratch, solver storage, and
+library workspaces when checking memory on every device.
 
-`backend=:direct` uses the existing direct kernels on each sample shard.
-`backend=:cached` retains every local phase row, allowing a complete phase
-matrix to be distributed over several GPUs. `backend=:cached_full` retains the
-same phase matrix and uses a full sample-by-coil workspace to apply it with one
-GEMM per forward or adjoint, instead of several sample-block products. Matrix
-initialization remains blocked in both modes. Check each device's phase matrix,
-workspace, model, solver, and library memory before constructing this mode;
-aggregate memory alone does not establish feasibility.
+Pass GPU data and weights to `recon_HOOp` for resident execution. Call `close(op)`
+after the final use; the wrapper does not release resident explicit operators.
+See [Choose an operator](/guide/operators) for backend settings.
 
-For a bounded cache, use `backend=:blocked, phase_cache_bytes=8 * 2^30`.
-The byte limit applies independently to each GPU's complex phase prefix;
-the remaining sample blocks are still evaluated on every application. The
-cache keeps complete sample blocks and can use less than the requested
-limit. Count its initialization in setup and include all other workspaces
-when checking each GPU's memory. The default `phase_cache_bytes=0` preserves
-the uncached path.
+## Low-rank setup: voxel-distributed rSVD
 
-Pass GPU data and weights to `recon_HOOp`. After all reconstruction and normal
-applications finish, call `close(op)` to release the workers and device
-workspaces. Operators and their derived normal operators share mutable
-scratch space and must not be applied concurrently.
-
-## Voxel-distributed rSVD setup
+Use these constructor keywords to build local low-rank factors on voxel shards:
 
 ```julia
-op = HighOrderLowRankOp(
-    grid,
-    kspha_dynamic,
-    times_dynamic;
-    fieldmap,
-    csm,
-    mask,
+arrayType=CuArray,
+gpus=[0, 1],
+rsvd_backend=:kernel,
+rsvd_finalize=:gram,
+rsvd_distribution=:voxel,
+```
+
+For readout $i$, let $H_i$ be the residual phase matrix. Voxel distribution
+partitions its columns and the corresponding rows of the random test matrix:
+
+$$
+H_i\Omega_i = \sum_g H_{i,g}\Omega_{i,g},
+\qquad
+B_i^H B_i = \sum_g B_{i,g}^H B_{i,g},
+\qquad B_i = H_i^H Q_i.
+$$
+
+The sample-domain sketches and small Gram contributions are reduced on the host.
+Large spatial factors and the incremental shared basis remain voxel distributed
+during setup. The completed shared factors are gathered into host arrays. For
+`:single` and `:channel` GPU execution they are then placed on the primary GPU;
+`:rank` retains the complete factor masters in host RAM and uploads only each
+worker's rank columns when its execution backend is first needed.
+
+Explicit `rsvd_distribution=:voxel` requires CUDA, a nonempty list of unique GPU IDs,
+`rsvd_finalize=:gram`, and `rsvd_backend=:kernel` or `:chunked`.
+Explicit voxel setup accepts a single GPU; the number of selected devices
+must not exceed `count(mask)`. With `rsvd_distribution=:auto`, voxel distribution is selected for CUDA with
+multiple GPUs, the kernel backend, and Gram finalization. The chunked backend
+requires explicit `:voxel` selection.
+
+The fused kernels process sketch columns in batches of at most 16. This is a
+kernel launch detail, not a rank limit: the sketch-width bound is
+`L_rank + rsvd_oversample <= min(nSam, nVox)`. `rsvd_chunk` bounds the voxel
+blocks used by the chunked implementation; it does not control reconstruction
+sample batches.
+
+### Optional no-add check during shared-basis construction
+
+`shared_noadd_check=false` is the default. Set it to `true` only with
+voxel-distributed shared rSVD (`basis_layout=:shared`,
+`shared_basis_method=:rsvd`, CUDA and Gram finalization). It is independent of
+whether reconstruction later uses `:single`, `:channel`, or `:rank`.
+
+The update still computes the projection coefficients and the residual after
+both orthogonalization passes. It then accumulates the residual's squared norm
+in FP64. If that energy is safely below the allowance from `shared_basis_tol`,
+the existing basis needs no new columns and the update skips residual-Gram
+construction and its eigendecomposition. Cases near the threshold, non-finite
+energy, or an insufficient numerical guard use the original Gram-based path.
+The initial update also uses the original path because no shared basis exists.
+
+This option does not loosen the tolerance, truncate the requested local rank, or
+replace the projection. On the early-return path, the reported relative error
+uses the full residual norm; it can differ from the original diagnostic, which
+discards tiny residual eigenvalues. That diagnostic difference does not feed
+back into factor construction. The option affects setup work, not CG batching
+or the GPU communication strategy.
+
+## Iterative reconstruction: channel-distributed normal operator
+
+Select `normal_distribution=:channel` on a CUDA operator with at least two GPUs.
+Each worker evaluates its assigned coils using the full shared `q` and `basis`.
+For coil groups $\mathcal C_g$ and diagonal sample weights $W$,
+
+$$
+A^H W^H W A x
+= \sum_g \sum_{c\in\mathcal C_g} A_c^H W^H W A_c x.
+$$
+
+The input image is broadcast through host memory, and the workers' image
+contributions are summed and returned to the primary GPU. The backend is created
+lazily on the first normal-operator request. Once it exists, shared-basis GPU
+adjoints also reuse the channel workers, including the solver's initial
+right-hand side. A standalone adjoint before backend creation uses the primary
+GPU.
+
+On the primary worker, full shared factors are views of the source operator's
+storage; the other workers receive copies. Coil maps are partitioned. Adding
+workers therefore reduces coil-map storage per worker but does not reduce the
+full shared-factor storage required on each GPU. For independent per-readout
+factors, `:cpu` or `:regenerate` storage instead uses bounded GPU queues.
+
+## Rank-distributed shared execution
+
+Select `normal_distribution=:rank` when shared-factor replication is the memory
+constraint. Both construction paths require `arrayType=CuArray`, at least two
+unique GPU IDs and `basis_layout=:shared`. Shared low-rank setup additionally
+requires:
+
+- `shared_basis_method=:shared_low_rank` (compatible default `:rsvd`);
+- voxel-distributed rSVD, either explicit `:voxel` or eligible `:auto`;
+- `rsvd_finalize=:gram` and a compatible kernel or chunked setup backend.
+
+Joint adaptive low-rank instead uses
+`shared_basis_method=:joint_adaptive_low_rank` (alias `:adaptive`) with
+`epsilon_H`, `global_basis_tol=nothing` and `rsvd_distribution=:auto` or
+`:single`. Its factor construction uses the primary GPU; rank-distributed
+execution starts afterward from the returned host factors. See its
+[construction and acceptance scope](/theory/joint-adaptive-low-rank).
+
+The parent operator retains complete `q`, `basis`, and CSM arrays in host RAM.
+Persistent workers and NFFT plans are created on the first forward, adjoint, or
+normal request. Each worker receives all sample rows of its temporal rank
+columns, the matching spatial columns, and a subset of coil-map columns. The
+number of active workers is at most `min(length(gpus), shared_rank, nCha)`.
+When at least two workers are active, the public constructor's primary worker
+receives one rank column to leave room for solver storage; remaining columns
+are divided among the other workers. A rank or coil count of one limits
+execution to one worker even if more GPUs are listed.
+Coil-map assignment also accounts for the estimated factor and primary-device
+storage.
+
+Coil-map ownership is storage placement: all rank workers evaluate every coil.
+For a coil whose map is owned by another worker, the map is uploaded from the
+host master into a reusable single-coil buffer. Each worker still needs full
+image-grid/NFFT workspaces and its factor columns, so rank distribution does not
+guarantee equal memory use or that a particular reconstruction fits.
+
+### Cross-rank terms and communication
+
+For one coil, write $A_c = \sum_g A_{c,g}$, where each worker evaluates its
+rank columns. The weighted normal is
+
+$$
+A^H W^H W A x
+= \sum_c \sum_g A_{c,g}^H W^H W
+  \left(\sum_h A_{c,h}x\right).
+$$
+
+For each sample batch and coil, workers download their partial forward signals.
+The host sums these signals and broadcasts the complete signal back to every
+rank worker. Each worker applies `abs2.(weights)` and its local adjoint. After
+all batches and coils, partial images are summed on the host and copied to the
+primary GPU. This order retains every cross-rank term. Summing independent
+per-rank normal products would omit those terms and compute a different
+operator.
+
+Compared with channel distribution, rank distribution adds sample-domain
+reduction and broadcast for each batch and coil. It uses host buffers and does
+not require GPU peer access. Lower factor storage per GPU is accompanied by
+additional communication; runtime depends on the actual problem and hardware.
+
+### Sample batching and memory
+
+`normal_sample_batch_size::Int=12_000_000` is a positive upper bound on samples
+per NFFT batch in rank mode. The effective batch is
+`min(nSam * nDyn, normal_sample_batch_size)`. Rows follow the flattened
+sample-then-dynamic order; a batch may span readouts, and the final batch may be
+shorter if the active NFFT backend supports changing the plan's output length.
+All samples and factor columns are evaluated.
+
+Smaller batches reduce sample-vector and NFFT node/interpolation storage. NFFT
+nodes are updated as batches change, and more batches require more transforms
+and transfers. Each worker's temporal factor still contains all sample rows for
+its rank columns; spatial factors, coil maps, full image grids, solver vectors,
+host factor masters, and complete input/output data are not bounded by this
+keyword. It does not bound rSVD setup or constructor phase-folding buffers and
+is unused by `:single`, `:channel`, and `:readout`, although the constructor
+always requires a positive value.
+
+With NFFT.jl 0.14.3 GPU plans, the package's current node-update path changes
+the sample count but leaves the plan's declared output shape unchanged. A shorter
+last batch can therefore raise `DimensionMismatch`. With this backend, use one
+full batch or a batch size that divides `nSam * nDyn` exactly. The
+NonuniformFFTs backend supports variable-length sample batches. If that optional package is installed in your Julia
+environment, select it before creating the operator:
+
+```julia
+using AbstractNFFTs, NonuniformFFTs
+AbstractNFFTs.set_active_backend!(NonuniformFFTs.backend())
+```
+
+This selection applies to subsequently created plans. It does not update an
+existing operator's plans.
+
+### Minimal rank example
+
+This small synthetic example demonstrates construction, sample batching, and
+reconstruction using only the package's default NFFT backend. Run it from the
+repository project with two visible GPUs and at least three Julia threads.
+It is a usage example, not an accuracy or performance benchmark.
+
+```julia
+using HighOrderMRI, CUDA, RegularizedLeastSquares
+
+T = Float32
+grid = Grid(8, 8, 1, T(1e-3), T(1e-3), T(5e-3))
+nSam, nDyn, nCha = 32, 3, 2
+times = repeat(reshape(collect(range(zero(T), T(3e-3); length=nSam)), :, 1), 1, nDyn)
+kspha = zeros(T, 9, nSam, nDyn)
+for i in 1:nDyn
+    kspha[2, :, i] .= range(T(-200), T(200); length=nSam)
+    kspha[3, :, i] .= T(40 * (i - 2))
+end
+fieldmap = reshape(collect(range(T(-30), T(30); length=64)), 8, 8)
+csm = ones(Complex{T}, 8, 8, nCha)
+mask = trues(8, 8)
+
+CUDA.device!(0)
+op = HighOrderLowRankOp(grid, kspha, times;
+    fieldmap, csm, mask,
     arrayType=CuArray,
-    gpus=[0, 1, 2, 3],
-    L_rank=10,
-    rsvd_oversample=5,
+    gpus=[0, 1],
+    basis_layout=:shared,
+    shared_basis_method=:rsvd,
+    L_rank=4,
+    rsvd_oversample=2,
     rsvd_backend=:kernel,
     rsvd_finalize=:gram,
     rsvd_distribution=:voxel,
+    normal_distribution=:rank,
+    normal_sample_batch_size=32,
+    shared_noadd_check=false,
 )
+image = try
+    x = CUDA.ones(Complex{T}, prod(grid.matrixSize))
+    data = CuArray(reshape(op * x, nSam * nDyn, nCha))
+    weights = CUDA.ones(Complex{T}, nSam * nDyn)
+    rec_params = Dict{Symbol,Any}(
+        :reconSize => grid.matrixSize,
+        :solver => CGNR,
+        :reg => L2Regularization(1f-6),
+        :iterations => 3,
+    )
+    recon_HOOp(op, data, weights, rec_params)  # CPU Array
+finally
+    close(op)
+end
 ```
 
-For voxel shards ``\mathcal V_g``:
+The batch size 32 splits 96 sample/dynamic points into three equal batches and
+avoids the default backend's output-shape limitation. Choose a batch size for
+your problem's memory and transfer costs. Replace the synthetic inputs and
+solver settings for real data. To enable the optional setup check, change only
+`shared_noadd_check=true`; its default remains false.
 
-```math
-H_d\Omega_d
-=
-\sum_g H_{d,g}\Omega_{d,g},
-\qquad
-B_d^HB_d
-=
-\sum_g B_{d,g}^HB_{d,g}.
-```
+## Iterative reconstruction: readout-distributed normal operator
 
-Only small sketches and Gram contributions are reduced on the host. The
-large spatial factors and the shared basis remain voxel-sharded during setup,
-then the completed shared basis is gathered once to the primary operator
-device.
+For independent factors, select `basis_layout=:per_readout` and
+`normal_distribution=:readout`. Each worker evaluates all coils for its
+contiguous readout range. Image contributions are summed, retaining all
+cross-rank terms within each readout. This evaluates the same weighted normal
+as channel distribution for the same independent factors, up to summation order.
 
-For shared-basis setup with `Float32` and at least 256 samples per readout,
-the forward kernel partitions the masked voxels into smaller tiles and sums
-their sketch contributions on the GPU. Each worker retains at most 64 MiB of
-temporary partial sketches; small voxel shards use the original forward kernel.
-The adjoint kernel uses two cooperating lanes per voxel and reuses each temporal
-load for a pair of voxels, keeping spatial coefficients in registers. These mappings retain
-all samples, voxels, sketch columns, and random seeds, while changing floating
-point summation order. `Float64`, single-GPU setup, and per-readout setup retain
-their previous mappings. Shared-basis Gram precision is unchanged.
-
-Voxel distribution currently requires:
-
-- `arrayType=CuArray`;
-- `rsvd_backend=:kernel`;
-- `rsvd_finalize=:gram`;
-- at least two unique GPU IDs;
-- `L_rank + rsvd_oversample <= 32`.
-
-With `rsvd_distribution=:auto`, this mode is selected when these conditions
-are satisfied.
-
-## Channel-distributed normal operator
-
-Set:
-
-```julia
-normal_distribution=:channel
-```
-
-when constructing a CUDA `HighOrderLowRankOp` with at least two GPUs. The
-normal operator partitions coils and computes local
-``A_g^H W^2 A_g x`` contributions. Those image-space contributions are
-reduced to the primary GPU.
-
-The backend is constructed lazily when `normalOperator(W ∘ op)` is first
-requested. Setup distribution and normal distribution are independent; the
-same operator may use voxel shards during rSVD setup and coil shards during
-iterative reconstruction.
-
-For the shared spatial basis, subsequent adjoint applications also reuse these
-channel workers, including the initial right-hand side in CG. Each worker
-computes its coils' adjoint contribution, and the image contributions are summed
-on the host. This evaluates the adjoint input directly; the normal backend's
-squared weights are not applied again. Standalone adjoints before backend setup
-retain single-GPU execution.
-
-## Readout-distributed normal operator
-
-For independent per-readout factors, select:
-
-```julia
-basis_layout=:per_readout
-normal_distribution=:readout
-```
-
-Each worker evaluates all coils for its assigned contiguous readout range.
-The contributions are summed in image space, including all cross-rank terms
-within each readout. This is the same weighted normal operator as channel
-distribution, with a different summation order.
-
-With `per_readout_storage=:cpu`, each spatial factor block is streamed once
-across the worker group per normal application. Channel distribution instead
-streams the whole bank to every worker. Readout distribution keeps all coil
-sensitivity maps on each GPU, which increases device storage. It uses at most
-one worker per readout and supports uneven readout counts. The shared layout
-continues to use `:channel`; `:readout` requires `basis_layout=:per_readout`.
-The default `normal_distribution=:single` and existing `:channel` behavior
-are unchanged.
+With `per_readout_storage=:cpu`, each assigned spatial block is streamed once
+across the worker group per normal application. Channel distribution streams
+the bank on every worker. Readout distribution stores all coil maps on each GPU
+and uses at most one worker per readout. `:regenerate` replaces uncached factor
+transfers with generation on demand. It remains a per-readout representation;
+`:readout` is not available with the shared layout.
 
 ## Resource lifecycle
 
-`recon_HOOp` releases the distributed normal backend by default. After direct
-normal-operator use, or after reconstruction with `release_backend=false`,
-release resources explicitly:
+`recon_HOOp` accepts raw sample weights, typically square-root density weights,
+and forms the corresponding weighted encoding. The normal term is
+$A^H W^H W A$. When calling `normalOperator(op, D)` directly, `D` must already
+contain the real, nonnegative diagonal of $W^H W$. Low-rank distributed modes
+require identical sample weights for every coil.
+
+`recon_HOOp` releases the low-rank distributed backend in a `finally` block by
+default, including on a reconstruction exception. With
+`recon_HOOp(...; release_backend=false)`, the backend remains available for reuse
+with the same operator and weights. After direct forward/adjoint use in rank
+mode, or after direct normal use, release resources explicitly:
 
 ```julia
 close(op)
-# or
+# To release only the distributed execution backend:
 release_highorder_normal_backend!(op)
 ```
 
-Before replacing a large operator:
+The release stops workers and releases their device arrays and plans. Host
+factor masters remain owned by a rank operator; dropping the operator and other
+references makes those arrays eligible for garbage collection. A later use of
+the parent operator recreates its backend lazily. For distributed modes, release the backend before
+requesting a normal with different weights, and create a fresh normal view after
+release. Closing a derived low-rank normal view alone does not release the
+parent's backend. The `:single` path has no owned distributed backend.
+
+For independent factors, `close(op)` also closes the source streaming or
+regeneration queue. Resident explicit operators require their own explicit
+`close(op)` after their final use. Operators and their derived normals share
+mutable workspaces and must not be applied concurrently.
+
+Before replacing a large operator, release it and remove references before
+starting the next construction:
 
 ```julia
 close(op)
@@ -235,118 +395,17 @@ op = nothing
 GC.gc()
 ```
 
-Julia retains the old right-hand-side value until a replacement assignment
-finishes. Constructing a new operator directly into the same variable can
-therefore make old and new NFFT plans and bases coexist temporarily.
+`@rebuild_HOOp` performs this replacement sequence. CUDA.jl maintains reusable
+memory pools, so releasing live arrays does not necessarily reduce the reserved
+memory reported by `nvidia-smi` immediately.
 
-CUDA.jl uses reusable memory pools. Releasing workspaces does not guarantee an
-immediate decrease in the reserved-memory value shown by `nvidia-smi`.
+## Implementation sources
 
-## PyCall finalizer crash after CUDA reconstruction
+- [Constructor defaults and execution restrictions](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/d141e7dc48e8d18380050aaa970ee4ae364d916d/src/EncodingOperator/HighOrderLowRankOp.jl).
+- [Rank partitioning, batching, host communication, and cleanup](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/d141e7dc48e8d18380050aaa970ee4ae364d916d/src/EncodingOperator/LowRankApproximation/rank_sharded_shared.jl).
+- [Channel/readout evaluation and normal ownership](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/d141e7dc48e8d18380050aaa970ee4ae364d916d/src/EncodingOperator/LowRankApproximation/multi_gpu_normal_operator.jl).
+- [FP64 no-add check and guarded fallback](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/d141e7dc48e8d18380050aaa970ee4ae364d916d/src/EncodingOperator/LowRankApproximation/distributed_shared_spatial_basis.jl).
 
-HighOrderMRI currently loads PyPlot through PyCall. A compatibility failure
-has been observed with Julia 1.12, CUDA.jl 6.2, PyCall 1.96.4, and CPython
-3.13: reconstruction finishes successfully and the Julia prompt returns, but
-the process may terminate with signal 11 several minutes later or during CUDA
-memory-pool cleanup. A representative end of the native stack is:
-
-```text
-CUDACore.pool_cleanup
-  -> CUDA.reclaim
-  -> GC.gc
-  -> PyCall.pydecref
-  -> Python PyObject_Free
-  -> signal 11 (segmentation fault)
-```
-
-This stack does not by itself indicate an error in `HighOrderOp`,
-`HighOrderKernelOp`, coil compression, or the reconstructed result. CUDA
-memory management initiates a Julia garbage collection; that collection then
-runs a PyCall finalizer, and the native failure occurs while CPython releases
-an object.
-
-### Validated workaround
-
-The following combination completed repeated reconstructions, explicit
-garbage collection, and `CUDA.reclaim()` without the delayed process exit:
-
-| Component | Validated version |
-|:--|:--|
-| Julia | 1.12.6 |
-| CUDA.jl / CUDACore | 6.2.1 |
-| PyCall | 1.96.4 |
-| PyPlot | 2.11.6 |
-| Python | 3.10.13 |
-| Matplotlib | 3.10.6 |
-
-The PyCall and PyPlot versions were unchanged from the failing configuration;
-the effective change was from CPython 3.13 to CPython 3.10. This is empirical
-compatibility evidence rather than proof that every Python 3.13 configuration
-will fail. Until the finalizer interaction is resolved upstream, use a Python
-3.10 environment for long-lived CUDA reconstruction sessions that also load
-PyPlot.
-
-Create or select a Python 3.10 environment containing NumPy and Matplotlib,
-then rebuild PyCall against that interpreter:
-
-```bash
-conda create -n highordermri-py310 python=3.10 numpy matplotlib
-conda activate highordermri-py310
-PYTHON="$(command -v python)" julia --project=. -e '
-using Pkg
-Pkg.build("PyCall")'
-```
-
-Restart Julia after rebuilding PyCall and verify the interpreter and shared
-library before reconstruction:
-
-```julia
-using PyCall
-
-PyCall.python
-PyCall.pyversion
-PyCall.libpython
-```
-
-The reported executable and `libpython` must both belong to the intended
-Python 3.10 installation. A basic cleanup check is:
-
-```julia
-using CUDA, PyCall, PyPlot
-
-fig = PyPlot.figure()
-PyPlot.close(fig)
-fig = nothing
-
-buffer = CUDA.zeros(Float32, 1024)
-buffer = nothing
-GC.gc(true)
-CUDA.reclaim()
-GC.gc(true)
-```
-
-The decisive validation is still the real workload: repeat the reconstruction
-several times and leave the interactive Julia process alive after cleanup.
-
-### Reproducibility limits
-
-`Project.toml` compatibility entries can constrain Julia, CUDA.jl, PyCall,
-and PyPlot versions, but neither `Project.toml` nor `Manifest.toml` records the
-external Python executable or `libpython` selected when PyCall is built. The
-selection is stored in the Julia depot and is shared by environments using
-the same installed PyCall source. Rebuilding PyCall in a shared depot can
-therefore change the Python runtime used by more than one Julia project.
-
-Record `PyCall.python`, `PyCall.pyversion`, and `PyCall.libpython` together
-with the Julia and CUDA versions in a reproducibility report. If a different
-Python runtime is required, set `PYTHON` explicitly and rebuild PyCall again;
-do not treat `CUDA.reclaim()` or REPL keep-alive settings as a fix for a native
-finalizer crash.
-
-## What to report
-
-Record device IDs and UUIDs, GPU model, driver, CUDA and Julia versions,
-thread count, partition mode, primary device, setup time, reduction time,
-steady-state operator time, peak memory, and failures such as Xid/device-loss
-events. Exclude runs affected by competing GPU processes from a final
-benchmark.
+See [Low-rank shared subspace](/theory/low-rank) and
+[References and source notes](/references) for the approximation algorithms
+and their scientific background.

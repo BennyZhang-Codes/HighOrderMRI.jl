@@ -2,48 +2,181 @@ name: Documentation
 
 on:
   push:
-    branches:
-      - main
-    tags:
-      - "v*"
+    branches: [main, dev_jinyuan]
   pull_request:
-    branches:
-      - main
+    branches: [main, dev_jinyuan]
+  release:
+    types: [published]
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Optional existing formal release to rebuild without moving its tag'
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
 
-concurrency:
-  group: docs-${{ github.ref }}
-  cancel-in-progress: true
-
 env:
-  JULIA_NUM_THREADS: auto
-  JULIA_PKG_PRECOMPILE_AUTO: "0"
-  DOCUMENTER_DEVBRANCH: main
+  CUDA_VISIBLE_DEVICES: ''
+  MPLBACKEND: Agg
+  JULIA_LOAD_PATH: '@:@stdlib'
+  JULIA_NUM_THREADS: '1'
+  JULIA_PKG_PRECOMPILE_AUTO: '0'
 
 jobs:
-  docs:
-    name: Build Documenter reference
+  build:
+    name: Build checked VitePress versions
+    if: github.event_name != 'release' || (!github.event.release.draft && !github.event.release.prerelease)
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    outputs:
+      source_sha: ${{ steps.selection.outputs.source_sha }}
+      publish: ${{ steps.selection.outputs.publish }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name == 'release' && 'main' || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
       - uses: julia-actions/setup-julia@v3
         with:
-          version: "1"
-          show-versioninfo: "true"
-      - uses: julia-actions/cache@v3
-        with:
-          delete-old-caches: false
-      - name: Instantiate documentation environment
-        shell: julia --color=yes --project=docs {0}
+          version: '1.12'
+      - name: Prepare isolated Julia environment
+        run: echo "JULIA_DEPOT_PATH=$RUNNER_TEMP/docs-julia-depot" >> "$GITHUB_ENV"
+      - name: Instantiate the independent Julia publication tools
+        run: julia --startup-file=no --project=docs/publish -e 'using Pkg; Pkg.instantiate(; allow_autoprecomp=false)'
+      - name: Check publication, provenance and live-site validation
+        run: timeout 600s julia --startup-file=no --project=docs/publish docs/publish/runtests.jl
+      - name: Resolve code branches and published release snapshots
+        id: selection
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: julia --startup-file=no --project=docs/publish docs/publish/run.jl plan --output "$RUNNER_TEMP/publication-plan.json"
+      - name: Validate version sources
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DOCS_CANDIDATE: ${{ steps.selection.outputs.preview }}
         run: |
-          using Pkg
-          Pkg.instantiate(; allow_autoprecomp=false)
-          Pkg.build("Conda")
-          ENV["PYTHON"] = ""
-          Pkg.build("PyCall")
-      - name: Build documentation
-        run: julia --color=yes --project=docs docs/make.jl
+          set -euo pipefail
+          if [ "$DOCS_CANDIDATE" = true ]; then
+            julia --startup-file=no --project=docs/publish docs/publish/run.jl verify --plan "$DOCS_BUILD_PLAN" --allow-unpublished
+          else
+            julia --startup-file=no --project=docs/publish docs/publish/run.jl verify --plan "$DOCS_BUILD_PLAN"
+          fi
+      - name: Prepare exact code checkouts
+        run: |
+          set -euo pipefail
+          node docs/scripts/versions.mjs docs --code-shas > "$RUNNER_TEMP/docs-code-shas"
+          mkdir -p "$RUNNER_TEMP/docs-code"
+          while IFS= read -r code_sha; do
+            git worktree add --detach "$RUNNER_TEMP/docs-code/$code_sha" "$code_sha"
+          done < "$RUNNER_TEMP/docs-code-shas"
+          echo "DOCS_CODE_ROOT=$RUNNER_TEMP/docs-code" >> "$GITHUB_ENV"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: docs/package-lock.json
+      - name: Instantiate exact code dependencies
+        run: |
+          set -euo pipefail
+          while IFS= read -r code_sha; do
+            julia --startup-file=no --project="$DOCS_CODE_ROOT/$code_sha" -e '
+              using Pkg
+              Pkg.instantiate(; allow_autoprecomp=false)
+              ENV["PYTHON"] = ""
+              Pkg.build("PyCall")
+              @assert Base.find_package("Documenter") === nothing'
+          done < "$RUNNER_TEMP/docs-code-shas"
+      - name: Install locked website dependencies
+        run: npm ci --prefix docs --no-audit --no-fund
+      - name: Check website tools
+        run: npm run docs:check-tools --prefix docs
+      - name: Build all checked versions and CPU examples
+        env:
+          DOCS_CHECK_EXAMPLES: '1'
+          DOCS_CANDIDATE: ${{ steps.selection.outputs.preview }}
+        run: |
+          set -euo pipefail
+          if [ "$DOCS_CANDIDATE" = true ]; then
+            npm run docs:build-site --prefix docs -- --preview
+          else
+            npm run docs:build-site --prefix docs
+          fi
+      - name: Upload the checked complete site
+        if: steps.selection.outputs.publish == 'true'
+        uses: actions/upload-pages-artifact@v4
+        with:
+          name: checked-documentation-site
+          path: docs/.pages
+
+  publish:
+    name: Archive and deploy versioned documentation
+    needs: build
+    if: needs.build.outputs.publish == 'true' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Serialize the archive update and its deployment as one operation.
+    concurrency:
+      group: documentation-publish
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.build.outputs.source_sha }}
+          fetch-depth: 0
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: '1.12'
+      - name: Prepare isolated publisher dependencies
+        run: |
+          echo "JULIA_DEPOT_PATH=$RUNNER_TEMP/docs-publish-depot" >> "$GITHUB_ENV"
+      - name: Instantiate the independent Julia publication tools
+        run: julia --startup-file=no --project=docs/publish -e 'using Pkg; Pkg.instantiate(; allow_autoprecomp=false)'
+      - name: Download the checked complete site
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: checked-documentation-site
+          path: ${{ runner.temp }}/checked-pages-artifact
+      - name: Update the generated gh-pages archive
+        id: archive
+        run: >-
+          julia --startup-file=no --project=docs/publish docs/publish/run.jl archive
+          --artifact-tar "$RUNNER_TEMP/checked-pages-artifact/artifact.tar"
+          --site "$RUNNER_TEMP/checked-pages-site"
+          --source-sha '${{ needs.build.outputs.source_sha }}'
+      - name: Prepare the archived Pages tree
+        if: steps.archive.outputs.publish == 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/archived-pages-site"
+          git archive '${{ steps.archive.outputs.sha }}' | tar -xf - -C "$RUNNER_TEMP/archived-pages-site"
+      - name: Upload the archived Pages artifact
+        if: steps.archive.outputs.publish == 'true'
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: ${{ runner.temp }}/archived-pages-site
+      - name: Configure GitHub Pages
+        if: steps.archive.outputs.publish == 'true'
+        uses: actions/configure-pages@v5
+      - name: Deploy the archived Pages artifact
+        if: steps.archive.outputs.publish == 'true'
+        id: deployment
+        uses: actions/deploy-pages@v4
+      - name: Verify the published versions and source commits
+        if: steps.archive.outputs.publish == 'true'
+        env:
+          PAGES_URL: ${{ steps.deployment.outputs.page_url }}
+        run: >-
+          julia --startup-file=no --project=docs/publish docs/publish/run.jl check-live
+          --manifest "$RUNNER_TEMP/checked-pages-site/versions.json"
