@@ -9,7 +9,7 @@ The 1 × 3 summary figure contains:
 
 Usage:
 
-    julia --project=. benchmark/analysis/plot_2d_kernel_vs_lowrank_gpus.jl \
+    julia --project=benchmark benchmark/analysis/plot_2d_kernel_vs_lowrank_gpus.jl \
         benchmark/results/2d_kernel_lowrank_gpus_<dataset>_<timestamp>
 """
 

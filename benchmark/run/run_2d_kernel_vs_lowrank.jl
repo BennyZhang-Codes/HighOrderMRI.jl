@@ -11,12 +11,12 @@ LowRank normal backend, so timings do not depend on a prior CG backend.
 
 Run from the repository root, for example:
 
-    julia --project=. --threads=4 benchmark/run/run_2d_kernel_vs_lowrank.jl
+    julia --project=benchmark --threads=4 benchmark/run/run_2d_kernel_vs_lowrank.jl
 
 Configuration can be overridden with environment variables, for example:
 
     HIGHORDER_BENCHMARK_GPUS=4,5 HIGHORDER_BENCHMARK_RANK=15 \
-    HIGHORDER_BENCHMARK_REPEATS=5 julia --project=. --threads=4 \
+    HIGHORDER_BENCHMARK_REPEATS=5 julia --project=benchmark --threads=4 \
     benchmark/run/run_2d_kernel_vs_lowrank.jl
 
 For peak memory, record `nvidia-smi` externally while this script runs;
@@ -26,6 +26,7 @@ CUDA.jl's memory pool intentionally retains freed allocations for reuse.
 
 using HighOrderMRI
 using AbstractNFFTs
+using NFFT
 using CUDA
 using Dates
 using LinearAlgebra
@@ -35,6 +36,14 @@ using RegularizedLeastSquares
 using Statistics
 
 include(joinpath(@__DIR__, "..", "common", "benchmark_utils.jl"))
+
+
+function recon_benchmark(op, data, weight, params)
+    if op isa HighOrderKernelOp
+        return recon_HOOp(op, Array(data), Array(weight), params)
+    end
+    return recon_HOOp(op, data, weight, params)
+end
 
 
 # -----------------------------------------------------------------------------
@@ -121,9 +130,8 @@ function save_magnitude_difference_png(
     scale::Real=DIFFERENCE_DISPLAY_SCALE,
     reference_vmax::Real,
 )
-    difference = scale .* abs.(
-        abs.(display_reconstruction(x)) .- abs.(display_reconstruction(reference)),
-    )
+    difference = benchmark_magnitude_difference(
+        display_reconstruction(x), display_reconstruction(reference); scale)
     fig = plt_image(difference; vmin=0, vmax=reference_vmax, width=10)
     fig.savefig(path; dpi=300, transparent=false, bbox_inches="tight", pad_inches=0.0)
     return path
@@ -178,6 +186,7 @@ isfile(DATA_FILE) || error(
 isempty(GPU_IDS) && error("GPU_IDS must contain at least one CUDA device ID")
 
 @info "Loading 2D benchmark dataset" DATA_FILE GPU_IDS N_REPEATS LOWRANK_RANK CG_ITERATIONS NFFT_CENTER_CORRECTION
+AbstractNFFTs.set_active_backend!(NFFT.backend())
 raw = matread(DATA_FILE)
 
 csm = raw["gre_csm"]
@@ -293,7 +302,7 @@ function warmup!()
     @info "Warmup: compiling Kernel reference path"
     kernel_op = build_kernel_operator()
     try
-        recon_HOOp(kernel_op, data, weight, rec_params)
+        recon_benchmark(kernel_op, data, weight, rec_params)
     finally
         kernel_op = nothing
         GC.gc(true)
@@ -302,7 +311,7 @@ function warmup!()
     @info "Warmup: compiling LowRank path"
     lowrank_op = build_lowrank_operator()
     try
-        recon_HOOp(lowrank_op, data, weight, rec_params)
+        recon_benchmark(lowrank_op, data, weight, rec_params)
     finally
         release_benchmark_backend!(lowrank_op)
         lowrank_op = nothing
@@ -322,7 +331,7 @@ function benchmark_kernel(repeat_id::Int)
         # calling task on the last one. 
         CUDA.device!(first(GPU_IDS))
         x, recon_s = elapsed_seconds(
-            () -> recon_HOOp(op, data, weight, rec_params),
+            () -> recon_benchmark(op, data, weight, rec_params),
             GPU_IDS,
         )
         x = require_reconstruction(x, "HighOrderOp_Kernel reconstruction")
@@ -353,7 +362,7 @@ function benchmark_lowrank(repeat_id::Int)
 
     try
         x, recon_s = elapsed_seconds(
-            () -> recon_HOOp(op, data, weight, rec_params),
+            () -> recon_benchmark(op, data, weight, rec_params),
             GPU_IDS,
         )
         x = require_reconstruction(x, "HighOrderLowRankOp reconstruction")
@@ -459,7 +468,7 @@ function run_benchmark!()
         )
         save_magnitude_difference_png(
             difference_image_path,
-            scale_lr_to_kernel .* x_lowrank,
+            x_lowrank,
             x_reference;
             reference_vmax=common_vmax,
         )

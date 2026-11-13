@@ -20,7 +20,7 @@ Kernel-reference magnitude as one fixed `vmax`.
 
 Run from the repository root:
 
-    julia --project=. --threads=5 benchmark/run/sweep_3d_lowrank_parameters.jl
+    julia --project=benchmark --threads=5 benchmark/run/sweep_3d_lowrank_parameters.jl
 
 Useful overrides:
 
@@ -39,14 +39,12 @@ NIfTI export are outside the timed regions. `operator_setup_s` measures only
 
 using AbstractNFFTs
 using CUDA
-using CSV
 using Dates
 using HighOrderMRI
 using LinearAlgebra
 using MAT
 using MRIGeometry
-using NIfTI
-using NonuniformFFTs
+using NFFT
 using Printf
 using PyPlot
 using RegularizedLeastSquares
@@ -122,6 +120,22 @@ CG_ITERATIONS > 0 || throw(ArgumentError("CG_ITERATIONS must be positive"))
 RSVD_OVERSAMPLE >= 0 || throw(ArgumentError("RSVD_OVERSAMPLE must be non-negative"))
 PNG_DPI > 0 || throw(ArgumentError("PNG_DPI must be positive"))
 DIFFERENCE_SCALE > 0 || throw(ArgumentError("DIFFERENCE_SCALE must be positive"))
+
+function validate_3d_benchmark_run!(; extra=(;))
+    start = time_ns()
+    parameters = merge((
+        experiment="3d_lowrank_sweep", precision=string(T), gpus=GPU_IDS,
+        cg_iterations=CG_ITERATIONS, regularization=REGULARIZATION,
+        recon_terms=RECON_TERMS, rsvd_seed=RSVD_SEED, rsvd_chunk=RSVD_CHUNK,
+        rsvd_oversample=RSVD_OVERSAMPLE, shared_rank_max=SHARED_RANK_MAX,
+        nfft_center_correction=NFFT_CENTER_CORRECTION,
+        nfft_backend=string(AbstractNFFTs.active_backend()), warmup=WARMUP,
+    ), extra)
+    contract = benchmark_run_contract((data=DATA_FILE, reference=REFERENCE_FILE), parameters;
+        source_root=normpath(joinpath(@__DIR__, "..", "..")), scripts=[@__FILE__])
+    validate_benchmark_run!(RUN_DIR, contract)
+    return (time_ns() - start) * 1e-9
+end
 
 
 # -----------------------------------------------------------------------------
@@ -432,7 +446,7 @@ function export_configuration_artifacts!(
     reconstruction_mag = joinpath(reconstruction_dir, "$(config_id)_mag.nii.gz")
     reconstruction_phase = joinpath(reconstruction_dir, "$(config_id)_pha.nii.gz")
 
-    difference = DIFFERENCE_SCALE .* abs.(abs.(x) .- abs.(x_reference))
+    difference = benchmark_magnitude_difference(x, x_reference; scale=DIFFERENCE_SCALE)
     difference_name =
         "$(config_id)_magnitude_absdiff_x$(difference_scale_tag(DIFFERENCE_SCALE))"
     difference_png = joinpath(difference_dir, "$(difference_name).png")
@@ -716,7 +730,7 @@ function migrate_difference_artifact(row, geo, reference_vmax::Real)
     previous_scale > 0 || error(
         "Invalid previous difference scale $previous_scale for $(row.config_id)",
     )
-    previous_difference = Array(NIfTI.niread(previous_path).raw)
+    previous_difference = Array(MRIGeometry.NIfTI.niread(previous_path).raw)
     difference = (DIFFERENCE_SCALE / previous_scale) .* previous_difference
 
     difference_dir = joinpath(RUN_DIR, "difference")
@@ -756,10 +770,7 @@ function load_checkpoint(geo, reference_vmax::Real)
         # reconstruction.
         csv_path = joinpath(RUN_DIR, "runs_checkpoint.csv")
         isfile(csv_path) || return rows
-        rows = NamedTuple[
-            NamedTuple(row)
-            for row in CSV.File(csv_path; missingstring=["missing", ""])
-        ]
+        rows = read_benchmark_csv(csv_path)
         @info "Recovered checkpoint rows from CSV" csv_path count=length(rows)
     end
 
@@ -852,7 +863,9 @@ function run_3d_sweep!()
     )
 
     mkpath(RUN_DIR)
-    AbstractNFFTs.set_active_backend!(NonuniformFFTs.backend())
+    AbstractNFFTs.set_active_backend!(NFFT.backend())
+    validation_s = validate_3d_benchmark_run!()
+    @info "Run contract validated before artifact export" validation_s
 
     @info(
         "Loading 3D benchmark inputs",

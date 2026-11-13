@@ -3,7 +3,7 @@ Plot the completed 3D LowRank rank and shared-basis-tolerance sweeps.
 
 Usage:
 
-    julia --project=. benchmark/analysis/plot_3d_lowrank_sweep.jl \
+    julia --project=benchmark benchmark/analysis/plot_3d_lowrank_sweep.jl \
         benchmark/results/3d_lowrank_sweep_<timestamp>
 
 If no directory is supplied, the newest `3d_lowrank_sweep_*` directory under

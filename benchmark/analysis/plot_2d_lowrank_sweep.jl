@@ -12,12 +12,14 @@ The rank-summary figure contains:
 
 Usage:
 
-    julia --project=. benchmark/analysis/plot_2d_lowrank_sweep.jl \
+    julia --project=benchmark benchmark/analysis/plot_2d_lowrank_sweep.jl \
         benchmark/results/2d_local_lowrank_rank_sweep_<dataset>_<timestamp>
 """
 
 using CSV
 using PyPlot
+
+include(joinpath(@__DIR__, "..", "common", "benchmark_utils.jl"))
 
 
 # -----------------------------------------------------------------------------
@@ -27,7 +29,6 @@ using PyPlot
 # Leave empty to automatically use the newest sweep directory under
 # `SWEEP_RESULTS_ROOT`. A command-line path overrides this value.
 const SWEEP_RUN_DIR = ""
-const SWEEP_RUN_DIR = raw"/home/jyzhang/Desktop/Julia_pkg/HighOrderMRI-benchmark/benchmark/results/2d_local_lowrank_rank_sweep_7T_2D_Spiral_1p0_200_r4_2026-07-27_135909"
 
 const SWEEP_RESULTS_ROOT = normpath(joinpath(@__DIR__, "..", "results"))
 const FIG_DPI = 900
@@ -79,10 +80,9 @@ float_values(rows, name::Symbol) = Float64[getproperty(row, name) for row in row
 float_stds(rows, name::Symbol) = Float64[valid_number(getproperty(row, name)) ? getproperty(row, name) : 0.0 for row in rows]
 
 function newest_sweep_directory(root::AbstractString)
-    isdir(root) || throw(ArgumentError("Sweep results root does not exist: $root"))
-    candidates = filter(path -> isdir(path) && startswith(basename(path), "2d_local_lowrank_rank_sweep_"), readdir(root; join=true))
-    isempty(candidates) && throw(ArgumentError("No local-low-rank sweep directory found under $root"))
-    return candidates[argmax(mtime.(candidates))]
+    return newest_benchmark_directory(root, "2d_local_lowrank_rank_sweep_",
+        ("summary_by_rank.csv", "runs.csv");
+        name_filter=get(ENV, "HIGHORDER_SWEEP_NAME_FILTER", ""))
 end
 
 function resolve_run_directory()

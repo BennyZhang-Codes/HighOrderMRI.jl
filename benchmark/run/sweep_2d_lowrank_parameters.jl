@@ -12,14 +12,14 @@ cannot become an unintended rank bottleneck. The default is 40 reconstructions:
 
 Run from the repository root, for example:
 
-    julia --project=. --threads=5 benchmark/run/sweep_2d_lowrank_parameters.jl
+    julia --project=benchmark --threads=5 benchmark/run/sweep_2d_lowrank_parameters.jl
 
 Useful overrides:
 
     HIGHORDER_BENCHMARK_GPUS=4,5,6,7 \\
     HIGHORDER_SWEEP_RANKS=2,4,6,8,10,15,20,25 \\
     HIGHORDER_SWEEP_SEEDS=1234,1235,1236,1237,1238 \\
-    julia --project=. --threads=5 benchmark/run/sweep_2d_lowrank_parameters.jl
+    julia --project=benchmark --threads=5 benchmark/run/sweep_2d_lowrank_parameters.jl
 
 Timing excludes MAT-file loading, metric evaluation, CSV writing, and image
 saving. It includes LowRank operator construction in `setup_s` and the complete
@@ -144,7 +144,7 @@ function warmup_sweep!()
     kernel_op = build_kernel_operator()
     try
         CUDA.device!(first(GPU_IDS))
-        recon_HOOp(kernel_op, data, weight, rec_params)
+        recon_benchmark(kernel_op, data, weight, rec_params)
     finally
         kernel_op = nothing
         GC.gc(true)
@@ -172,7 +172,7 @@ function warmup_sweep!()
             # solver and forward/adjoint paths. Remaining configurations only
             # need construction to compile their Val(L_total) rSVD kernels.
             if first_config
-                recon_HOOp(op, data, weight, rec_params)
+                recon_benchmark(op, data, weight, rec_params)
                 first_config = false
             end
         finally
@@ -238,7 +238,7 @@ function benchmark_lowrank_configuration(
         CUDA.device!(first(GPU_IDS))
 
         x, recon_s = elapsed_seconds(
-            () -> recon_HOOp(op, data, weight, rec_params),
+            () -> recon_benchmark(op, data, weight, rec_params),
             GPU_IDS,
         )
         x = require_reconstruction(x, "HighOrderLowRankOp parameter sweep")
@@ -578,10 +578,10 @@ function run_parameter_sweep!()
                         DIFFERENCE_DISPLAY_SCALE,
                     ),
                 )
-                save_reconstruction_png(image_path, scale .* x; vmax=reference_vmax)
+                save_reconstruction_png(image_path, x; vmax=reference_vmax)
                 save_magnitude_difference_png(
                     difference_path,
-                    scale .* x,
+                    x,
                     x_reference;
                     reference_vmax=reference_vmax,
                 )

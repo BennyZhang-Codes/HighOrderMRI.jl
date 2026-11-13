@@ -12,7 +12,7 @@ it is blank. The shared-basis-tolerance sweep is not included.
 
 Usage:
 
-    julia --project=. benchmark/analysis/plot_3d_rank_mid_slices.jl
+    julia --project=benchmark benchmark/analysis/plot_3d_rank_mid_slices.jl
 
 An alternative sweep directory can be supplied as the first argument.
 """
@@ -22,12 +22,16 @@ using HighOrderMRI: plt_image
 using NIfTI
 using PyPlot
 
+include(joinpath(@__DIR__, "..", "common", "benchmark_utils.jl"))
+
 
 # -----------------------------------------------------------------------------
 # Configuration
 # -----------------------------------------------------------------------------
 
-const SWEEP_RUN_DIR = raw"/home/jyzhang/Desktop/Julia_pkg/HighOrderMRI-benchmark/benchmark/results/3d_lowrank_sweep_2026-07-28_135204"
+# Leave empty to use the newest completed sweep; a command-line path overrides it.
+const SWEEP_RUN_DIR = ""
+const SWEEP_RESULTS_ROOT = normpath(joinpath(@__DIR__, "..", "results"))
 const RANKS = (2, 4, 6, 8, 10, 15, 20, 25)
 const REFERENCE_MAG_FILENAME = "HighOrderOp_Kernel_reference_mag.nii.gz"
 const DIRECTIONS = (
@@ -52,7 +56,24 @@ const color_label = "#000000"
 # -----------------------------------------------------------------------------
 
 function resolve_run_directory()
-    return !isempty(ARGS) ? abspath(ARGS[1]) : SWEEP_RUN_DIR
+    !isempty(ARGS) && return abspath(ARGS[1])
+    !isempty(strip(SWEEP_RUN_DIR)) && return abspath(strip(SWEEP_RUN_DIR))
+    return newest_benchmark_directory(SWEEP_RESULTS_ROOT, "3d_lowrank_sweep_",
+        ("rank_sweep.csv", joinpath("reference", REFERENCE_MAG_FILENAME));
+        accept=completed_rank_sweep)
+end
+
+function completed_rank_sweep(path::AbstractString)
+    try
+        rows = read_rank_rows(path)
+        return all(rows) do row
+            isfile(joinpath(path, String(row.reconstruction_mag_nifti))) &&
+                isfile(joinpath(path, String(row.difference_nifti)))
+        end
+    catch err
+        err isa InterruptException && rethrow()
+        return false
+    end
 end
 
 function read_rank_rows(run_dir::AbstractString)
@@ -103,7 +124,12 @@ function load_middle_slices(run_dir::AbstractString, rows)
 
         difference = read_nifti_volume(difference_path)
         for (direction_index, direction) in enumerate(DIRECTIONS)
-            push!(difference_slices[direction_index], 2f0 .* middle_slice(difference, direction))
+            # Saved differences already contain row.difference_scale.
+            saved_scale = Float32(row.difference_scale)
+            isfinite(saved_scale) && saved_scale > 0 ||
+                throw(ArgumentError("Saved difference scale must be finite and positive"))
+            factor = 20f0 / saved_scale
+            push!(difference_slices[direction_index], factor .* middle_slice(difference, direction))
         end
         difference = nothing
         GC.gc()

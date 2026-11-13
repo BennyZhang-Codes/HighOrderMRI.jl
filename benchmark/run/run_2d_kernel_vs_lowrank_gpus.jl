@@ -21,7 +21,7 @@ the GPU-count order on even repeats to reduce order and thermal bias.
 
 Run from the repository root:
 
-    julia --project=. --threads=4 \
+    julia --project=benchmark --threads=4 \
         benchmark/run/run_2d_kernel_vs_lowrank_gpus.jl
 
 Useful overrides:
@@ -30,7 +30,7 @@ Useful overrides:
     HIGHORDER_BENCHMARK_GPU_COUNTS=1,2,4 \
     HIGHORDER_BENCHMARK_REPEATS=5 \
     HIGHORDER_BENCHMARK_RANK=25 \
-    julia --project=. --threads=4 \
+    julia --project=benchmark --threads=4 \
         benchmark/run/run_2d_kernel_vs_lowrank_gpus.jl
 
 `HIGHORDER_BENCHMARK_GPU_COUNTS=n1,n2,...` selects prefixes of
