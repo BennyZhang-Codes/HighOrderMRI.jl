@@ -1,7 +1,7 @@
 name = "HighOrderMRI"
 uuid = "065cb43a-79ab-4c63-92af-604ac7366864"
 authors = [""]
-version = "0.1.0"
+version = "0.1.1"
 
 [deps]
 AbstractNFFTs = "7f219486-4aa7-41d6-80a7-e08ef20ceed7"
