@@ -12,13 +12,14 @@ kdata_cc, csm_cc, coil_transform = compress_coils(Complex{T}.(kdata), Complex{T}
 
 ## 1. HighOrderOp
 begin
-    label  = "Measured_HighOrderOp_1111";
+    label  = "Measured_HighOrderOp_$(recon)";
     @CUDA.time begin
         HOOp = HighOrderOp(gridding, T.(ksphaMeasured'), T.(datatime); 
             recon_terms=recon, 
             nBlock=nBlock, 
             csm=Complex{T}.(csm), 
             fieldmap=T.(b0), 
+            mask=mask,
             arrayType=arrayType, 
             verbose=verbose)
         x = recon_HOOp(HOOp, arrayType(Complex{T}.(kdata)), arrayType(Complex{T}.(weight)), recParams)
@@ -27,13 +28,14 @@ begin
 end
 
 begin
-    label  = "Measured_HighOrderOp_1111_cc";
+    label  = "Measured_HighOrderOp_$(recon)_cc";
     @CUDA.time begin
         HOOp = HighOrderOp(gridding, T.(ksphaMeasured'), T.(datatime); 
             recon_terms=recon, 
             nBlock=nBlock, 
             csm=Complex{T}.(csm_cc), 
             fieldmap=T.(b0), 
+            mask=mask,
             arrayType=arrayType, 
             verbose=verbose)
         x = recon_HOOp(HOOp, arrayType(Complex{T}.(kdata_cc)), arrayType(Complex{T}.(weight)), recParams)
@@ -44,7 +46,7 @@ end
 
 ## 2. HighOrderKernelOp
 begin
-    label  = "Measured_HighOrderKernelOp_1111";
+    label  = "Measured_HighOrderKernelOp_$(recon)";
     @CUDA.time begin
         HOOp_Kernel = HighOrderKernelOp(gridding, T.(ksphaMeasured'), T.(datatime);
             recon_terms=recon, 
@@ -60,7 +62,7 @@ begin
 end
 
 begin
-    label  = "Measured_HighOrderKernelOp_1111_cc";
+    label  = "Measured_HighOrderKernelOp_$(recon)_cc";
     @CUDA.time begin
         HOOp_Kernel = HighOrderKernelOp(gridding, T.(ksphaMeasured'), T.(datatime);
             recon_terms=recon, 
@@ -77,7 +79,7 @@ end
 
 ## 3. HighOrderLowRankOp
 begin
-    label  = "Measured_HighOrderLowRankOp_1111";
+    label  = "Measured_HighOrderLowRankOp_$(recon)";
     @CUDA.time begin
         @rebuild_HOOp HOOp_LowRank begin
             HighOrderLowRankOp(gridding, T.(ksphaMeasured'), T.(datatime); 
@@ -106,7 +108,7 @@ end
 
 
 begin
-    label  = "Measured_HighOrderLowRankOp_1111_cc";
+    label  = "Measured_HighOrderLowRankOp_$(recon)_cc";
     @CUDA.time begin
         @rebuild_HOOp HOOp_LowRank begin
             HighOrderLowRankOp(gridding, T.(ksphaMeasured'), T.(datatime); 

@@ -21,10 +21,17 @@ iterative reconstruction. The default reconstruction strategy is `:single`.
 | Low-rank reconstruction | `normal_distribution=:rank` | Shared temporal and spatial factor columns; coil-map columns are also distributed, and samples are processed in batches. |
 | Low-rank reconstruction | `normal_distribution=:readout` | Independent readouts; requires `basis_layout=:per_readout`. |
 
-Changing the GPU decomposition preserves the selected encoding representation,
-including its rank and phase terms. Floating-point reduction order can change.
-Low-rank approximation is controlled separately by the factor-construction
-parameters described in [Low-rank shared subspace](/theory/low-rank).
+For the same completed low-rank factors, changing to a compatible execution
+decomposition redistributes their evaluation without introducing another
+low-rank truncation. The rank and phase model stay fixed, while floating-point
+reduction order can change. The layout requirements below still apply.
+
+Factor construction is a separate stage. Changing the rSVD distribution,
+backend or voxel partition can change the randomized sketch, resulting factors
+and final shared rank, even with the same base seed. Keep factor construction
+fixed when comparing execution strategies. See
+[Low-rank shared subspace](/theory/low-rank) for the approximation and
+reproducibility conditions.
 
 ## Runtime requirements
 
