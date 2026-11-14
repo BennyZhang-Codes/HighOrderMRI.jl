@@ -989,8 +989,7 @@ $$
 $$
 
 Thus a global H tolerance is an unweighted average, whereas encoding error
-depends on coil and data weights. Additional encoding-only row factors add
-their squared moduli to this expression. With unit weights and
+depends on coil and data weights. With unit weights and
 $\sum_c|C_{vc}|^2=1$ at every voxel, relative encoding Frobenius error equals
 $e_H$ for exact Fourier encoding. This equality does not include NFFT error
 or imply the same relative error on every object or ROI.

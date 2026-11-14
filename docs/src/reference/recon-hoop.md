@@ -36,8 +36,11 @@ image = recon_HOOp(op, samples, weights, rec_params)
 
 ## Solver and storage choices
 
-The raw weights are applied to both data and encoding, giving the data normal
-$A^H W^H W A$. That matrix is Hermitian positive semidefinite. Standard CG
+Let $A$ be the encoding operator, $y$ the measured data, and $W$ the diagonal
+matrix of raw sample weights repeated for each coil. The solver receives
+$WA$ and $Wy$, so each raw weight is applied once to predictions and once to
+measurements. The corresponding data normal is $A^H W^H W A$.
+That matrix is Hermitian positive semidefinite. Standard CG
 convergence assumptions require positive definiteness on the solved space;
 mask nullspaces and undersampling can make the data normal singular. Choose
 regularization and a solver appropriate to the problem, and check convergence.
