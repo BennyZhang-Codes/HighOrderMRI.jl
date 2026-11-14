@@ -7,12 +7,12 @@
     }
   ],
   "schema_version": 1,
-  "source_sha": "1636d7cd62d3581fb8df6c038b0211b9b163d25f",
+  "source_sha": "237fa0db6c587b3d827984732e4da00c38a917f6",
   "stable": "v0.1.0",
   "targets": [
     {
-      "code_sha": "1636d7cd62d3581fb8df6c038b0211b9b163d25f",
-      "docs_sha": "1636d7cd62d3581fb8df6c038b0211b9b163d25f",
+      "code_sha": "237fa0db6c587b3d827984732e4da00c38a917f6",
+      "docs_sha": "237fa0db6c587b3d827984732e4da00c38a917f6",
       "version": "dev"
     },
     {
