@@ -12,12 +12,12 @@
     }
   ],
   "schema_version": 1,
-  "source_sha": "5d6ac7247163ccd611372dc27a998ba855570be4",
+  "source_sha": "5fcc0d2f289e2088df86ebe9f610b021f1de8168",
   "stable": "v0.1.1",
   "targets": [
     {
-      "code_sha": "5d6ac7247163ccd611372dc27a998ba855570be4",
-      "docs_sha": "5d6ac7247163ccd611372dc27a998ba855570be4",
+      "code_sha": "5fcc0d2f289e2088df86ebe9f610b021f1de8168",
+      "docs_sha": "5fcc0d2f289e2088df86ebe9f610b021f1de8168",
       "version": "dev"
     },
     {
