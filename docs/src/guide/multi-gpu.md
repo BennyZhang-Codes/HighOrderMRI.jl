@@ -191,6 +191,24 @@ workers therefore reduces coil-map storage per worker but does not reduce the
 full shared-factor storage required on each GPU. For independent per-readout
 factors, `:cpu` or `:regenerate` storage instead uses bounded GPU queues.
 
+### Optional batched execution within each coil group
+
+`normal_method=:batched` keeps this coil partition and uses batched cuFFT and
+Julia CUDA kernels within each worker. It also supports one GPU with
+`normal_distribution=:single`. It requires shared 3D Float32 CUDA factors and
+the optional NonuniformFFTs 0.9.6 extension. The default remains `:standard`.
+The setting applies to Shared rSVD and Joint factors without changing them,
+the NUFFT support, or the FFT grid. `normal_coil_batch_size=2`, `4`, or `8`
+controls the batch workspace; larger batches can require more GPU memory.
+The single-GPU path avoids host staging for its normal and cached adjoint.
+Multiple GPUs retain the host-staged reduction described above.
+
+See [batched CUDA execution](/reference/highorderlowrankop#optional-batched-cuda-execution)
+for the extension/backend distinction, initialization example and supported
+combinations. Readout sampling, Q refitting and weighted final compression
+are separate construction options; keep them fixed when measuring execution
+speedups.
+
 ## Rank-distributed shared execution
 
 Select `normal_distribution=:rank` when shared-factor replication is the memory
@@ -368,7 +386,7 @@ $A^H W^H W A$. When calling `normalOperator(op, D)` directly, `D` must already
 contain the real, nonnegative diagonal of $W^H W$. Low-rank distributed modes
 require identical sample weights for every coil.
 
-`recon_HOOp` releases the low-rank distributed backend in a `finally` block by
+`recon_HOOp` releases the low-rank owned backend in a `finally` block by
 default, including on a reconstruction exception. With
 `recon_HOOp(...; release_backend=false)`, the backend remains available for reuse
 with the same operator and weights. After direct forward/adjoint use in rank
@@ -376,17 +394,18 @@ mode, or after direct normal use, release resources explicitly:
 
 ```julia
 close(op)
-# To release only the distributed execution backend:
+# To release only the owned execution backend:
 release_highorder_normal_backend!(op)
 ```
 
 The release stops workers and releases their device arrays and plans. Host
 factor masters remain owned by a rank operator; dropping the operator and other
 references makes those arrays eligible for garbage collection. A later use of
-the parent operator recreates its backend lazily. For distributed modes, release the backend before
-requesting a normal with different weights, and create a fresh normal view after
-release. Closing a derived low-rank normal view alone does not release the
-parent's backend. The `:single` path has no owned distributed backend.
+the parent operator recreates its backend lazily. For distributed modes and
+batched `:single` execution, release the backend before requesting a normal
+with different weights, and create a fresh normal view after release. Closing
+a derived low-rank normal view alone does not release the parent's backend.
+Standard `:single` execution has no such owned backend.
 
 For independent factors, `close(op)` also closes the source streaming or
 regeneration queue. Resident explicit operators require their own explicit

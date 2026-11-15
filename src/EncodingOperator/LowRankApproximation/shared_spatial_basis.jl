@@ -19,12 +19,27 @@ singular values of that representation.  Keeping the leading eigenvectors
 The returned `relative_error` is the Frobenius-norm error introduced relative
 to the input representation.  It deliberately excludes local rSVD and online
 shared-basis errors.
+
+Optional keywords `rank`, `weights` and `coil_weights` select the generalized
+compression. Its blocked ComplexF64 Grams account for nonorthogonal spatial
+factors. `weights` and `coil_weights` are real, nonnegative metric diagonals
+with positive total weight, not square roots; the reported tail then uses
+that weighted norm. A full-rank rotation preserves the input representation
+up to rounding. The original three-argument call retains the original path.
 """
 function global_recompress_shared_basis(
     q::AbstractMatrix{Complex{T}},
     basis::AbstractMatrix{Complex{T}},
-    tol::T,
+    tol::T;
+    rank::Union{Nothing,Int}=nothing,
+    weights=nothing,
+    coil_weights=nothing,
+    chunk_size::Int=32768,
 ) where {T<:AbstractFloat}
+    if rank !== nothing || weights !== nothing || coil_weights !== nothing
+        return weighted_recompress_shared_basis(q, basis, tol;
+            rank, weights, coil_weights, chunk_size)
+    end
     tol >= zero(T) || throw(ArgumentError("global basis tolerance must be non-negative"))
     size(q, 2) == size(basis, 2) || throw(DimensionMismatch("q and basis must have the same rank"))
 
@@ -94,6 +109,98 @@ function global_recompress_shared_basis(
         pre_rank=pre_rank, rank=keep_rank, relative_error=relative_error,
         basis_orthogonality_error=basis_orthogonality_error,
     )
+end
+
+
+function shared_factor_gram(factor, weights; chunk_size=32768)
+    chunk_size > 0 || throw(ArgumentError("chunk_size must be positive"))
+    gram = zeros(ComplexF64, size(factor, 2), size(factor, 2))
+    for first in 1:chunk_size:size(factor, 1)
+        rows = first:min(first+chunk_size-1, size(factor, 1))
+        block = ComplexF64.(@view factor[rows, :])
+        weighted = if weights === nothing
+            block
+        else
+            values = reshape(weights[rows], :, 1)
+            block .* (block isa CuArray ? CuArray(values) : values)
+        end
+        gram .+= Matrix(adjoint(block) * weighted)
+        if block isa CuArray
+            weighted === block || CUDA.unsafe_free!(weighted)
+            CUDA.unsafe_free!(block)
+        end
+    end
+    return Hermitian(gram)
+end
+
+
+function normalized_shared_weights(weights, count, name)
+    weights === nothing && return nothing
+    length(weights) == count || throw(DimensionMismatch("$name must have length $count"))
+    eltype(weights) <: Real || throw(ArgumentError("$name must be real nonnegative metric weights"))
+    values = Float64.(vec(Array(weights)))
+    all(isfinite, values) && minimum(values) >= 0 && sum(values) > 0 ||
+        throw(ArgumentError("$name must be finite, nonnegative and have positive total weight"))
+    values ./= sum(values)/count
+    return values
+end
+
+
+function shared_coil_weights(csm)
+    weights = zeros(Float64, size(csm, 1))
+    for c in axes(csm, 2)
+        @inbounds @simd for v in axes(csm, 1)
+            weights[v] += abs2(ComplexF64(csm[v, c]))
+        end
+    end
+    return weights
+end
+
+
+function weighted_recompress_shared_basis(q::AbstractMatrix{Complex{T}},
+    basis::AbstractMatrix{Complex{T}}, tol::T;
+    rank=nothing, weights=nothing, coil_weights=nothing, chunk_size=32768,
+) where {T<:AbstractFloat}
+    tol >= zero(T) || throw(ArgumentError("global basis tolerance must be non-negative"))
+    pre_rank = size(q, 2)
+    pre_rank == size(basis, 2) && pre_rank > 0 ||
+        throw(DimensionMismatch("q and basis must have the same positive rank"))
+    rank === nothing || 1 <= rank <= pre_rank ||
+        throw(ArgumentError("global_basis_rank must lie in 1:$pre_rank"))
+    dw = normalized_shared_weights(weights, size(q, 1), "global_basis_weights")
+    cw = normalized_shared_weights(coil_weights, size(basis, 1), "coil weights")
+    gq = shared_factor_gram(q, dw; chunk_size)
+    gb = shared_factor_gram(basis, cw; chunk_size)
+    F = eigen(gb)
+    minimum(F.values) > maximum(F.values) * 1e-12 ||
+        throw(ArgumentError("spatial factors are rank deficient in the compression metric"))
+    root = F.vectors * Diagonal(sqrt.(F.values)) * F.vectors'
+    inverse = F.vectors * Diagonal(inv.(sqrt.(F.values))) * F.vectors'
+    spectrum = eigen(Hermitian(root * gq * root))
+    order = sortperm(spectrum.values; rev=true)
+    values = max.(spectrum.values[order], 0)
+    total = sum(values)
+    keep = if rank === nothing
+        tail = total
+        count = 0
+        while count < pre_rank && tail > Float64(tol)^2 * total
+            count += 1
+            tail = sum(@view values[count+1:end])
+        end
+        max(1, count)
+    else
+        rank
+    end
+    z = spectrum.vectors[:, order[1:keep]]
+    qmap = Complex{T}.(root * z)
+    bmap = Complex{T}.(inverse * z)
+    q_new = q * (q isa CuArray ? CuArray(qmap) : qmap)
+    basis_new = basis * (basis isa CuArray ? CuArray(bmap) : bmap)
+    unweighted = cw === nothing ? gb : shared_factor_gram(basis, nothing; chunk_size)
+    error = total > 0 ? sqrt(sum(@view(values[keep+1:end]))/total) : 0.0
+    return q_new, basis_new, (pre_rank, rank=keep, relative_error=T(error),
+        basis_orthogonality_error=T(opnorm(unweighted-I, Inf)),
+        weighted=dw !== nothing || cw !== nothing, gram_precision=Float64)
 end
 
 function SharedSpatialBasis(
