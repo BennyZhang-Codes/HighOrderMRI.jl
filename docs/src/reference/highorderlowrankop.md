@@ -263,6 +263,32 @@ coefficient refitting and weighted compression in the earlier section are
 separate opt-ins that change the approximation. Joint retains its own rank
 selection and checks; batching does not remove a high-B0 audit warning.
 
+### Experimental pruned FFT combination
+
+`normal_options=(;)` retains the batched Julia kernels and cuFFT. Optional native
+build sources and instructions are in `deps/pruned_fft/README.md`. Set the
+documented build environment variables and explicitly run
+`bash deps/pruned_fft/build.sh <output-directory>` from the package root.
+After building local resources, the batched path also accepts:
+
+```julia
+normal_options=(
+    fft=:vkfft_pruned,
+    native_ptx="/path/to/resources/highorder_native.ptx",
+    vkfft_library="/path/to/resources/libhighorder_vkfft.so",
+    coefficient_cache_bytes=1 << 30,
+)
+```
+
+This experiment combines native scatter/unrolled gather, VkFFT pruning of known
+padding intervals, compact image padding and budgeted Float32 coefficient
+caching. The budget is per worker; zero disables the cache. Full weights, masked
+voxels, coils, factors and the logical NUFFT grid remain unchanged. The parent
+owns and closes each worker's foreign FFT plan and native module. Missing
+resources and unsupported configurations throw errors. The experiment requires
+local compiled resources; it is not a portable binary distribution. It is
+independent of factor construction and remains disabled by default.
+
 ### Why rank execution must combine forward contributions
 
 Coil groups contain independent observation rows, so their normal contributions

@@ -92,8 +92,12 @@ mutable struct HighOrderNormalBackend
     primary_gpu   :: Int
     method        :: Symbol
     coil_batch_size :: Int
+    options       :: NamedTuple
 end
 
+HighOrderNormalBackend(distribution, gpus, verbose, operator, weights2, sample_batch_size, primary_gpu, method, coil_batch_size) =
+    HighOrderNormalBackend(distribution, gpus, verbose, operator, weights2,
+        sample_batch_size, primary_gpu, method, coil_batch_size, (;))
 HighOrderNormalBackend(distribution, gpus, verbose, operator, weights2, sample_batch_size, primary_gpu) =
     HighOrderNormalBackend(distribution, gpus, verbose, operator, weights2,
         sample_batch_size, primary_gpu, :standard, 8)
@@ -265,6 +269,7 @@ end
         normal_distribution:: Symbol = :single ,
         normal_method :: Symbol = :standard ,
         normal_coil_batch_size :: Int = 8 ,
+        normal_options :: NamedTuple = (;) ,
         normal_sample_batch_size:: Int = 12_000_000 ,
         nfft_center_correction :: Bool = true ,
         verbose :: Bool = false ,
@@ -541,6 +546,12 @@ for shared 3D Float32 CUDA factors with the optional NonuniformFFTs backend;
 kernels and batched cuFFT, without native CUDA binaries or VkFFT. Both
 `:single` and `:channel` distributions are supported. This changes execution,
 not factors, FFT sizes or NUFFT support. Batch size trades memory for speed.
+`normal_options=(;)` keeps Julia kernels and cuFFT. The experimental
+`normal_options=(fft=:vkfft_pruned, native_ptx=..., vkfft_library=...,
+coefficient_cache_bytes=...)` explicitly selects native/pruned execution;
+resource files must already exist. The coefficient budget is per worker and
+zero disables caching. See `deps/pruned_fft/README.md` for local build
+and validation requirements.
 The parent owns this lazy backend even in `:single` mode; `close(op)` releases
 it. Bare adjoints still apply Aᴴ, with any weighting supplied by the caller.
 
@@ -593,6 +604,7 @@ function HighOrderLowRankOp(
     normal_distribution:: Symbol                   = :single                                 ,
     normal_method     :: Symbol                    = :standard                               ,
     normal_coil_batch_size :: Int                  = 8                                       ,
+    normal_options    :: NamedTuple                = (;)                                     ,
     normal_sample_batch_size:: Int                 = 12_000_000                              ,
     nfft_center_correction :: Bool                 = true                                    ,
     verbose           :: Bool                      = false                                   ,   
@@ -624,6 +636,7 @@ function HighOrderLowRankOp(
     normal_sample_batch_size > 0 || throw(ArgumentError("normal_sample_batch_size must be positive"))
     normal_method in (:standard, :batched) || throw(ArgumentError("normal_method must be :standard or :batched"))
     normal_coil_batch_size > 0 || throw(ArgumentError("normal_coil_batch_size must be positive"))
+    validate_highorder_normal_options(normal_method, normal_options)
     basis_layout in (:shared, :per_readout) || throw(ArgumentError("basis_layout must be :shared or :per_readout"))
     normal_distribution === :readout && basis_layout !== :per_readout &&
         throw(ArgumentError("normal_distribution=:readout requires basis_layout=:per_readout"))
@@ -1103,6 +1116,7 @@ function HighOrderLowRankOp(
     normal_backend = HighOrderNormalBackend(normal_distribution, copy(gpus), verbose, nothing, nothing)
     normal_backend.method = normal_method
     normal_backend.coil_batch_size = normal_coil_batch_size
+    normal_backend.options = normal_options
 
     Mv = Mtu = arrayType(Vector{Complex{T}}(undef, 0))  
     return HighOrderLowRankOp{T, Nothing, typeof(ctprod!), typeof(nfftplan), typeof(q), typeof(basis), typeof(csm), typeof(workspace), typeof(Mv)}(

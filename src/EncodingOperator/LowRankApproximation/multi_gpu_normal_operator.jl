@@ -565,6 +565,7 @@ function release_multi_gpu_normal_shard!(shard::MultiGPUHighOrderNormalShard)
     # the worker that owns the CUDA context. Its internal allocations are
     # collected once, after every worker has stopped.
     shard.nfftplan = nothing
+    shard.batched_workspace === nothing || release_highorder_batched_workspace!(shard.batched_workspace)
     shard.batched_workspace = nothing
     shard.readout_cache === nothing || release_per_readout_cache!(shard.readout_cache)
     empty!(shard.readout_plans)
@@ -687,6 +688,7 @@ function MultiGPUHighOrderNormalOp(
     verbose              :: Bool = false,
     method               :: Symbol = :standard,
     coil_batch_size      :: Int = 8,
+    options              :: NamedTuple = (;),
     _weights_are_squared :: Bool = false,
 ) where {T<:AbstractFloat}
     op.q isa CuArray || throw(ArgumentError("MultiGPUHighOrderNormalOp requires a CuArray HighOrderLowRankOp"))
@@ -695,6 +697,7 @@ function MultiGPUHighOrderNormalOp(
     distribution in (:channel, :readout) || throw(ArgumentError("distribution must be :channel or :readout"))
     method in (:standard, :batched) || throw(ArgumentError("method must be :standard or :batched"))
     coil_batch_size > 0 || throw(ArgumentError("coil_batch_size must be positive"))
+    validate_highorder_normal_options(method, options)
     method === :batched && !(T === Float32 && op.grid_size[end] > 1 &&
         op.basis_layout === :shared && distribution === :channel) && throw(ArgumentError(
             "batched normal requires 3D Float32 shared CUDA factors and channel distribution"))
@@ -762,8 +765,8 @@ function MultiGPUHighOrderNormalOp(
             gpu_id = setup_gpus[i]
             channels = channel_ranges[i]
             first_nodes = per_readout ? view(nfft_nodes_host, :, 1:op.nSam) : nfft_nodes_host
-            options = method === :batched ? (; gpu_method=:global_memory) : (;)
-            nfftplan = plan_nfft(CuArray, first_nodes, nfft_dims; m=3, σ=1.25, options...)
+            plan_options = method === :batched ? (; gpu_method=:global_memory) : (;)
+            nfftplan = plan_nfft(CuArray, first_nodes, nfft_dims; m=3, σ=1.25, plan_options...)
             eltype(nfftplan) == Complex{T} || error("NFFT plan precision $(eltype(nfftplan)) does not match Complex{$T}")
             readout_plans = typeof(nfftplan)[]
             if per_readout && !streamed
@@ -786,7 +789,7 @@ function MultiGPUHighOrderNormalOp(
             weights_local = CuArray(weights2_host)
             mask_local = gpu_id == primary_gpu ? view(op.mask_idx, :) : CuArray(mask_idx_host)
             batched = method === :batched ? highorder_batched_workspace(nfftplan,
-                q_local, basis_local, csm_local, weights_local, mask_local, op.grid_size, coil_batch_size) : nothing
+                q_local, basis_local, csm_local, weights_local, mask_local, op.grid_size, coil_batch_size; options) : nothing
             plan_type = typeof(nfftplan)
             batched === nothing || (nfftplan = nothing)
             workspace = MultiGPUHighOrderNormalWorkspace{T}(
@@ -1036,6 +1039,7 @@ function ensure_highorder_normal_backend!(
         verbose=backend.verbose,
         method=backend.method,
         coil_batch_size=backend.coil_batch_size,
+        options=backend.options,
         _weights_are_squared=true,
     )
     backend.operator = normal_op

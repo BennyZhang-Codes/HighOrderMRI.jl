@@ -1,6 +1,6 @@
 module HighOrderMRINonuniformFFTsExt
 
-using HighOrderMRI, CUDA, NonuniformFFTs, LinearAlgebra
+using HighOrderMRI, CUDA, NonuniformFFTs, LinearAlgebra, Libdl
 const H = HighOrderMRI
 
 # NonuniformFFTs 0.9.6 plan internals are isolated in this optional extension.
@@ -22,7 +22,7 @@ function NonuniformFFTs._type2_fft!(data::BatchedFFTData)
     return data.us
 end
 
-struct BatchedHighOrderNormalWorkspace{B,M,P}
+struct BatchedHighOrderNormalWorkspace{B,M,P,E}
     plan::P
     q::CuMatrix{ComplexF32}
     basis::CuMatrix{ComplexF32}
@@ -38,15 +38,16 @@ struct BatchedHighOrderNormalWorkspace{B,M,P}
     permutation::CuVector{Int32}
     point_ids::CuVector{Int32}
     chunks::CuMatrix{Int32}
+    execution::E
 end
 
-function batched_fft_plan(p, ::Val{B}) where {B}
+function batched_fft_plan(p, ::Val{B}; plan_transforms=true) where {B}
     dims = size(first(p.data.us))
     buffer = CUDA.zeros(ComplexF32, dims..., B)
     us = ntuple(c -> view(buffer, :, :, :, c), Val(B))
     axes = (1, 2, 3)
-    forward = NonuniformFFTs.AbstractFFTs.plan_fft!(buffer, axes)
-    backward = NonuniformFFTs.AbstractFFTs.plan_bfft!(buffer, axes)
+    forward = plan_transforms ? NonuniformFFTs.AbstractFFTs.plan_fft!(buffer, axes) : nothing
+    backward = plan_transforms ? NonuniformFFTs.AbstractFFTs.plan_bfft!(buffer, axes) : nothing
     data = BatchedFFTData{3,B,typeof(p.data.ks),typeof(us),typeof(buffer),typeof(forward),typeof(backward)}(
         p.data.ks, us, buffer, forward, backward)
     return NonuniformFFTs.PlanNUFFT(p.kernels, p.backend, p.kernel_evalmode, p.σ,
@@ -80,7 +81,7 @@ function kernel_spatial_maps!(mask_to_fft, fft_to_mask, deconvolution, indices, 
         @inbounds begin
             j = index_map[1][a]+fft_dims[1]*((index_map[2][b]-1)+fft_dims[2]*(index_map[3][c]-1))
             mask_to_fft[v] = j
-            fft_to_mask[j] = v
+            isempty(fft_to_mask) || (fft_to_mask[j] = v)
             deconvolution[v] = 1f0/(phi[1][a]*phi[2][b]*phi[3][c])
         end
     end
@@ -145,7 +146,7 @@ end
     ifelse(value<1,value+size,ifelse(value>size,value-size,value))
 
 function H.highorder_batched_workspace(plan::NonuniformFFTs.NFFTPlan{Float32,3},
-    q,basis,csm,weights2,mask_idx,grid_size,batch,
+    q,basis,csm,weights2,mask_idx,grid_size,batch; options=(;),
 )
     batch in (2,4,8) || throw(ArgumentError("batched coil size must be 2, 4 or 8"))
     p = plan.p
@@ -165,15 +166,26 @@ function H.highorder_batched_workspace(plan::NonuniformFFTs.NFFTPlan{Float32,3},
         p.points,p.kernels,p.kernel_evalmode,p.point_transform_fold,nt,Val(M))
     ids,chunks = output_point_lists(Array(starts),dims,M)
     mask_to_fft = CUDA.zeros(Int32,nv)
-    fft_to_mask = CUDA.zeros(Int32,prod(dims))
+    experimental = get(options, :fft, :cufft) === :vkfft_pruned
+    fft_to_mask = CUDA.zeros(Int32,experimental ? 0 : prod(dims))
     deconvolution = CUDA.zeros(Float32,nv)
     phi = map(NonuniformFFTs.fourier_coefficients,p.kernels)
     @cuda threads=256 blocks=cld(nv,256) kernel_spatial_maps!(mask_to_fft,fft_to_mask,
         deconvolution,mask_idx,p.index_map,phi,grid_size,dims,nv)
-    batched = batched_fft_plan(p,Val(batch))
-    return BatchedHighOrderNormalWorkspace{batch,M,typeof(batched)}(batched,q,basis,csm,weights2,
-        CUDA.zeros(ComplexF32,nt,batch),CUDA.zeros(ComplexF32,nt,batch),
-        mask_to_fft,fft_to_mask,deconvolution,starts,windows,permutation,CuArray(ids),CuArray(chunks))
+    batched = batched_fft_plan(p,Val(batch); plan_transforms=!experimental)
+    execution = nothing
+    try
+        if experimental
+            M == 3 || throw(ArgumentError("experimental pruned execution requires NUFFT half-support 3"))
+            batched, execution = pruned_batched_plan(batched, starts, windows, ids, chunks, mask_idx, grid_size, options, Val(batch))
+        end
+        return BatchedHighOrderNormalWorkspace{batch,M,typeof(batched),typeof(execution)}(batched,q,basis,csm,weights2,
+            CUDA.zeros(ComplexF32,nt,batch),CUDA.zeros(ComplexF32,nt,batch),
+            mask_to_fft,fft_to_mask,deconvolution,starts,windows,permutation,CuArray(ids),CuArray(chunks),execution)
+    catch
+        execution === nothing || close(execution)
+        rethrow()
+    end
 end
 
 function kernel_batched_pad!(buffer,x,basis,r,csm,c0,fft_to_mask,beta,nf,C,::Val{B}) where {B}
@@ -330,11 +342,9 @@ function forward_batch!(workspace::BatchedHighOrderNormalWorkspace{B,M},x,c0) wh
     prefactor = prod(map(NonuniformFFTs.Kernels.gridstep,p.kernels))
     fill!(workspace.channel,0)
     for r in axes(workspace.q,2)
-        @cuda threads=256 blocks=cld(nf,256) kernel_batched_pad!(p.data.buffer,x,
-            workspace.basis,r,workspace.csm,c0,workspace.fft_to_mask,workspace.deconvolution,nf,C,Val(B))
+        pad_batch!(workspace,x,r,c0,workspace.execution)
         NonuniformFFTs._type2_fft!(p.data)
-        @cuda threads=128 blocks=cld(nt*8,128) kernel_batched_gather!(workspace.channel,p.data.buffer,
-            workspace.starts,workspace.windows,workspace.permutation,dims,nt,nf,prefactor,workspace.q,r,Val(M),Val(B))
+        gather_batch!(workspace,r,workspace.execution)
     end
     return nothing
 end
@@ -347,11 +357,7 @@ function adjoint_batch!(out,workspace::BatchedHighOrderNormalWorkspace{B,M},c0,w
     for r in axes(workspace.q,2)
         @cuda threads=256 blocks=cld(nt*B,256) kernel_weighted_samples!(workspace.samples,
             workspace.channel,workspace.q,workspace.weights2,r,nt,weighted)
-        fill!(p.data.buffer,0)
-        shared_bytes = (4cld(3+6M,4)+2B)*32*sizeof(Float32)
-        @cuda threads=64 blocks=size(workspace.chunks,1) shmem=shared_bytes kernel_batched_spread!(
-            reinterpret(Float32,p.data.buffer),workspace.samples,workspace.starts,workspace.windows,
-            workspace.permutation,workspace.point_ids,workspace.chunks,dims,nt,nf,Val(M),Val(B))
+        spread_batch!(workspace,workspace.execution)
         NonuniformFFTs._type1_fft!(p.data)
         @cuda threads=256 blocks=cld(nv,256) kernel_batched_reduce!(out,p.data.buffer,
             workspace.basis,r,workspace.csm,c0,workspace.mask_to_fft,workspace.deconvolution,nf,nv,C,scale,Val(B))
@@ -388,5 +394,42 @@ function H.highorder_batched_forward!(signal,workspace::BatchedHighOrderNormalWo
     end
     return signal
 end
+
+
+function pad_batch!(workspace::BatchedHighOrderNormalWorkspace{B},x,r,c0,::Nothing) where {B}
+    p = workspace.plan
+    nf, C = length(p.data.buffer) ÷ B, size(workspace.csm,2)
+    @cuda threads=256 blocks=cld(nf,256) kernel_batched_pad!(p.data.buffer,x,
+        workspace.basis,r,workspace.csm,c0,workspace.fft_to_mask,workspace.deconvolution,nf,C,Val(B))
+    return nothing
+end
+
+function gather_batch!(workspace::BatchedHighOrderNormalWorkspace{B,M},r,::Nothing) where {B,M}
+    p = workspace.plan
+    dims = size(first(p.data.us))
+    nf, nt = prod(dims), size(workspace.q,1)
+    prefactor = prod(map(NonuniformFFTs.Kernels.gridstep,p.kernels))
+    @cuda threads=128 blocks=cld(nt*8,128) kernel_batched_gather!(workspace.channel,p.data.buffer,
+        workspace.starts,workspace.windows,workspace.permutation,dims,nt,nf,prefactor,workspace.q,r,Val(M),Val(B))
+    return nothing
+end
+
+function spread_batch!(workspace::BatchedHighOrderNormalWorkspace{B,M},::Nothing) where {B,M}
+    p = workspace.plan
+    dims, nt = size(first(p.data.us)), size(workspace.q,1)
+    fill!(p.data.buffer,0)
+    shared_bytes = (4cld(3+6M,4)+2B)*32*sizeof(Float32)
+    @cuda threads=64 blocks=size(workspace.chunks,1) shmem=shared_bytes kernel_batched_spread!(
+        reinterpret(Float32,p.data.buffer),workspace.samples,workspace.starts,workspace.windows,
+        workspace.permutation,workspace.point_ids,workspace.chunks,dims,nt,prod(dims),Val(M),Val(B))
+    return nothing
+end
+
+function H.release_highorder_batched_workspace!(workspace::BatchedHighOrderNormalWorkspace)
+    workspace.execution === nothing || close(workspace.execution)
+    return nothing
+end
+
+include("NonuniformFFTs/experimental_pruned.jl")
 
 end
