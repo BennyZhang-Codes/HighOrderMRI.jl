@@ -112,6 +112,33 @@ Optional `global_basis_tol` introduces a further error relative to the already
 shared representation. NFFT approximation and local rSVD truncation remain
 separate error sources.
 
+### Optional sampled construction and weighted compression
+
+These additions are disabled by default. `shared_readout_count=nothing`
+uses every readout, `shared_fit_samples=nothing` keeps the original local
+temporal projection, and no new compression runs unless explicitly requested.
+Existing `global_basis_tol` calls keep the original unweighted path.
+
+For shared rSVD, use `shared_readout_count=64, shared_fit_samples=512` to
+train a spatial basis on representative readouts and fit coefficients for
+every original time sample. The numbers are configurable experiment settings,
+not general accuracy recommendations. Readout selection uses a sampled
+phase-geometry proxy; it is not a full-time coverage certificate. Supplying
+`shared_basis_report=Ref{Any}()` records selected readouts, training voxels,
+conditioning and phase checks, including a post-compression check.
+
+`global_basis_rank=18` selects a fixed final rank instead of
+`global_basis_tol`. With either selector, `global_basis_weights=D` uses real
+nonnegative sample weights already equal to `abs2.(w)`; they are not squared
+again. `global_basis_coil_weighting=true` also uses summed CSM energy.
+The weights define the compression metric only. Reconstruction still receives
+its own original weights. This path uses blocked FP64 Grams and accounts for
+the actual spatial Gram. Its tail error concerns the existing factors, not the
+original phase matrix or reconstructed image. A fixed `global_basis_rank` is
+not an image-error target; inspect `compressed_phase_check` and complete
+reconstruction metrics before choosing it. Joint construction retains its
+own validation and rejects these post-compression options.
+
 ### Optional no-add check
 
 `shared_noadd_check` affects **basis construction**, independently of the
@@ -161,6 +188,80 @@ requires multiple GPUs, the kernel backend and Gram finalization; chunked voxel
 setup requires explicit selection.
 The generated API gives the exact combinations. Use the
 [multi-GPU guide](/guide/multi-gpu) for complete device configurations.
+
+### Optional batched CUDA execution
+
+`HighOrderMRINonuniformFFTsExt` is an automatically loaded Julia package
+extension for HighOrderMRI and NonuniformFFTs. It adds methods for the existing
+NonuniformFFTs backend; it does not register an independent NUFFT backend or
+provide another `backend` value. Loading the extension alone leaves
+`normal_method=:standard` in effect. The selections have separate roles:
+
+| Setting | Role | Default |
+|:--|:--|:--|
+| `shared_basis_method` | Build Shared rSVD or Joint factors. | `:rsvd` |
+| `normal_distribution` | Assign the reconstruction work to devices. | `:single` |
+| `normal_method` | Evaluate completed factors with standard or batched kernels. | `:standard` |
+| `AbstractNFFTs.set_active_backend!` | Choose the NUFFT library. | Existing active backend. |
+
+`normal_method=:standard` keeps existing execution. `normal_method=:batched`
+opts into Julia CUDA kernels and batched cuFFT for 3D Float32 shared factors,
+with either Shared rSVD or Joint construction. Load the optional backend first:
+
+```julia
+using HighOrderMRI, CUDA, AbstractNFFTs, NonuniformFFTs
+AbstractNFFTs.set_active_backend!(NonuniformFFTs.backend())
+```
+
+NonuniformFFTs itself activates its backend when imported, as it did before
+this extension; the explicit selection above makes the intended library clear.
+The HighOrderMRI extension does not switch backends. Check that it loaded with
+`Base.get_extension(HighOrderMRI, :HighOrderMRINonuniformFFTsExt)`. For an
+updated path-tracked checkout, `Pkg.resolve()` in the active environment may
+be needed to refresh extension metadata; restart Julia afterward.
+
+Then pass `normal_method=:batched, normal_coil_batch_size=8` to
+`HighOrderLowRankOp`. Coil batches 2, 4 and 8 are supported, including a partial
+last batch. Larger batches use more memory. `normal_distribution=:single`
+uses one GPU; `:channel` retains the existing multi-GPU coil partition.
+CPU, 2D, Float64, independent-readout and rank-sharded evaluation continue to
+use the standard path. Explicitly requesting an unsupported batched
+configuration throws an error.
+
+The extension is version-bound to the tested NonuniformFFTs 0.9.6 internals.
+It does not change the selected backend globally, trajectory nodes, logical
+FFT sizes, NUFFT support or factors. It uses no native CUDA binaries or VkFFT.
+The initial normal request owns its workspaces through the existing parent;
+`close(op)` releases them, including batched single-GPU execution. Bare
+adjoints never apply the normal weights again. Floating-point accumulation
+order may differ from the standard implementation. The parent's ordinary
+forward remains on its existing path; a bare adjoint reuses the batched workers
+only after the first normal request initializes them.
+
+For existing 3D Float32 inputs, execution-only opt-in looks like:
+
+```julia
+using LinearOperatorCollection: normalOperator
+
+op = HighOrderLowRankOp(grid, kspha, times;
+    fieldmap, csm, mask,
+    arrayType=CuArray, gpus=[0, 1],
+    normal_distribution=:channel,
+    normal_method=:batched, normal_coil_batch_size=8,
+)
+try
+    D = CuArray(abs2.(w))             # One WᴴW value per sample, not per coil.
+    N = normalOperator(op, D)        # Initialize before a solver's bare adjoint.
+    # Apply N or run the existing reconstruction workflow with the same settings.
+finally
+    close(op)
+end
+```
+
+This leaves the factor-construction settings unchanged. Shared rSVD sampling,
+coefficient refitting and weighted compression in the earlier section are
+separate opt-ins that change the approximation. Joint retains its own rank
+selection and checks; batching does not remove a high-B0 audit warning.
 
 ### Why rank execution must combine forward contributions
 
