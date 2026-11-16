@@ -1024,7 +1024,6 @@ binding = "plt_images"
 module = "HighOrderMRI"
 disposition = "known_issue"
 issue = "PG-11"
-page = "reference/plotting.md"
 note = "Export declaration without a defined binding in this code baseline; not a callable API."
 
 [[exports]]
@@ -1032,7 +1031,6 @@ binding = "plt_trajs"
 module = "HighOrderMRI"
 disposition = "known_issue"
 issue = "PG-11"
-page = "reference/plotting.md"
 note = "Export declaration without a defined binding in this code baseline; not a callable API."
 
 [[exports]]

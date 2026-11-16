@@ -111,6 +111,11 @@ function check_site(docs, dist; base="/HighOrderMRI.jl/dev/", version="dev")
         version in ("dev", "main") && !(edit in page.links) && fail(target, "edit link does not target its code branch")
     end
     for entry in get(mapping, "exports", [])
+        if !haskey(entry, "page")
+            get(entry, "disposition", "") == "known_issue" && !isempty(get(entry, "issue", "")) ||
+                fail("api", "export disposition requires a page or a recorded issue", entry["binding"])
+            continue
+        end
         target = chopsuffix(entry["page"], ".md") * ".html"
         if !haskey(pages, target)
             fail(target, "missing export disposition page", entry["binding"])
