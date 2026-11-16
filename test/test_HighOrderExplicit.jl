@@ -91,8 +91,8 @@ end
     n_coil = size(data.csm, ndims(data.csm))
     probe = complex.(collect(range(-0.4f0, 0.5f0; length = n_sample * n_coil)), collect(range(0.3f0, -0.2f0; length = n_sample * n_coil)))
 
-    @testset "HighOrderOp CPU and block partition" begin
-        blocked_operator = HighOrderOp(
+    @testset "HighOrderExplicitOp CPU and block partition" begin
+        blocked_operator = HighOrderExplicitOp(
             data.grid,
             data.kspha,
             data.times;
@@ -102,7 +102,7 @@ end
             nBlock = 4,
             arrayType = Array,
         )
-        single_block_operator = HighOrderOp(
+        single_block_operator = HighOrderExplicitOp(
             data.grid,
             data.kspha,
             data.times;
@@ -128,35 +128,35 @@ end
     end
 
     @testset "constructor validation" begin
-        @test_throws ArgumentError HighOrderOp(
+        @test_throws ArgumentError HighOrderExplicitOp(
             data.grid,
             data.kspha,
             data.times;
             arrayType = BitArray,
         )
 
-        @test_throws AssertionError HighOrderOp(
+        @test_throws AssertionError HighOrderExplicitOp(
             data.grid,
             zeros(Float32, 10, n_sample),
             data.times;
             arrayType = Array,
         )
-        @test_throws ArgumentError HighOrderKernelOp(
+        @test_throws ArgumentError HighOrderExplicitOp(
             data.grid,
             data.kspha,
-            data.times;
+            data.times; implementation=:kernel,
             arrayType = Array,
         )
-        @test_throws ArgumentError HighOrderKernelOp(
+        @test_throws ArgumentError HighOrderExplicitOp(
             data.grid,
             data.kspha,
-            data.times;
+            data.times; implementation=:kernel,
             gpus = Int[],
         )
-        @test_throws ArgumentError HighOrderKernelOp(
+        @test_throws ArgumentError HighOrderExplicitOp(
             data.grid,
             data.kspha,
-            data.times;
+            data.times; implementation=:kernel,
             gpus = [0, 0],
         )
     end
@@ -164,7 +164,7 @@ end
     @testset "CUDA array and kernel implementations" begin
         if CUDA.functional()
             gpu_id = Int(CUDA.deviceid(CUDA.device()))
-            cuda_operator = HighOrderOp(
+            cuda_operator = HighOrderExplicitOp(
                 data.grid,
                 data.kspha,
                 data.times;
@@ -174,10 +174,10 @@ end
                 nBlock = 4,
                 arrayType = CuArray,
             )
-            kernel_operator = HighOrderKernelOp(
+            kernel_operator = HighOrderExplicitOp(
                 data.grid,
                 data.kspha,
-                data.times;
+                data.times; implementation=:kernel,
                 fieldmap = data.fieldmap,
                 csm = data.csm,
                 mask = data.mask,
@@ -204,10 +204,10 @@ end
 
             gpu_ids = map(device -> Int(CUDA.deviceid(device)), CUDA.devices())
             if length(gpu_ids) >= 2
-                multi_gpu_operator = HighOrderKernelOp(
+                multi_gpu_operator = HighOrderExplicitOp(
                     data.grid,
                     data.kspha,
-                    data.times;
+                    data.times; implementation=:kernel,
                     fieldmap = data.fieldmap,
                     csm = data.csm,
                     mask = data.mask,

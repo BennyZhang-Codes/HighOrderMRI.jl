@@ -30,7 +30,7 @@ or gyromagnetic-ratio conversion is performed by this estimator.
 legacy explicit operator. `solver` is a solver type such as `CGNR`, and `reg`
 is a regularization object such as `L2Regularization(zero(T))`. There are no
 `use_gpu` or `λ` keywords. `iter_max` limits each inner image reconstruction,
-not the outer delay loop. `nBlock` is passed to `HighOrderOp`.
+not the outer delay loop. `nBlock` is passed to `HighOrderExplicitOp`.
 
 At each step, `Δτ = J*real(b\\r)`, with residual r and derivative product b.
 The update is unweighted although image reconstruction uses density weights.
@@ -119,7 +119,7 @@ function FindDelay_multishot(
         kspha_τ_r  = T.(reshape(kspha_τ   , :, nTerm)'); # reshape to (nSample, nTerm)
         datatime_recon = reshape(permutedims(datatime, [2, 1]), :);
         weight = samplingDensity(kspha_τ_r[2:3,:], (gridding.nX, gridding.nY));
-        HOOp    = HighOrderOp(gridding, kspha_τ_r, datatime_recon; recon_terms=recon_terms, 
+        HOOp    = HighOrderExplicitOp(gridding, kspha_τ_r, datatime_recon; recon_terms=recon_terms,
                     nBlock=nBlock, csm=csm, fieldmap=fieldmap, arrayType=arrayType, verbose=verbose);
         # Update image
         x = recon_HOOp(HOOp, data, weight, recParams)
@@ -131,9 +131,9 @@ function FindDelay_multishot(
         y1 = zeros(Complex{T}, nSamplePerInterleave, nShot, nCha);
         y2 = zeros(Complex{T}, nSamplePerInterleave, nShot, nCha);
         for ishot = 1:nShot
-            HOOp_τ    = HighOrderOp(gridding, Matrix(kspha_τ[:,ishot,:]'), datatime_recon; recon_terms=recon_terms, 
+            HOOp_τ    = HighOrderExplicitOp(gridding, Matrix(kspha_τ[:,ishot,:]'), datatime_recon; recon_terms=recon_terms,
                     nBlock=nBlock, csm=csm, fieldmap=fieldmap, arrayType=arrayType, verbose=verbose);
-            HOOp_dt_τ = HighOrderOp(gridding, Matrix(kspha_τ[:,ishot,:]'), datatime_recon; recon_terms=recon_terms,
+            HOOp_dt_τ = HighOrderExplicitOp(gridding, Matrix(kspha_τ[:,ishot,:]'), datatime_recon; recon_terms=recon_terms,
                     nBlock=nBlock, csm=csm, fieldmap=fieldmap, arrayType=arrayType, verbose=verbose,
                     kspha_dt=Matrix(kspha_dt_τ[:,ishot,:]'));
             # Update delay

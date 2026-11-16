@@ -62,8 +62,8 @@ kdata_compressed, csm_compressed, coil_transform = compress_coils(
     retained_energy=coil_transform.retained_energy,
 )
 
-# HighOrderOp and HighOrderLowRankOp advertise CuArray solver storage, whereas
-# HighOrderKernelOp intentionally uses CPU solver vectors around its GPU
+# Explicit Array and LowRank advertise CuArray solver storage.
+# Explicit CUDA with backend=:legacy uses CPU solver vectors around its GPU
 # workspaces. Convert inputs once, outside every timed reconstruction.
 kdata_physical_gpu = CuArray(kdata_physical)
 kdata_compressed_gpu = CuArray(kdata_compressed)
@@ -170,7 +170,7 @@ end
 # Benchmark cases
 # --------------------------------------------------------------------------
 function build_highorder_operator(csm_current)
-    return HighOrderOp(
+    return HighOrderExplicitOp(
         gridding,
         kspha_measured,
         times_measured;
@@ -186,10 +186,10 @@ end
 
 
 function build_kernel_operator(csm_current, gpu_ids)
-    return HighOrderKernelOp(
+    return HighOrderExplicitOp(
         gridding,
         kspha_measured,
-        times_measured;
+        times_measured; implementation=:kernel,
         recon_terms=recon,
         csm=csm_current,
         fieldmap=fieldmap,
@@ -249,7 +249,7 @@ for dataset in datasets
     if benchmark_single_gpu
         single_gpu_ids = [primary_gpu]
         push!(cases, (
-            label="HighOrderOp / $(dataset.label) / 1 GPU",
+            label="Explicit Array / $(dataset.label) / 1 GPU",
             variant=dataset.variant,
             gpu_ids=single_gpu_ids,
             data=dataset.data_gpu,
@@ -259,7 +259,7 @@ for dataset in datasets
             end,
         ))
         push!(cases, (
-            label="HighOrderKernelOp / $(dataset.label) / 1 GPU",
+            label="Explicit CUDA / $(dataset.label) / 1 GPU",
             variant=dataset.variant,
             gpu_ids=single_gpu_ids,
             data=dataset.data_host,
@@ -283,7 +283,7 @@ for dataset in datasets
     if benchmark_multi_gpu
         gpu_ids = copy(multi_gpu_ids)
         push!(cases, (
-            label="HighOrderKernelOp / $(dataset.label) / $(length(gpu_ids)) GPUs",
+            label="Explicit CUDA / $(dataset.label) / $(length(gpu_ids)) GPUs",
             variant=dataset.variant,
             gpu_ids=gpu_ids,
             data=dataset.data_host,

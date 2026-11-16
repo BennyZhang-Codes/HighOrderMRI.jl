@@ -242,7 +242,6 @@ parent cap or K within the declared budgets. `rank_max` caps the parent, not
 the requested final rank. The memory estimate is approximate; `max_seconds`
 is checked between attempts, not inside a CUDA call. This setup function
 does not create NFFT plans and does not change any production default.
-The legacy name `adaptive_spatial_basis` remains an alias of this function.
 """
 function joint_adaptive_spatial_basis(
     times::AbstractMatrix{T}, fieldmap::AbstractVector{T},
@@ -287,9 +286,6 @@ function joint_adaptive_spatial_basis(
     return adaptive_phase_factors(temporal, spatial, nSam, nDyn, epsilon_H, options;
         initial_parent, arrayType)
 end
-
-# Keep existing factor-level experiment scripts compatible with the method name.
-const adaptive_spatial_basis = joint_adaptive_spatial_basis
 
 function adaptive_internal_ranks(temporal, spatial, q, S, epsilon, options, attempt)
     nTime, nVox = size(temporal, 1), size(spatial, 1)

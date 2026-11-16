@@ -13,13 +13,13 @@ iterative reconstruction. The default reconstruction strategy is `:single`.
 
 | Operator and stage | Selection | Distributed work and storage |
 |:--|:--|:--|
-| Explicit legacy encoding | `HighOrderKernelOp(...; backend=:legacy)` | Masked voxels; each worker retains its spatial rows. |
+| Explicit legacy encoding | `HighOrderExplicitOp(...; implementation=:kernel, backend=:legacy)` | Masked voxels; each worker retains its spatial rows. |
 | Explicit resident encoding | `backend=:direct`, `:blocked`, `:cached`, or `:cached_full` | Samples; each worker retains all masked voxels and coils for its sample range. |
 | Low-rank rSVD setup | `rsvd_distribution=:voxel` | Masked voxels during factor construction and shared-basis updates. |
 | Low-rank reconstruction | `normal_distribution=:single` | CPU execution with `arrayType=Array`, or primary-GPU execution with `CuArray`. |
 | Low-rank reconstruction | `normal_distribution=:channel` | Receive coils; shared temporal and spatial factors are retained in full on each worker. |
 | Low-rank reconstruction | `normal_distribution=:rank` | Shared temporal and spatial factor columns; coil-map columns are also distributed, and samples are processed in batches. |
-| Low-rank reconstruction | `normal_distribution=:readout` | Independent readouts; requires `basis_layout=:per_readout`. |
+| Low-rank reconstruction | `normal_distribution=:readout` | Independent readouts; requires `method=:per_readout`. |
 
 For the same completed low-rank factors, changing to a compatible execution
 decomposition redistributes their evaluation without introducing another
@@ -63,7 +63,7 @@ can serialize transfers and kernel submission. GPU IDs must be unique.
 
 ## Legacy explicit encoding: voxel decomposition
 
-`HighOrderKernelOp` uses voxel decomposition with the default `backend=:legacy`.
+`HighOrderExplicitOp` uses voxel decomposition with the default `backend=:legacy`.
 Each GPU retains its field-map values, basis rows, coil-map rows, and workspaces.
 Partial forward signals are summed on the host; adjoint voxel results are
 gathered into their original masked positions. This backend uses CPU solver
@@ -74,7 +74,7 @@ storage.
 For resident solver storage and sample decomposition, select a resident backend:
 
 ```julia
-op = HighOrderKernelOp(grid, kspha, times;
+op = HighOrderExplicitOp(grid, kspha, times; implementation=:kernel,
     fieldmap, csm, mask,
     gpus=[0, 1],
     backend=:blocked,
@@ -108,12 +108,16 @@ See [Choose an operator](/guide/operators) for backend settings.
 Use these constructor keywords to build local low-rank factors on voxel shards:
 
 ```julia
-arrayType=CuArray,
-gpus=[0, 1],
-rsvd_backend=:kernel,
-rsvd_finalize=:gram,
-rsvd_distribution=:voxel,
+setup_options = (;
+    arrayType=CuArray,
+    gpus=[0, 1],
+    rsvd_backend=:kernel,
+    rsvd_finalize=:gram,
+    rsvd_distribution=:voxel,
+)
 ```
+
+Pass `setup_options...` to `HighOrderLowRankOp` together with the model inputs.
 
 For readout $i$, let $H_i$ be the residual phase matrix. Voxel distribution
 partitions its columns and the corresponding rows of the random test matrix:
@@ -148,8 +152,8 @@ sample batches.
 ### Optional no-add check during shared-basis construction
 
 `shared_noadd_check=false` is the default. Set it to `true` only with
-voxel-distributed shared rSVD (`basis_layout=:shared`,
-`shared_basis_method=:rsvd`, CUDA and Gram finalization). It is independent of
+voxel-distributed shared rSVD (`method=:incremental_shared`,
+`method=:incremental_shared`, CUDA and Gram finalization). It is independent of
 whether reconstruction later uses `:single`, `:channel`, or `:rank`.
 
 The update still computes the projection coefficients and the residual after
@@ -197,7 +201,7 @@ factors, `:cpu` or `:regenerate` storage instead uses bounded GPU queues.
 Julia CUDA kernels within each worker. It also supports one GPU with
 `normal_distribution=:single`. It requires shared 3D Float32 CUDA factors and
 the optional NonuniformFFTs 0.9.6 extension. The default remains `:standard`.
-The setting applies to Shared rSVD and Joint factors without changing them,
+The setting applies to Incremental Shared and Direct Shared factors without changing them,
 the NUFFT support, or the FFT grid. `normal_coil_batch_size=2`, `4`, or `8`
 controls the batch workspace; larger batches can require more GPU memory.
 The single-GPU path avoids host staging for its normal and cached adjoint.
@@ -213,15 +217,15 @@ speedups.
 
 Select `normal_distribution=:rank` when shared-factor replication is the memory
 constraint. Both construction paths require `arrayType=CuArray`, at least two
-unique GPU IDs and `basis_layout=:shared`. Shared low-rank setup additionally
+unique GPU IDs and shared spatial factors. Incremental Shared setup additionally
 requires:
 
-- `shared_basis_method=:shared_low_rank` (compatible default `:rsvd`);
+- `method=:incremental_shared` (the default);
 - voxel-distributed rSVD, either explicit `:voxel` or eligible `:auto`;
 - `rsvd_finalize=:gram` and a compatible kernel or chunked setup backend.
 
-Joint adaptive low-rank instead uses
-`shared_basis_method=:joint_adaptive_low_rank` (alias `:adaptive`) with
+Direct Shared (Global strategy) instead uses
+`method=:direct_shared, strategy=:global` with
 `epsilon_H`, `global_basis_tol=nothing` and `rsvd_distribution=:auto` or
 `:single`. Its factor construction uses the primary GPU; rank-distributed
 execution starts afterward from the returned host factors. See its
@@ -330,8 +334,8 @@ op = HighOrderLowRankOp(grid, kspha, times;
     fieldmap, csm, mask,
     arrayType=CuArray,
     gpus=[0, 1],
-    basis_layout=:shared,
-    shared_basis_method=:rsvd,
+    method=:incremental_shared,
+    method=:incremental_shared,
     L_rank=4,
     rsvd_oversample=2,
     rsvd_backend=:kernel,
@@ -365,7 +369,7 @@ solver settings for real data. To enable the optional setup check, change only
 
 ## Iterative reconstruction: readout-distributed normal operator
 
-For independent factors, select `basis_layout=:per_readout` and
+For independent factors, select `method=:per_readout` and
 `normal_distribution=:readout`. Each worker evaluates all coils for its
 contiguous readout range. Image contributions are summed, retaining all
 cross-rank terms within each readout. This evaluates the same weighted normal

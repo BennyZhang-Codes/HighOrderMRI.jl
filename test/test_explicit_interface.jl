@@ -1,7 +1,7 @@
 using Test, CUDA, HighOrderMRI, LinearAlgebra, Random
 using LinearOperatorCollection, LinearOperators
 
-@testset "Unified HighOrderKernelOp interface" begin
+@testset "Unified HighOrderExplicitOp interface" begin
     @test :HighOrderExplicitGPUOp ∉ names(HighOrderMRI)
     @test :HighOrderExplicitMultiGPUOp ∉ names(HighOrderMRI)
     @test :ExplicitGPUOp ∉ names(HighOrderMRI)
@@ -29,9 +29,9 @@ using LinearOperatorCollection, LinearOperators
             A = explicit_reference_matrix(grid, effective, times, fieldmap, csm, mask)
             kwargs = (; fieldmap, csm, mask, recon_terms="0011", k_nominal)
             CUDA.device!(0)
-            legacy = HighOrderKernelOp(grid, kspha, times; kwargs...)
-            explicit_legacy = HighOrderKernelOp(grid, kspha, times; kwargs..., backend=:legacy)
-            @test legacy isa HighOrderKernelOp
+            legacy = HighOrderExplicitOp(grid, kspha, times; implementation=:kernel, kwargs...)
+            explicit_legacy = HighOrderExplicitOp(grid, kspha, times; implementation=:kernel, kwargs..., backend=:legacy)
+            @test legacy isa HighOrderExplicitOp
             @test legacy.gpu_operator === nothing
             @test LinearOperators.storage_type(legacy) <: Vector
             @test legacy*x == explicit_legacy*x
@@ -46,9 +46,9 @@ using LinearOperatorCollection, LinearOperators
             choices = length(collect(CUDA.devices())) >= 2 ? ([0], [1], [1,0]) : ([0],)
             for gpus in choices, backend in (:direct, :blocked, :cached_full)
                 CUDA.device!(first(gpus))
-                op = HighOrderKernelOp(grid, kspha, times; kwargs..., gpus,
+                op = HighOrderExplicitOp(grid, kspha, times; implementation=:kernel, kwargs..., gpus,
                     backend, phase_backend=:gemm, block_size=4)
-                @test op isa HighOrderKernelOp
+                @test op isa HighOrderExplicitOp
                 @test LinearOperators.storage_type(op) <: CuArray
                 @test CUDA.deviceid(CUDA.device()) == first(gpus)
                 @test (op.gpu_operator isa HighOrderMRI.ExplicitGPUOp) == (length(gpus) == 1)
@@ -67,10 +67,10 @@ using LinearOperatorCollection, LinearOperators
                 @test_throws ArgumentError normalOperator(op)
             end
             CUDA.device!(0)
-            @test_throws ArgumentError HighOrderKernelOp(grid, kspha, times; backend=:invalid)
-            @test_throws ArgumentError HighOrderKernelOp(grid, kspha, times; backend=:blocked, kspha_dt=kspha)
-            @test_throws DimensionMismatch HighOrderKernelOp(grid, kspha, times; backend=:blocked, concomitant=zeros(T,4,12))
-            @test_throws ArgumentError HighOrderKernelOp(grid, kspha, times; phase_cache_bytes=1)
+            @test_throws ArgumentError HighOrderExplicitOp(grid, kspha, times; implementation=:kernel, backend=:invalid)
+            @test_throws ArgumentError HighOrderExplicitOp(grid, kspha, times; implementation=:kernel, backend=:blocked, kspha_dt=kspha)
+            @test_throws DimensionMismatch HighOrderExplicitOp(grid, kspha, times; implementation=:kernel, backend=:blocked, concomitant=zeros(T,4,12))
+            @test_throws ArgumentError HighOrderExplicitOp(grid, kspha, times; implementation=:kernel, phase_cache_bytes=1)
         end
     else
         @test_skip false

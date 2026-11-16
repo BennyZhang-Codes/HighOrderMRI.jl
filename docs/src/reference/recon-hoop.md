@@ -18,7 +18,7 @@ kspha = zeros(T, 9, nSam)
 kspha[2, :] .= repeat(T.(-4:3) ./ (nX * grid.Δx), nY)
 kspha[3, :] .= repeat(T.(-4:3) ./ (nY * grid.Δy); inner=nX)
 times = zeros(T, nSam)
-op = HighOrderOp(grid, kspha, times; arrayType=Array, nBlock=8)
+op = HighOrderExplicitOp(grid, kspha, times; arrayType=Array, nBlock=8)
 reference = zeros(Complex{T}, grid.matrixSize)
 reference[3:6, 3:6, 1] .= 1
 samples = reshape(op * vec(reference), nSam, 1)

@@ -30,7 +30,7 @@ function run_kernel_prod!(
     for i = 1:nBatch
         ch_start = (i-1) * 32 + 1
         ch_end   = i * 32
-        @cuda threads=threads blocks=blocks shmem=shmem_bytes CUDA_kernel_prod_HighOrderOp!(
+        @cuda threads=threads blocks=blocks shmem=shmem_bytes explicit_forward_kernel!(
             @view(out[:, ch_start:ch_end]), x, @view(csm[:, ch_start:ch_end]), times, fieldmap, bf, kspha, 
             Int32(nSam), Int32(32), Int32(nTerm), Int32(nVox));
     end
@@ -44,7 +44,7 @@ function run_kernel_prod_workspace!(out, x, csm, times, fieldmap, bf, kspha, nSa
     shmem_bytes = nTerm * sizeof(eltype(fieldmap)) + 32 * cld(threads, 32) * sizeof(eltype(fieldmap)) * 2
     for i = 1:cld(nCha, 32)
         channels = (i - 1) * 32 + 1:i * 32
-        @cuda threads=threads blocks=blocks shmem=shmem_bytes CUDA_kernel_prod_HighOrderOp!(@view(out[:, channels]), x, @view(csm[:, channels]), times, fieldmap, bf, kspha, Int32(nSam), Int32(32), Int32(nTerm), Int32(nVox))
+        @cuda threads=threads blocks=blocks shmem=shmem_bytes explicit_forward_kernel!(@view(out[:, channels]), x, @view(csm[:, channels]), times, fieldmap, bf, kspha, Int32(nSam), Int32(32), Int32(nTerm), Int32(nVox))
     end
     return out
 end
@@ -65,7 +65,7 @@ function run_kernel_ctprod!(
     fill!(out, zero(Complex{T}))
     for i = 1:cld(nCha, 32)
         channels = (i - 1) * 32 + 1:i * 32
-        @cuda threads=threads blocks=blocks shmem=shmem_bytes CUDA_kernel_ctprod_HighOrderOp!(out, @view(y[:, channels]), @view(csm[:, channels]), times, fieldmap, bf, kspha, Int32(nSam), Int32(32), Int32(nTerm), Int32(nVox))
+        @cuda threads=threads blocks=blocks shmem=shmem_bytes explicit_adjoint_kernel!(out, @view(y[:, channels]), @view(csm[:, channels]), times, fieldmap, bf, kspha, Int32(nSam), Int32(32), Int32(nTerm), Int32(nVox))
     end
     return out
 end
@@ -88,7 +88,7 @@ end
 end
 
 
-function CUDA_kernel_prod_HighOrderOp!(
+function explicit_forward_kernel!(
     out      ::CuDeviceMatrix{Complex{T}},   # [nSam, nCha]
     x        ::CuDeviceVector{Complex{T}},   # [nVox]
     csm      ::CuDeviceMatrix{Complex{T}},   # [nVox, nCha]
@@ -376,7 +376,7 @@ function CUDA_kernel_prod_HighOrderOp!(
 end
 
 
-function CUDA_kernel_ctprod_HighOrderOp!(
+function explicit_adjoint_kernel!(
     out      ::CuDeviceVector{Complex{T}},   # [nVox]
     y        ::CuDeviceMatrix{Complex{T}},   # [nSam, nCha]
     csm      ::CuDeviceMatrix{Complex{T}},   # [nVox, nCha]

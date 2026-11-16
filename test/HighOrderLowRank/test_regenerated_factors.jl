@@ -16,7 +16,7 @@
                 common = (;fieldmap=data.fieldmap, csm=data.csm, mask=data.mask,
                     arrayType=CuArray, gpus=gpu_ids, L_rank=2, rsvd_oversample=2,
                     rsvd_seed=2026, rsvd_finalize=:gram, rsvd_backend=:kernel,
-                    rsvd_distribution=:voxel, basis_layout=:per_readout)
+                    rsvd_distribution=:voxel, method=:per_readout)
                 reference = HighOrderLowRankOp(data.grid,data.kspha,data.times; common...,
                     per_readout_storage=:cpu)
                 x=CuArray(data.x)
@@ -81,7 +81,7 @@
                 common=(;fieldmap=data.fieldmap,csm=data.csm,mask=data.mask,
                     arrayType=CuArray,gpus=gpu_ids,L_rank=2,rsvd_oversample=2,
                     rsvd_finalize=:gram,rsvd_backend=:kernel,rsvd_distribution=:voxel,
-                    basis_layout=:per_readout,per_readout_storage=:regenerate,
+                    method=:per_readout,per_readout_storage=:regenerate,
                     per_readout_cache_size=2)
                 reference=HighOrderLowRankOp(data.grid,data.kspha,data.times;common...)
                 x=CuArray(data.x)

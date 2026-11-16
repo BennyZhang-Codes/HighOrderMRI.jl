@@ -702,7 +702,7 @@ function MultiGPUHighOrderNormalOp(
         op.basis_layout === :shared && distribution === :channel) && throw(ArgumentError(
             "batched normal requires 3D Float32 shared CUDA factors and channel distribution"))
     distribution === :readout && op.basis_layout !== :per_readout &&
-        throw(ArgumentError("readout distribution requires basis_layout=:per_readout"))
+        throw(ArgumentError("readout distribution requires method=:per_readout"))
 
     primary_gpu = first(gpus)
     source_gpu = CUDA.deviceid(CUDA.device(op.q))

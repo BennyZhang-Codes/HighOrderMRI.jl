@@ -66,7 +66,7 @@ data_cc, csm_cc, coil_transform = compress_coils(
 )
 ```
 
-Use `data_cc` in `recon_HOOp` and `csm_cc` when constructing `HighOrderOp`, `HighOrderKernelOp`, or `HighOrderLowRankOp`. No compression-specific mode is required in the encoding operator; the number of receive channels is inferred from the supplied coil-sensitivity maps.
+Use `data_cc` in `recon_HOOp` and `csm_cc` when constructing `HighOrderExplicitOp` or `HighOrderLowRankOp`. No compression-specific mode is required in the encoding operator; the number of receive channels is inferred from the supplied coil-sensitivity maps.
 
 ## Receive-noise whitening
 

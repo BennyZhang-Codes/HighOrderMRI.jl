@@ -70,7 +70,7 @@ end
     @test_throws ArgumentError HighOrderLowRankOp(grid,k,times;options...,
         global_basis_weights=ones(Float32,ns*nd))
     @test_throws ArgumentError HighOrderLowRankOp(grid,k,times;options...,
-        shared_basis_method=:joint,global_basis_rank=2)
+        method=:direct_shared, strategy=:per_readout,global_basis_rank=2)
     op = HighOrderLowRankOp(grid,k,times;options...,shared_readout_count=2,
         shared_fit_samples=64,shared_basis_report=report,global_basis_rank=2,
         global_basis_weights=collect(range(.1f0,1f0;length=ns*nd)),global_basis_coil_weighting=true)

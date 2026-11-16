@@ -1,33 +1,39 @@
-# Joint adaptive low-rank
+# Direct Shared {#joint-adaptive-low-rank}
 
-Joint adaptive low-rank constructs a common spatial parent directly from
+Both Direct Shared strategies build a common spatial parent from phase
+snapshots and recover temporal coefficients by sampled least squares.
+The [Per-readout strategy](#per-readout-strategy) checks snapshot prefixes
+on each readout. Global rotates the all-time coefficients and checks their
+error over the stacked phase matrix.
+
+Direct Shared (Global strategy) constructs a common spatial parent directly from
 representative phase snapshots across readouts, fits all actual time rows,
 and recompresses the completed coefficients. A user-supplied global H tolerance
 then drives empirical rank selection and bounded resource expansion. This is
-distinct from [Shared low-rank](/theory/low-rank), which first constructs and
+distinct from [Incremental Shared](/theory/low-rank), which first constructs and
 incrementally merges local readout factors.
 
-Select `shared_basis_method=:joint_adaptive_low_rank` with `epsilon_H` in
-`HighOrderLowRankOp`. The compatible alias is `:adaptive`; the default remains
-Shared low-rank under its existing `:rsvd` spelling. The older `:joint` method
-has different, sampled per-readout acceptance semantics and is not an alias.
+Select `method=:direct_shared, strategy=:global` with `epsilon_H` in
+`HighOrderLowRankOp`. The default LowRank construction is Incremental Shared.
+Direct Shared's `strategy=:per_readout` uses sampled per-readout acceptance.
 
-Both Joint paths share residual feature preparation, representative snapshot
+Both Direct Shared strategies share residual feature preparation, representative snapshot
 selection, snapshot-space construction, fitting-point selection and the
 Float64 QR coefficient map. Their fitting pools, rank ordering and acceptance
-policies remain distinct: `:joint` tests snapshot prefixes per readout and
-audits the selected factors; `:joint_adaptive_low_rank` rotates full-time
-parent coefficients and uses paired global residual checks with bounded
-resource expansion. Existing keywords, return conventions and defaults are
-unchanged.
+policies differ: Per-readout tests snapshot prefixes and audits the selected
+factors; Global rotates full-time parent coefficients and uses paired global
+residual checks with bounded resource expansion.
 
 The internal factor-level control `HighOrderMRI.joint_fixed_spatial_basis`
 supports `ordering=:snapshot` and `:coefficient`. The former fixes a snapshot
-prefix with the legacy fitting pool; the latter fixes both `parent_rank` and
+prefix with the Per-readout fitting pool; the latter fixes both `parent_rank` and
 the retained `rank` after coefficient rotation. It returns host factors and
 performs no acceptance test or budget expansion. Its
 `empirical_status=:not_evaluated` must not be presented as a tolerance pass.
-There is no additional `HighOrderLowRankOp` method or changed default.
+The public operator selects these strategies with `method=:direct_shared` and
+`strategy=:per_readout` or `:global`. The `joint_*` controls and
+`adaptive_options` keep their numerical meanings; see the
+[implementation guide](/guide/direct-shared).
 
 ::: info Guarantee level
 Projection identities, least-squares stability and SVD recompression have
@@ -42,7 +48,7 @@ guarantee.
 ## Common target and phase contract
 
 Use the [same residual model](/theory/low-rank#residual-encoding-matrix) and
-[notation](/theory/symbols) as Shared low-rank. Let $N=N_tN_{\mathrm{ro}}$
+[notation](/theory/symbols) as Incremental Shared. Let $N=N_tN_{\mathrm{ro}}$
 and stack all $H_i$ into $H\in\mathbb C^{N\times N_v}$, with samples varying
 fastest within each readout. For stacked time index $u$,
 
@@ -135,8 +141,8 @@ Choose $\gamma=\exp[\mathrm{i}2\pi(\boldsymbol\alpha_u-
 \boldsymbol\alpha_w)^T\overline{\boldsymbol\beta}]$ and apply
 $|\exp(\mathrm{i}x)-1|\leq|x|$ to the centred phase at each voxel.
 Squaring and averaging gives the bound. A scalar row phase can be represented
-by the temporal coefficients without enlarging the spatial span. This argument
-does not authorize shifting production times or removing their row phases.
+by the temporal coefficients without enlarging the spatial span. The production
+fit retains the actual ADC times and the corresponding scalar row phases.
 
 Farthest-point selection in this feature geometry is related to metric
 covering methods. [[27]](/references#ref-27 "Gonzalez TF. Clustering to minimize the maximum intercluster distance. Theor Comput Sci. 1985;38:293-306.")
@@ -269,6 +275,51 @@ time rows over all masked voxels using a stable small solve. It is not a
 complete-time certificate. A large first term suggests insufficient space;
 a large second term suggests poor coefficient recovery. The thresholds and
 resource increments used to act on that evidence remain empirical choices.
+
+## Per-readout strategy
+
+The Per-readout strategy uses prefixes $Q_R=Q_0[:,1:R]$ of the snapshot
+basis. For each fitting budget J and tested rank R, it computes
+
+$$
+\widehat q_{J,R}=H M_J^T\bigl((M_JQ_R)^\dagger\bigr)^H.
+$$
+
+This is the same gappy least-squares fit derived above, now applied to a
+snapshot prefix. During selection, only the required time rows of
+$\widehat q_{J,R}$ are evaluated. Let $\mathcal T_i$ be the validation times
+in readout i and $\mathcal V$ the validation voxels. The reported error is
+
+$$
+\widehat e_i(R)^2=
+\frac{1}{|\mathcal T_i||\mathcal V|}
+\sum_{u\in\mathcal T_i}\sum_{v\in\mathcal V}
+\left|H_{uv}-(\widehat q_{J,R}Q_R^H)_{uv}\right|^2.
+$$
+
+The denominator is the exact squared Frobenius norm of H on that sampled
+submatrix, since its entries have unit modulus. Selection requires
+$\max_i\widehat e_i(R)\leq0.9\,\mathtt{shared\_basis\_tol}$, plus the
+analogous high-|B0| check only when `joint_roi_tol` is supplied.
+The implementation tests ranks 1, 8, 16, and so on, including the available
+rank limit. It tries at most the requested fitting count and twice that
+count, each clipped to the fitting pool. It does not search every integer
+rank or expand snapshots as the Global strategy does.
+
+After selection, all actual time coefficients are fitted. A second sampled
+check of those completed factors uses `shared_basis_tol` without the 0.9
+margin. Failure throws; it does not trigger another rank search.
+Both checks use Cartesian time/voxel submatrices, rather than Global's iid
+entry-pair design. Their voxel sets exclude the fitting pool but can overlap
+each other, and all masked voxels already participate in snapshot
+construction. The time sets are disjoint when enough unused samples exist;
+tiny problems can reuse times, recorded in `disjoint_times`. These checks
+support an empirical per-readout pass, not a full-H or probability bound.
+
+For either strategy, the gappy bound above applies to a fixed orthonormal
+prefix when its sampled matrix has full column rank. The strategies differ
+in which prefixes they test and how they accept them. Only Global performs
+the all-time coefficient rotation and resource adaptation described next.
 
 ## Full-time recompression and total error
 
@@ -473,7 +524,9 @@ Here the approximated matrix excludes receive sensitivities and all actual
 time rows use one final spatial basis; joint B0/RF compression of grouped
 encoding matrices addresses a different compression target.
 
-The method-specific design combines:
+### Package construction choices
+
+The implementation uses:
 
 1. a phase-aware representative space shared across actual readouts;
 2. one oversampled coefficient map applied to all actual time rows;
@@ -498,14 +551,13 @@ Given the matching grid, field model, mask and coil maps, select the opt-in path
 ```julia
 op = HighOrderLowRankOp(grid, kspha, times;
     fieldmap, csm, mask,
-    shared_basis_method=:joint_adaptive_low_rank,
+    method=:direct_shared, strategy=:global,
     epsilon_H=0.01,
 )
 ```
 
 The experimental factor-level entry
-`HighOrderMRI.joint_adaptive_spatial_basis` (compatible alias
-`HighOrderMRI.adaptive_spatial_basis`) creates no NFFT plans and returns host
+`HighOrderMRI.joint_adaptive_spatial_basis` creates no NFFT plans and returns host
 matrices even with GPU construction. `epsilon_H` is a scalar global H target;
 it does not automatically select local rSVD rank or prove an optimal sketch
 budget. `joint_basis_report` receives construction, empirical, external-audit

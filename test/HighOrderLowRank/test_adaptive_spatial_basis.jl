@@ -74,7 +74,7 @@ function test_adaptive_basis(arrayType, ::Type{T}) where T
 end
 
 @testset "Joint adaptive low-rank basis" begin
-    @test HighOrderMRI.adaptive_spatial_basis === HighOrderMRI.joint_adaptive_spatial_basis
+    @test !isdefined(HighOrderMRI, :adaptive_spatial_basis)
     @testset "CPU $T" for T in (Float32, Float64)
         test_adaptive_basis(Array, T)
     end
@@ -97,10 +97,10 @@ end
     end
     @testset "Input validation and constant phase" begin
         d = adaptive_basis_test_problem(Float32)
-        f(; kwargs...) = HighOrderMRI.adaptive_spatial_basis(d.times, d.fieldmap, d.bf, d.kspha;
+        f(; kwargs...) = HighOrderMRI.joint_adaptive_spatial_basis(d.times, d.fieldmap, d.bf, d.kspha;
             epsilon_H=0.01, kwargs...)
         for tolerance in (0, -0.1, 1, Inf, NaN)
-            @test_throws ArgumentError HighOrderMRI.adaptive_spatial_basis(d.times, d.fieldmap, d.bf, d.kspha; epsilon_H=tolerance)
+            @test_throws ArgumentError HighOrderMRI.joint_adaptive_spatial_basis(d.times, d.fieldmap, d.bf, d.kspha; epsilon_H=tolerance)
         end
         @test_throws ArgumentError f(max_attempts=0)
         @test_throws ArgumentError f(chunk_size=0)
@@ -108,10 +108,10 @@ end
         @test_throws ArgumentError f(memory_fraction=1.1)
         @test_throws ArgumentError f(snapshots=32, max_snapshots=16)
         @test_throws ArgumentError f(sample_count=32, max_samples=16)
-        @test_throws DimensionMismatch HighOrderMRI.adaptive_spatial_basis(d.times, d.fieldmap, d.bf[1:end-1,:], d.kspha; epsilon_H=0.01)
+        @test_throws DimensionMismatch HighOrderMRI.joint_adaptive_spatial_basis(d.times, d.fieldmap, d.bf[1:end-1,:], d.kspha; epsilon_H=0.01)
         bad = copy(d.times);bad[1] = NaN32
-        @test_throws ArgumentError HighOrderMRI.adaptive_spatial_basis(bad, d.fieldmap, d.bf, d.kspha; epsilon_H=0.01)
-        constant = HighOrderMRI.adaptive_spatial_basis(zeros(Float32, 1, 1), zeros(Float32, 4),
+        @test_throws ArgumentError HighOrderMRI.joint_adaptive_spatial_basis(bad, d.fieldmap, d.bf, d.kspha; epsilon_H=0.01)
+        constant = HighOrderMRI.joint_adaptive_spatial_basis(zeros(Float32, 1, 1), zeros(Float32, 4),
             zeros(Float32, 4, 0), zeros(Float32, 0, 1, 1); epsilon_H=1e-4, chunk_size=3)
         @test constant.rank == 1
         @test constant.q*constant.S' ≈ ones(ComplexF32, 1, 4)

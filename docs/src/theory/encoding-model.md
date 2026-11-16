@@ -1,6 +1,6 @@
 # Expanded encoding model
 
-This page explains how physical field information becomes the forward encoding operator used in reconstruction. `HighOrderOp` and `HighOrderKernelOp` evaluate the phase explicitly; `HighOrderLowRankOp` separates Fourier encoding from a low-rank residual. For the ordinary forward model (`kspha_dt=nothing`), they target the same equation under the coordinate and array conventions below. LowRank also introduces low-rank truncation and NFFT interpolation error.
+This page explains how physical field information becomes the forward encoding operator used in reconstruction. `HighOrderExplicitOp` evaluates the phase explicitly; `HighOrderLowRankOp` separates Fourier encoding from a low-rank residual. For the ordinary forward model (`kspha_dt=nothing`), they target the same equation under the coordinate and array conventions below. LowRank also introduces low-rank truncation and NFFT interpolation error.
 
 Read the [signal model](#signal-model) and [array layout](#array-layout) first to prepare inputs, then the [Fourier/residual split](#2d-and-3d-fourier-residual-separation) to understand the algorithm. A [complete CPU example](#minimal-cpu-example) connects the equation to the constructor. Detailed low-rank construction belongs in [Low-rank shared subspace](/theory/low-rank).
 
@@ -68,7 +68,7 @@ $$
 +c_{3,i}(t)xz+c_{4,i}(t)yz.
 $$
 
-Supply coefficients in cycles/m², with coordinates in metres in the same frame and physical origin as the coefficients. Use `(4,nSam)` for `HighOrderOp`, `HighOrderKernelOp`, or a single-dynamic LowRank problem; use `(4,nSam,nDyn)` for dynamic LowRank. Their row order is exactly `z²`, `x²+y²`, `xz`, `yz`.
+Supply coefficients in cycles/m², with coordinates in metres in the same frame and physical origin as the coefficients. Use `(4,nSam)` for `HighOrderExplicitOp` or a single-dynamic LowRank problem; use `(4,nSam,nDyn)` for dynamic LowRank. Their row order is exactly `z²`, `x²+y²`, `xz`, `yz`.
 
 With `concomitant=nothing`, $\phi_{\mathrm{con},i}=0$. Otherwise add this phase to $\Phi_i$ and to the residual exponent in $H_i$ below. The coefficients are already integrated at the supplied sample times: they are neither inferred from gradients nor multiplied by `times` again. Divide coefficients expressed in rad/m² by $2\pi$ before supplying them.
 
@@ -180,11 +180,11 @@ This factorization provides the common mathematical reference for the explicit a
 
 ## Explicit implementation
 
-`HighOrderOp` and `HighOrderKernelOp` evaluate the complete phase model directly and therefore do not introduce a low-rank approximation.
+`HighOrderExplicitOp` evaluates the complete phase model directly and therefore does not introduce a low-rank approximation.
 
-`HighOrderOp` is the array-based reference implementation and can execute on CPU or CUDA arrays. Sample-voxel phase blocks are evaluated explicitly, with `nBlock` controlling the temporary-memory/runtime trade-off.
+`implementation=:array` selects array-based evaluation on CPU or CUDA arrays. Sample-voxel phase blocks are evaluated explicitly, with `nBlock` controlling the temporary-memory/runtime trade-off.
 
-`HighOrderKernelOp` evaluates the same signal model with legacy/direct kernels or resident cuBLAS backends. Legacy multi-GPU execution partitions masked voxels; resident backends partition samples. Blocked and cached representations retain the complete phase model, including supplied concomitant terms. Data placement and finite-precision reduction order change; the encoding equation does not.
+`implementation=:kernel` evaluates the same model with host-vector/direct kernels or resident cuBLAS backends. Legacy multi-GPU execution partitions masked voxels; resident backends partition samples. Blocked and cached representations retain the complete phase model, including supplied concomitant terms. Data placement and finite-precision reduction order change; the encoding equation does not.
 
 For a single profile, the operator represents $\mathbf y=A\mathbf m$. The reconstruction wrapper applies data weights and a CG-based solver; the encoding operator itself does not reconstruct an image. See [Reconstruction workflow](/guide/reconstruction) for solver use. Explicit implementations avoid low-rank truncation, while finite-precision phase evaluation and reduction remain numerical error sources.
 
@@ -202,7 +202,7 @@ $$
 
 where the local factors are obtained using a matrix-free randomized SVD. The randomized range-finding step follows standard randomized matrix-decomposition methods. [[4]](/references#ref-4 "Halko N, Martinsson PG, Tropp JA. Finding structure with randomness: Probabilistic algorithms for constructing approximate matrix decompositions. SIAM Rev. 2011;53:217-288.")
 
-With the default `basis_layout=:shared` and `shared_basis_method=:rsvd`, the retained spatial factors are compressed incrementally into a shared basis. Denote the completed incremental basis by $S^{(0)}\in\mathbb C^{N_v\times R_0}$ and the saved coefficient blocks by $\bar C_i\in\mathbb C^{R_0\times L}$:
+With the default `method=:incremental_shared`, the retained spatial factors are compressed incrementally into a shared basis. Denote the completed incremental basis by $S^{(0)}\in\mathbb C^{N_v\times R_0}$ and the saved coefficient blocks by $\bar C_i\in\mathbb C^{R_0\times L}$:
 
 $$
 \widetilde V_i
@@ -235,7 +235,7 @@ Here $c_{\mathrm{ctr}}$ is the parity-dependent correction defined [below](#nfft
 
 The shared basis is constructed incrementally across profiles. For an earlier profile, $\bar C_i$ generally differs from $(S^{(0)})^H\widetilde V_i$: earlier coefficient blocks are zero-padded when the basis grows, rather than reprojected. This statement refers to the incremental representation before optional final recompression.
 
-`basis_layout=:per_readout` instead retains each profile's local factors. It avoids incremental sharing and requires `global_basis_tol=nothing`; it is a storage/execution choice, distinct from enabling physical field terms. The complete derivation and parameter meanings are given in [Low-rank shared subspace](/theory/low-rank) and the [LowRank API](/reference/highorderlowrankop).
+`method=:per_readout` instead retains each profile's local factors. It avoids incremental sharing and requires `global_basis_tol=nothing`; it is a storage/execution choice, distinct from enabling physical field terms. The complete derivation and parameter meanings are given in [Low-rank shared subspace](/theory/low-rank) and the [LowRank API](/reference/highorderlowrankop).
 
 ## Solid-harmonic basis order
 
@@ -367,7 +367,7 @@ csm = ones(Complex{T}, nX, nY, 1)
 mask = trues(nX, nY)
 mask[1, 1] = false
 
-op = HighOrderOp(grid, kspha, times;
+op = HighOrderExplicitOp(grid, kspha, times;
     fieldmap, csm, mask, arrayType=Array, nBlock=2)
 image = ones(Complex{T}, nX, nY)
 y = op * vec(image)

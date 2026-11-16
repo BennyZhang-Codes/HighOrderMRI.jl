@@ -3,7 +3,7 @@
 Use `HighOrderLowRankOp` to apply an MRI encoding model repeatedly without
 materializing its full sample-by-voxel phase matrix. It combines NFFT Fourier
 encoding with low-rank factors for the remaining phase. The default construction
-is Shared low-rank: local randomized SVD (rSVD) followed by incremental spatial sharing.
+is Incremental Shared: local randomized SVD (rSVD) followed by incremental spatial sharing.
 See the [low-rank derivation](/theory/low-rank) for the equations, approximation
 stages and references.
 
@@ -13,14 +13,12 @@ Input coefficients have shape `(nTerm,nSam,nDyn)`, and times have shape
 and a time vector. The generated [API below](#api) gives the complete signatures,
 defaults and return layout.
 
-::: info Construction methods
-`shared_basis_method=:shared_low_rank` names the default Shared low-rank path;
-`:rsvd` remains the compatible default spelling. Opt into
-`shared_basis_method=:joint_adaptive_low_rank` with `epsilon_H` for a common
-snapshot parent, all-time fitting and empirical global H rank selection;
-`:adaptive` remains an alias. See the [joint theory](/theory/joint-adaptive-low-rank)
-for its bounds, budgets and empirical/certification distinction. The older
-`:joint` retains its separate sampled per-readout checks.
+::: info Algorithm selection
+Use `method=:per_readout`, `:incremental_shared`, or `:direct_shared`.
+Direct Shared selects `strategy=:per_readout` (default for that method) or
+`:global`; Global additionally requires `epsilon_H`. Construction settings
+are independent of execution and storage. Use the
+[method guide](/guide/low-rank) for the implementation pages.
 :::
 
 ## A complete CPU example
@@ -63,8 +61,7 @@ image[4:5, 4:5, 1] .= Complex{T}(T(0.5), T(-0.2))
 op = HighOrderLowRankOp(grid, kspha, times;
     fieldmap, csm, mask,
     arrayType=Array,
-    shared_basis_method=:rsvd,
-    basis_layout=:shared,
+    method=:incremental_shared,
     normal_distribution=:single,
     L_rank=4,
     rsvd_oversample=4,
@@ -97,7 +94,7 @@ Changing grid coordinate vectors alone does not change the NFFT geometry.
 See [coordinate scope](/theory/encoding-model#coordinate-scope) before applying
 permutations, reversals or offsets.
 
-## Shared-basis construction {#shared-basis-parameters}
+## Incremental Shared construction {#shared-basis-parameters}
 
 For each readout $i$, local rSVD retains `L_rank` factors of the residual phase
 matrix. The sketch must satisfy
@@ -136,7 +133,7 @@ its own original weights. This path uses blocked FP64 Grams and accounts for
 the actual spatial Gram. Its tail error concerns the existing factors, not the
 original phase matrix or reconstructed image. A fixed `global_basis_rank` is
 not an image-error target; inspect `compressed_phase_check` and complete
-reconstruction metrics before choosing it. Joint construction retains its
+reconstruction metrics before choosing it. Direct Shared retains its
 own validation and rejects these post-compression options.
 
 ### Optional no-add check
@@ -154,7 +151,7 @@ not establish a memory or runtime benefit for a particular measured dataset.
 
 ## Independent readouts {#per-readout-parameters}
 
-`basis_layout=:per_readout` retains the local factors independently, without
+`method=:per_readout` retains the local factors independently, without
 incremental sharing or final shared-basis recompression. The resident option
 stores those factors on the selected array backend. CUDA also supports host
 factor streaming (`per_readout_storage=:cpu`) and regeneration from retained
@@ -173,12 +170,13 @@ For rank execution it also selects the direct forward and adjoint paths.
 | `:single` | CPU with `arrayType=Array`, or the primary GPU with `CuArray`. |
 | `:channel` | Coil groups. In the shared layout, every worker retains the full temporal and spatial factors; coil-map storage is partitioned. |
 | `:rank` | Shared factor columns and coil-map storage are partitioned. Complete factor and coil-map masters remain in host RAM. |
-| `:readout` | Independent readout groups, requiring `basis_layout=:per_readout`; every worker retains all coil maps. |
+| `:readout` | Independent readout groups, requiring `method=:per_readout`; every worker retains all coil maps. |
 
 The distributed reconstruction modes require CUDA and at least two unique
 GPU IDs. IDs are zero based within CUDA's visible device list, and `first(gpus)`
-is the primary GPU for solver vectors. Rank execution additionally requires
-shared rSVD factors built by the voxel-distributed path with Gram finalization.
+is the primary GPU for solver vectors. Rank execution supports Incremental Shared with voxel-distributed Gram setup
+and the Direct Shared Global strategy. It does not support the Direct Shared
+Per-readout strategy.
 Its worker count is at most `min(length(gpus), shared_rank, nCha)`, so selecting
 several devices does not guarantee they all participate.
 
@@ -199,14 +197,15 @@ provide another `backend` value. Loading the extension alone leaves
 
 | Setting | Role | Default |
 |:--|:--|:--|
-| `shared_basis_method` | Build Shared rSVD or Joint factors. | `:rsvd` |
+| `method` | Build Per-readout, Incremental Shared or Direct Shared factors. | `:incremental_shared` |
+| `strategy` | Select Direct Shared's Per-readout or Global strategy. | `nothing`, selecting Per-readout for Direct Shared |
 | `normal_distribution` | Assign the reconstruction work to devices. | `:single` |
 | `normal_method` | Evaluate completed factors with standard or batched kernels. | `:standard` |
 | `AbstractNFFTs.set_active_backend!` | Choose the NUFFT library. | Existing active backend. |
 
 `normal_method=:standard` keeps existing execution. `normal_method=:batched`
 opts into Julia CUDA kernels and batched cuFFT for 3D Float32 shared factors,
-with either Shared rSVD or Joint construction. Load the optional backend first:
+with either Incremental Shared or Direct Shared construction. Load the optional backend first:
 
 ```julia
 using HighOrderMRI, CUDA, AbstractNFFTs, NonuniformFFTs
@@ -258,9 +257,9 @@ finally
 end
 ```
 
-This leaves the factor-construction settings unchanged. Shared rSVD sampling,
+This leaves the factor-construction settings unchanged. Incremental Shared sampling,
 coefficient refitting and weighted compression in the earlier section are
-separate opt-ins that change the approximation. Joint retains its own rank
+separate opt-ins that change the approximation. Direct Shared retains its own rank
 selection and checks; batching does not remove a high-B0 audit warning.
 
 ### Experimental pruned FFT combination

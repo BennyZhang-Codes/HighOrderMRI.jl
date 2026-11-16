@@ -22,7 +22,7 @@ const EXPLICIT_PHASE_CACHE_RESULTS = NamedTuple[]
             tolerance=T===Float32 ? 3e-5 : 2e-12
             for phase_backend in (:kernel,:gemm), budget_rows in (0,3,4,8,12)
                 budget=sizeof(Complex{T})*count(mask)*budget_rows
-                op=HighOrderKernelOp(grid,kspha,times;fieldmap,csm,mask,
+                op=HighOrderExplicitOp(grid,kspha,times; implementation=:kernel,fieldmap,csm,mask,
                     backend=:blocked,phase_backend,block_size=4,phase_cache_bytes=budget)
                 @test sizeof(op.gpu_operator.state.phase_cache)<=budget
                 @test size(op.gpu_operator.state.phase_cache,1)==min(11,4*(budget_rows÷4))
@@ -45,7 +45,7 @@ const EXPLICIT_PHASE_CACHE_RESULTS = NamedTuple[]
             end
             if length(collect(CUDA.devices()))>=2
                 budget=sizeof(Complex{T})*count(mask)*4
-                op=HighOrderKernelOp(grid,kspha,times;gpus=[0,1],fieldmap,csm,mask,
+                op=HighOrderExplicitOp(grid,kspha,times; implementation=:kernel,gpus=[0,1],fieldmap,csm,mask,
                     backend=:blocked,phase_backend=:gemm,block_size=4,phase_cache_bytes=budget)
                 output=Array(normalOperator(op,T.(D))*CuArray(x))
                 @test norm(output-expected)/norm(expected)<tolerance
@@ -54,9 +54,9 @@ const EXPLICIT_PHASE_CACHE_RESULTS = NamedTuple[]
             end
         end
         grid=Grid(2,2,1,0.01f0,0.01f0,0.01f0);K=zeros(Float32,9,3);times=zeros(Float32,3)
-        @test_throws ArgumentError HighOrderKernelOp(grid,K,times;backend=:blocked,phase_cache_bytes=-1)
-        @test_throws ArgumentError HighOrderKernelOp(grid,K,times;backend=:direct,phase_cache_bytes=1)
-        @test_throws ArgumentError HighOrderKernelOp(grid,K,times;backend=:cached,phase_cache_bytes=1)
+        @test_throws ArgumentError HighOrderExplicitOp(grid,K,times; implementation=:kernel,backend=:blocked,phase_cache_bytes=-1)
+        @test_throws ArgumentError HighOrderExplicitOp(grid,K,times; implementation=:kernel,backend=:direct,phase_cache_bytes=1)
+        @test_throws ArgumentError HighOrderExplicitOp(grid,K,times; implementation=:kernel,backend=:cached,phase_cache_bytes=1)
     else
         @test_skip false
     end
