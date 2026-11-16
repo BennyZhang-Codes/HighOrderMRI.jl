@@ -12,6 +12,23 @@ Select `shared_basis_method=:joint_adaptive_low_rank` with `epsilon_H` in
 Shared low-rank under its existing `:rsvd` spelling. The older `:joint` method
 has different, sampled per-readout acceptance semantics and is not an alias.
 
+Both Joint paths share residual feature preparation, representative snapshot
+selection, snapshot-space construction, fitting-point selection and the
+Float64 QR coefficient map. Their fitting pools, rank ordering and acceptance
+policies remain distinct: `:joint` tests snapshot prefixes per readout and
+audits the selected factors; `:joint_adaptive_low_rank` rotates full-time
+parent coefficients and uses paired global residual checks with bounded
+resource expansion. Existing keywords, return conventions and defaults are
+unchanged.
+
+The internal factor-level control `HighOrderMRI.joint_fixed_spatial_basis`
+supports `ordering=:snapshot` and `:coefficient`. The former fixes a snapshot
+prefix with the legacy fitting pool; the latter fixes both `parent_rank` and
+the retained `rank` after coefficient rotation. It returns host factors and
+performs no acceptance test or budget expansion. Its
+`empirical_status=:not_evaluated` must not be presented as a tolerance pass.
+There is no additional `HighOrderLowRankOp` method or changed default.
+
 ::: info Guarantee level
 Projection identities, least-squares stability and SVD recompression have
 conditional mathematical guarantees derived below. The current snapshot
