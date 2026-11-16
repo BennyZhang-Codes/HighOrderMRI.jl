@@ -226,10 +226,11 @@ weight = CuArray(Complex{T}.(sample_weight))
 # -----------------------------------------------------------------------------
 
 function build_kernel_operator(gpu_ids::AbstractVector{<:Integer})
-    return HighOrderKernelOp(
+    return HighOrderExplicitOp(
         grid,
         copy(kspha_model),
         T.(datatime);
+        implementation=:kernel,
         fieldmap=fieldmap_model,
         csm=csm_model,
         mask=mask_model,

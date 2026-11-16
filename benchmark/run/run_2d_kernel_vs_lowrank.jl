@@ -39,7 +39,7 @@ include(joinpath(@__DIR__, "..", "common", "benchmark_utils.jl"))
 
 
 function recon_benchmark(op, data, weight, params)
-    if op isa HighOrderKernelOp
+    if op isa HighOrderExplicitOp && op.Mv isa Vector
         return recon_HOOp(op, Array(data), Array(weight), params)
     end
     return recon_HOOp(op, data, weight, params)
@@ -248,10 +248,11 @@ weight = CuArray(Complex{T}.(weight))
 # -----------------------------------------------------------------------------
 
 function build_kernel_operator()
-    return HighOrderKernelOp(
+    return HighOrderExplicitOp(
         grid,
         copy(kspha_model),
         T.(datatime);
+        implementation=:kernel,
         fieldmap=fieldmap_model,
         csm=csm_model,
         mask=mask_model,

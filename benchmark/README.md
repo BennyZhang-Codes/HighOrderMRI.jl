@@ -1,6 +1,7 @@
 # Reconstruction benchmarks
 
-Compare explicit `HighOrderKernelOp` encoding with `HighOrderLowRankOp` on
+Compare explicit `HighOrderExplicitOp(...; implementation=:kernel)` encoding
+with `HighOrderLowRankOp` on
 fixed inputs, weights, GPUs, regularization, and CG iterations. Rank sweeps
 use shared low-rank/local rSVD, rather than joint adaptive H-rank selection.
 

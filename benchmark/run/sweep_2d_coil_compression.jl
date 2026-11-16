@@ -1,5 +1,5 @@
 """
-Benchmark 2D `HighOrderKernelOp` and `HighOrderLowRankOp` reconstruction
+Benchmark 2D Explicit CUDA and LowRank reconstruction
 quality and runtime versus global coil-compression rank.
 
 The physical 32-channel reconstruction is computed first and remains the
@@ -400,10 +400,11 @@ end
 operator_gpu_ids_2d(::Symbol) = CC2D_GPU_IDS
 
 function build_kernel_operator_2d(dataset, csm)
-    return HighOrderKernelOp(
+    return HighOrderExplicitOp(
         dataset.grid,
         CC2D_T.(dataset.kspha),
         CC2D_T.(dataset.datatime);
+        implementation=:kernel,
         fieldmap=CC2D_T.(dataset.fieldmap),
         csm=Complex{CC2D_T}.(csm),
         mask=dataset.mask,
