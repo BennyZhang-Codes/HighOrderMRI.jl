@@ -4,6 +4,17 @@ joint_release!(a::CuArray) = CUDA.unsafe_free!(a)
 joint_synchronize(::Type{Array}) = nothing
 joint_synchronize(::Type{CuArray}) = CUDA.synchronize()
 
+# Both Joint policies use the same residual features and coefficient solve.
+function joint_phase_matrices(times::AbstractMatrix{T}, fieldmap, bf, kspha_err) where T
+    spatial = hcat(Vector{T}(fieldmap), Matrix{T}(bf))
+    temporal = hcat(vec(Matrix{T}(times)),
+        permutedims(reshape(Array{T,3}(kspha_err), size(bf, 2), length(times))))
+    return temporal, spatial
+end
+
+joint_fit_map(sampled::AbstractMatrix) = joint_fit_map(qr(ComplexF64.(sampled)), size(sampled, 1))
+joint_fit_map(fit, sample_count::Int) = fit \ Matrix{ComplexF64}(I, sample_count, sample_count)
+
 function joint_snapshot_selection(temporal, spatial, nSam, nDyn, snapshots, seed, chunk_size)
     dimension = size(spatial, 2)
     gram = zeros(Float64, dimension, dimension)
@@ -396,8 +407,7 @@ function joint_spatial_basis(
     isnothing(roi_tol) || (isfinite(roi_tol) && roi_tol > zero(T)) || throw(ArgumentError("Joint ROI tolerance must be finite and positive"))
     all(isfinite, times) && all(isfinite, fieldmap) && all(isfinite, bf) && all(isfinite, kspha_err) || throw(ArgumentError("Joint phase inputs must be finite"))
 
-    spatial = hcat(Vector{T}(fieldmap), Matrix{T}(bf))
-    temporal = hcat(vec(Matrix{T}(times)), permutedims(reshape(Array{T,3}(kspha_err), size(bf, 2), nSam * nDyn)))
+    temporal, spatial = joint_phase_matrices(times, fieldmap, bf, kspha_err)
     order = randperm(Random.Xoshiro(seed), nVox)
     pool_size = min(8192, nVox ÷ 2)
     pool = sort(order[1:pool_size])
@@ -437,8 +447,7 @@ function joint_spatial_basis(
             points, sampled = joint_fit_points(basis, pool, J, seed + 4, arrayType)
             rank_limit = min(size(basis, 2), J)
             for R in unique(vcat(1, collect(8:8:rank_limit), rank_limit))
-                fit = qr(ComplexF64.(sampled[:, 1:R]))
-                fit_map = fit \ Matrix{ComplexF64}(I, J, J)
+                fit_map = joint_fit_map(sampled[:, 1:R])
                 errors, roi_errors = joint_sample_errors(basis, temporal, spatial, validation_rows,
                     vcat(validation_voxels, validation_roi), n_random, points, fit_map, chunk_size, arrayType)
                 passed = maximum(errors) <= selection_tol && (isnothing(roi_tol) || maximum(roi_errors) <= T(0.9) * roi_tol)
