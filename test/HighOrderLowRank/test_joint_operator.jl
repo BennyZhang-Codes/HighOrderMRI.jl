@@ -34,7 +34,7 @@ function test_joint_operator(arrayType, nZ; gpus=[0], normal_distribution=:singl
     report = Ref{Any}()
     op = HighOrderLowRankOp(data.grid, data.kspha, data.times;
         data.fieldmap, data.csm, data.mask, arrayType, gpus,
-        shared_basis_method=:joint, shared_basis_tol=1f-3,
+        method=:direct_shared, strategy=:per_readout, shared_basis_tol=1f-3,
         shared_rank_max=32, joint_snapshots=32, joint_samples=64,
         joint_roi_tol=1f-3, joint_basis_report=report,
         normal_distribution, rsvd_chunk=23,
@@ -77,11 +77,11 @@ end
     end
     d = joint_operator_test_problem(1)
     @test_throws ArgumentError HighOrderLowRankOp(d.grid, d.kspha, d.times;
-        d.fieldmap, d.csm, d.mask, shared_basis_method=:joint, global_basis_tol=1f-2)
+        d.fieldmap, d.csm, d.mask, method=:direct_shared, strategy=:per_readout, global_basis_tol=1f-2)
     @test_throws ArgumentError HighOrderLowRankOp(d.grid, d.kspha, d.times;
-        d.fieldmap, d.csm, d.mask, shared_basis_method=:joint, rsvd_distribution=:voxel)
+        d.fieldmap, d.csm, d.mask, method=:direct_shared, strategy=:per_readout, rsvd_distribution=:voxel)
     @test_throws ArgumentError HighOrderLowRankOp(d.grid, d.kspha, d.times;
-        d.fieldmap, d.csm, d.mask, shared_basis_method=:unsupported)
+        d.fieldmap, d.csm, d.mask, method=:unsupported)
 
     if CUDA.functional() && Base.find_package("NonuniformFFTs") !== nothing
         previous_backend = AbstractNFFTs.active_backend()

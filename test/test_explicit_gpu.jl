@@ -53,7 +53,7 @@ function test_explicit_gpu_case(::Type{T}, shape, nt, nc) where {T}
     previous = nothing
     for (backend,phase_backend) in ((:direct,:kernel),(:blocked,:kernel),(:blocked,:gemm),(:cached,:kernel),(:cached,:gemm),(:cached_full,:gemm))
         for B in (4, 7)
-            op = HighOrderKernelOp(grid, kspha, times; fieldmap,csm,mask,
+            op = HighOrderExplicitOp(grid, kspha, times; implementation=:kernel, fieldmap,csm,mask,
                 backend,phase_backend,block_size=B)
             forward = Array(op*xgpu)
             backward = Array(adjoint(op)*ygpu)
@@ -109,11 +109,11 @@ end
         grid = Grid(2, 2, 1, 0.01f0, 0.01f0, 0.01f0)
         kspha = zeros(Float32, 9, 3)
         times = zeros(Float32, 3)
-        op = HighOrderKernelOp(grid, kspha, times; gpus=[0], backend=:blocked, block_size=2)
+        op = HighOrderExplicitOp(grid, kspha, times; implementation=:kernel, gpus=[0], backend=:blocked, block_size=2)
         @test Array(op*CUDA.ones(ComplexF32, 4)) ≈ fill(2f0, 3)
         close(op)
-        @test_throws ArgumentError HighOrderKernelOp(grid, kspha, times; gpus=Int[])
-        @test_throws ArgumentError HighOrderKernelOp(grid, kspha, times; gpus=[999])
+        @test_throws ArgumentError HighOrderExplicitOp(grid, kspha, times; implementation=:kernel, gpus=Int[])
+        @test_throws ArgumentError HighOrderExplicitOp(grid, kspha, times; implementation=:kernel, gpus=[999])
     else
         @test_skip false
     end

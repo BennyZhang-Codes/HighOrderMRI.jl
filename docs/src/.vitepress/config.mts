@@ -6,10 +6,37 @@ const siteUrl = 'https://bennyzhang-codes.github.io/HighOrderMRI.jl'
 const docsVersion = process.env.DOCS_VERSION || 'dev'
 const docsBase = process.env.DOCS_BASE || '/HighOrderMRI.jl/dev/'
 const editRef = docsVersion === 'dev' ? 'dev_jinyuan' : 'main'
+const unifiedOperators = existsSync(new URL('../reference/highorderexplicitop.md', import.meta.url))
 const jointPages = existsSync(new URL('../theory/joint-adaptive-low-rank.md', import.meta.url))
 const lowRankItems = [
-  { text: 'Shared low-rank', link: '/theory/low-rank' },
-  ...(jointPages ? [{ text: 'Joint adaptive low-rank', link: '/theory/joint-adaptive-low-rank' }] : []),
+  { text: unifiedOperators ? 'LowRank model & Incremental Shared' : 'Shared low-rank', link: '/theory/low-rank' },
+  ...(jointPages ? [{ text: unifiedOperators ? 'Direct Shared theory' : 'Joint adaptive low-rank', link: '/theory/joint-adaptive-low-rank' }] : []),
+]
+// Frozen releases retain the API pages belonging to their own code snapshot.
+const encodingItems = [
+  ...(unifiedOperators ? [
+    { text: 'HighOrderExplicitOp', link: '/reference/highorderexplicitop' },
+    { text: 'Explicit Array options', link: '/reference/explicit-array' },
+    { text: 'Explicit CUDA options', link: '/reference/explicit-cuda' },
+  ] : [
+    { text: 'HighOrderOp', link: '/reference/highorderop' },
+    { text: 'HighOrderKernelOp', link: '/reference/highorderkernelop' },
+  ]),
+  { text: 'HighOrderLowRankOp', link: '/reference/highorderlowrankop' },
+]
+const explicitItems = [
+  { text: 'Overview', link: '/guide/explicit' },
+  { text: 'Array', link: '/guide/explicit-array' },
+  { text: 'Direct kernel', link: '/guide/explicit-kernel' },
+  { text: 'GEMM and phase-reuse', link: '/guide/explicit-gemm' },
+]
+const lowRankGuideItems = [
+  { text: 'Overview & method selection', link: '/guide/low-rank' },
+  { text: 'Per-readout', link: '/guide/per-readout' },
+  { text: 'Incremental Shared', link: '/guide/incremental-shared' },
+  { text: 'Direct Shared', link: '/guide/direct-shared' },
+  { text: 'Direct Shared: Per-readout', link: '/guide/direct-shared-per-readout' },
+  { text: 'Direct Shared: Global', link: '/guide/direct-shared-global' },
 ]
 const apiMeta = JSON.parse(readFileSync(new URL('../../.generated/api/build-meta.json', import.meta.url), 'utf8'))
 const candidatePreview = apiMeta.preview === true
@@ -70,6 +97,10 @@ export default defineConfig({
         text: 'Reconstruction',
         items: [
           { text: 'Encoding operators', link: '/guide/operators' },
+          ...(unifiedOperators ? [
+            { text: 'Explicit implementations', link: '/guide/explicit' },
+            { text: 'LowRank methods', link: '/guide/low-rank' },
+          ] : []),
           { text: 'Field preprocessing', link: '/guide/field-preprocessing' },
           { text: 'Coil compression', link: '/guide/coil-compression' },
           { text: 'Reconstruction workflow', link: '/guide/reconstruction' },
@@ -88,7 +119,7 @@ export default defineConfig({
         text: 'Reference',
         items: [
           { text: 'API overview', link: '/api' },
-          { text: 'Encoding operators', link: '/reference/highorderop' },
+          { text: 'Encoding operators', link: encodingItems[0].link },
           { text: 'Reconstruction', link: '/reference/recon-hoop' },
           { text: 'Coil compression', link: '/reference/coil-compression-transform' },
           { text: 'Field & synchronization', link: '/reference/girf-model' },
@@ -128,6 +159,10 @@ export default defineConfig({
         text: 'Reconstruction',
         items: [
           { text: 'Encoding operators', link: '/guide/operators' },
+          ...(unifiedOperators ? [
+            { text: 'Explicit', collapsed: true, items: explicitItems },
+            { text: 'LowRank', collapsed: true, items: lowRankGuideItems },
+          ] : []),
           { text: 'Field preprocessing', link: '/guide/field-preprocessing' },
           { text: 'Coil compression', link: '/guide/coil-compression' },
           { text: 'Reconstruction workflow', link: '/guide/reconstruction' },
@@ -151,11 +186,7 @@ export default defineConfig({
           {
             text: 'Encoding operators',
             collapsed: true,
-            items: [
-              { text: 'HighOrderOp', link: '/reference/highorderop' },
-              { text: 'HighOrderKernelOp', link: '/reference/highorderkernelop' },
-              { text: 'HighOrderLowRankOp', link: '/reference/highorderlowrankop' },
-            ],
+            items: encodingItems,
           },
           {
             text: 'Reconstruction',

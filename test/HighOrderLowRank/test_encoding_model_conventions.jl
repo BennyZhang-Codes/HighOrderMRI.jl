@@ -233,10 +233,10 @@ end
         if CUDA.functional()
             data = encoding_convention_problem(; nCha=32, nDyn=1)
             gpu_id = Int(CUDA.deviceid(CUDA.device()))
-            op = HighOrderKernelOp(
+            op = HighOrderExplicitOp(
                 data.grid,
                 data.kspha[:, :, 1],
-                data.times[:, 1];
+                data.times[:, 1]; implementation=:kernel,
                 fieldmap=data.fieldmap,
                 csm=data.csm,
                 mask=data.mask,

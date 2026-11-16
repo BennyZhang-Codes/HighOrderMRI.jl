@@ -16,7 +16,7 @@ mutable struct MultiGPUHighOrderNormalWorkspace{T<:AbstractFloat}
 end
 
 
-mutable struct MultiGPUHighOrderNormalShard{T<:AbstractFloat, P<:AbstractNFFTPlan{T}}
+mutable struct MultiGPUHighOrderNormalShard{T<:AbstractFloat, P<:AbstractNFFTPlan{T}, B}
     gpu_id        :: Int
     channels      :: UnitRange{Int}
     readouts      :: UnitRange{Int}
@@ -32,6 +32,7 @@ mutable struct MultiGPUHighOrderNormalShard{T<:AbstractFloat, P<:AbstractNFFTPla
     nSam          :: Int
     grid_size     :: Tuple
     workspace     :: MultiGPUHighOrderNormalWorkspace{T}
+    batched_workspace :: Union{Nothing,B}
     released      :: Bool
 end
 
@@ -174,6 +175,8 @@ end
 
 function local_highorder_normal!(shard::MultiGPUHighOrderNormalShard{T}) where {T}
     shard.released && error("Multi-GPU normal-operator shard on GPU $(shard.gpu_id) was released")
+    shard.batched_workspace === nothing || return highorder_batched_normal!(
+        shard.workspace.x_output, shard.batched_workspace, shard.workspace.x_input)
     plan = shard.nfftplan
     plan === nothing && error("NFFT plan on GPU $(shard.gpu_id) was released")
     shard.readout_cache === nothing || return local_highorder_streamed_normal!(shard)
@@ -320,6 +323,8 @@ function local_highorder_shared_adjoint!(
     data::CuMatrix{Complex{T}},
 ) where {T}
     shard.released && error("Multi-GPU adjoint shard was released")
+    shard.batched_workspace === nothing || return highorder_batched_adjoint!(
+        shard.workspace.x_output, shard.batched_workspace, data)
     plan = shard.nfftplan
     plan === nothing && error("NFFT plan on GPU $(shard.gpu_id) was released")
     workspace = shard.workspace
@@ -400,6 +405,21 @@ function multi_gpu_highorder_adjoint!(
     CUDA.deviceid(CUDA.device(data)) == state.primary_gpu ||
         throw(ArgumentError("adjoint data must reside on the primary GPU"))
     CUDA.device!(state.primary_gpu)
+    if length(state.workers) == 1 && first(state.shards).batched_workspace !== nothing
+        CUDA.synchronize()
+        completed = Vector{Nothing}(undef, 1)
+        run_on_workers!(completed, state.workers; phase=:adjoint_operator) do i
+            shard = state.shards[i]
+            local_highorder_shared_adjoint!(shard, reshape(data, nPoint, nChannel))
+            CUDA.synchronize()
+            nothing
+        end
+        fill!(output, zero(Complex{T}))
+        @cuda threads=256 blocks=cld(state.nVox, 256) kernel_scatter_masked_image!(
+            output, first(state.shards).workspace.x_output, state.mask_idx, state.nVox)
+        CUDA.synchronize()
+        return output
+    end
     host_data = reshape(Array(data), nPoint, nChannel)
     completed = Vector{Nothing}(undef, length(state.workers))
     run_on_workers!(completed, state.workers; phase=:adjoint_operator) do i
@@ -545,6 +565,8 @@ function release_multi_gpu_normal_shard!(shard::MultiGPUHighOrderNormalShard)
     # the worker that owns the CUDA context. Its internal allocations are
     # collected once, after every worker has stopped.
     shard.nfftplan = nothing
+    shard.batched_workspace === nothing || release_highorder_batched_workspace!(shard.batched_workspace)
+    shard.batched_workspace = nothing
     shard.readout_cache === nothing || release_per_readout_cache!(shard.readout_cache)
     empty!(shard.readout_plans)
 
@@ -592,6 +614,22 @@ function multi_gpu_normal_prod!(
     threads = 256
     blocks_vox = cld(state.nVox, threads)
     @cuda threads=threads blocks=blocks_vox kernel_gather_masked_image!(state.primary_input, x, state.mask_idx, state.nVox)
+    if length(state.workers) == 1 && first(state.shards).batched_workspace !== nothing
+        CUDA.synchronize()
+        completed = Vector{Nothing}(undef, 1)
+        run_on_workers!(completed, state.workers; phase=:normal_operator) do i
+            shard = state.shards[i]
+            copyto!(shard.workspace.x_input, state.primary_input)
+            local_highorder_normal!(shard)
+            CUDA.synchronize()
+            nothing
+        end
+        fill!(y, zero(Complex{T}))
+        @cuda threads=threads blocks=blocks_vox kernel_scatter_masked_image!(
+            y, first(state.shards).workspace.x_output, state.mask_idx, state.nVox)
+        CUDA.synchronize()
+        return y
+    end
     copyto!(state.host_input, state.primary_input)
 
     completed = Vector{Nothing}(undef, length(state.workers))
@@ -648,14 +686,23 @@ function MultiGPUHighOrderNormalOp(
     gpus                 :: Vector{Int},
     distribution         :: Symbol = :channel,
     verbose              :: Bool = false,
+    method               :: Symbol = :standard,
+    coil_batch_size      :: Int = 8,
+    options              :: NamedTuple = (;),
     _weights_are_squared :: Bool = false,
 ) where {T<:AbstractFloat}
     op.q isa CuArray || throw(ArgumentError("MultiGPUHighOrderNormalOp requires a CuArray HighOrderLowRankOp"))
     isempty(gpus) && throw(ArgumentError("gpus must contain at least one GPU id"))
     length(unique(gpus)) == length(gpus) || throw(ArgumentError("gpus contains duplicate GPU ids: $gpus"))
     distribution in (:channel, :readout) || throw(ArgumentError("distribution must be :channel or :readout"))
+    method in (:standard, :batched) || throw(ArgumentError("method must be :standard or :batched"))
+    coil_batch_size > 0 || throw(ArgumentError("coil_batch_size must be positive"))
+    validate_highorder_normal_options(method, options)
+    method === :batched && !(T === Float32 && op.grid_size[end] > 1 &&
+        op.basis_layout === :shared && distribution === :channel) && throw(ArgumentError(
+            "batched normal requires 3D Float32 shared CUDA factors and channel distribution"))
     distribution === :readout && op.basis_layout !== :per_readout &&
-        throw(ArgumentError("readout distribution requires basis_layout=:per_readout"))
+        throw(ArgumentError("readout distribution requires method=:per_readout"))
 
     primary_gpu = first(gpus)
     source_gpu = CUDA.deviceid(CUDA.device(op.q))
@@ -718,7 +765,8 @@ function MultiGPUHighOrderNormalOp(
             gpu_id = setup_gpus[i]
             channels = channel_ranges[i]
             first_nodes = per_readout ? view(nfft_nodes_host, :, 1:op.nSam) : nfft_nodes_host
-            nfftplan = plan_nfft(CuArray, first_nodes, nfft_dims; m=3, σ=1.25)
+            plan_options = method === :batched ? (; gpu_method=:global_memory) : (;)
+            nfftplan = plan_nfft(CuArray, first_nodes, nfft_dims; m=3, σ=1.25, plan_options...)
             eltype(nfftplan) == Complex{T} || error("NFFT plan precision $(eltype(nfftplan)) does not match Complex{$T}")
             readout_plans = typeof(nfftplan)[]
             if per_readout && !streamed
@@ -734,29 +782,38 @@ function MultiGPUHighOrderNormalOp(
             readout_cache = streamed ? PerReadoutCache(basis_host, op.nfft_traj, nfft_dims;
                 capacity=op.per_readout_cache_size, first_plan=nfftplan) : nothing
 
+            q_local = gpu_id == primary_gpu ? view(op.q, :, :) : CuArray(q_host)
+            basis_local = streamed ? CuMatrix{Complex{T}}(undef, op.nVox, 0) :
+                (gpu_id == primary_gpu ? view(op.basis, :, :) : CuArray(basis_host))
+            csm_local = gpu_id == primary_gpu ? view(op.csm, :, channels) : CuArray(@view csm_host[:, channels])
+            weights_local = CuArray(weights2_host)
+            mask_local = gpu_id == primary_gpu ? view(op.mask_idx, :) : CuArray(mask_idx_host)
+            batched = method === :batched ? highorder_batched_workspace(nfftplan,
+                q_local, basis_local, csm_local, weights_local, mask_local, op.grid_size, coil_batch_size; options) : nothing
+            plan_type = typeof(nfftplan)
+            batched === nothing || (nfftplan = nothing)
             workspace = MultiGPUHighOrderNormalWorkspace{T}(
-                CUDA.zeros(Complex{T}, nGrid),
-                CUDA.zeros(Complex{T}, nGrid),
-                CUDA.zeros(Complex{T}, nPlanPoint),
-                CUDA.zeros(Complex{T}, nPlanPoint),
-                CUDA.zeros(Complex{T}, nPlanPoint),
+                CUDA.zeros(Complex{T}, batched === nothing ? nGrid : 0),
+                CUDA.zeros(Complex{T}, batched === nothing ? nGrid : 0),
+                CUDA.zeros(Complex{T}, batched === nothing ? nPlanPoint : 0),
+                CUDA.zeros(Complex{T}, batched === nothing ? nPlanPoint : 0),
+                CUDA.zeros(Complex{T}, batched === nothing ? nPlanPoint : 0),
                 CUDA.zeros(Complex{T}, op.nVox),
                 CUDA.zeros(Complex{T}, op.nVox),
             )
 
-            MultiGPUHighOrderNormalShard{T,typeof(nfftplan)}(
+            MultiGPUHighOrderNormalShard{T,plan_type,typeof(batched)}(
                 gpu_id,
                 channels,
                 readout_ranges[i],
                 # Contiguous CuArray views share the source storage but own
                 # separate reference-counted handles. Freeing these handles
                 # when the shard closes must not invalidate the source op.
-                gpu_id == primary_gpu ? view(op.q, :, :) : CuArray(q_host),
-                streamed ? CuMatrix{Complex{T}}(undef, op.nVox, 0) :
-                    (gpu_id == primary_gpu ? view(op.basis, :, :) : CuArray(basis_host)),
-                gpu_id == primary_gpu ? view(op.csm, :, channels) : CuArray(@view csm_host[:, channels]),
-                CuArray(weights2_host),
-                gpu_id == primary_gpu ? view(op.mask_idx, :) : CuArray(mask_idx_host),
+                q_local,
+                basis_local,
+                csm_local,
+                weights_local,
+                mask_local,
                 nfftplan,
                 readout_plans,
                 readout_cache,
@@ -764,6 +821,7 @@ function MultiGPUHighOrderNormalOp(
                 op.nSam,
                 op.grid_size,
                 workspace,
+                batched,
                 false,
             )
         end
@@ -958,7 +1016,9 @@ function ensure_highorder_normal_backend!(
 ) where {T<:AbstractFloat}
     backend = op.normal_backend
     backend.distribution === :rank && return ensure_rank_shared_backend!(op, weights2)
-    backend.distribution in (:channel, :readout) || error("ensure_highorder_normal_backend! requires normal_distribution=:channel or :readout")
+    (backend.distribution in (:channel, :readout) ||
+        (backend.distribution === :single && backend.method === :batched)) ||
+        error("unsupported high-order normal backend configuration")
 
     cached = backend.operator
     if cached !== nothing
@@ -974,9 +1034,12 @@ function ensure_highorder_normal_backend!(
     normal_op = MultiGPUHighOrderNormalOp(
         op,
         weights2;
-        gpus=backend.gpus,
-        distribution=backend.distribution,
+        gpus=backend.distribution === :single ? [backend.primary_gpu] : backend.gpus,
+        distribution=backend.distribution === :single ? :channel : backend.distribution,
         verbose=backend.verbose,
+        method=backend.method,
+        coil_batch_size=backend.coil_batch_size,
+        options=backend.options,
         _weights_are_squared=true,
     )
     backend.operator = normal_op
@@ -991,7 +1054,7 @@ function LinearOperatorCollection.normalOperator(
     kwargs...,
 ) where {T<:AbstractFloat}
     backend = op.normal_backend
-    if backend.distribution === :single
+    if backend.distribution === :single && backend.method === :standard
         return LinearOperatorCollection.NormalOp(eltype(LinearOperators.storage_type(op)); parent=op, weights=weights)
     end
 
@@ -1005,9 +1068,10 @@ end
 """
     release_highorder_normal_backend!(op::HighOrderLowRankOp)
 
-Release a low-rank parent's owned distributed backend and clear its cached
-normal weights. This applies to `:channel`, `:readout`, and `:rank`; the
-`:single` path has no such owned distributed backend. Return `nothing`.
+Release a low-rank parent's owned backend and clear its cached normal weights.
+This applies to `:channel`, `:readout`, `:rank`, and the optional batched
+`:single` path. Standard `:single` execution has no such owned backend.
+Return `nothing`.
 Repeated calls after release are harmless.
 
 Complete factor arrays remain owned by `op`; this function also retains the

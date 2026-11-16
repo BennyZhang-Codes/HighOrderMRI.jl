@@ -105,7 +105,7 @@ function adaptive_fit_space(S0, temporal, spatial, J, options, arrayType)
     if !isfinite(condition) || condition > options.condition_limit
         return (; status=:ill_conditioned, condition, points, pool, stages)
     end
-    fit_map = fit \ Matrix{ComplexF64}(I, J, J)
+    fit_map = joint_fit_map(fit, J)
     device_q = q0 = nothing
     try
         stages["all_time_coefficients_s"] = @elapsed device_q = joint_fit_coefficients(
@@ -122,6 +122,88 @@ function adaptive_fit_space(S0, temporal, spatial, J, options, arrayType)
         S = S0 * rotation
     end
     return (; status=:computed, q, S, condition, points, pool, singular_values=spectrum.S, stages)
+end
+
+"""
+    joint_fixed_spatial_basis(times, fieldmap, bf, kspha_err; rank,
+        ordering=:snapshot, parent_rank=rank, arrayType=Array, seed=1234,
+        chunk_size=4096, snapshots=256, sample_count=512,
+        fit_pool_size=8192, condition_limit=1e4)
+
+Internal fixed-budget Joint control. `:snapshot` fits a fixed snapshot prefix
+using the legacy Joint fitting pool. `:coefficient` fits a parent of width
+`parent_rank` using the adaptive fitting pool, rotates its full-time
+coefficients, and retains `rank` columns. No rank search, acceptance test or
+budget expansion is performed. Unresolved requested ranks raise an error.
+Both factors are host matrices with `H ≈ q*S'`, without NFFT phase folding,
+weights, CSM or normalization. This control is not a constructor method or
+an empirically accepted approximation.
+"""
+function joint_fixed_spatial_basis(
+    times::AbstractMatrix{T}, fieldmap::AbstractVector{T},
+    bf::AbstractMatrix{T}, kspha_err::AbstractArray{T,3};
+    rank::Int, ordering::Symbol=:snapshot, parent_rank::Int=rank,
+    arrayType::Type{<:AbstractArray}=Array, seed::Int=1234,
+    chunk_size::Int=4096, snapshots::Int=256, sample_count::Int=512,
+    fit_pool_size::Int=8192, condition_limit::Real=1e4,
+) where T<:AbstractFloat
+    T in (Float32, Float64) || throw(ArgumentError("Fixed Joint requires Float32 or Float64"))
+    arrayType in (Array, CuArray) || throw(ArgumentError("Fixed Joint supports Array or CuArray"))
+    ordering in (:snapshot, :coefficient) || throw(ArgumentError("ordering must be :snapshot or :coefficient"))
+    nSam, nDyn = size(times)
+    nVox = length(fieldmap)
+    nSam > 0 && nDyn > 0 && nVox >= 4 || throw(ArgumentError("Fixed Joint requires samples, dynamics, and at least four voxels"))
+    size(bf, 1) == nVox || throw(DimensionMismatch("bf rows must match fieldmap length"))
+    size(kspha_err) == (size(bf, 2), nSam, nDyn) || throw(DimensionMismatch("residual coefficient layout"))
+    all(>(0), (rank, parent_rank, chunk_size, snapshots, sample_count, fit_pool_size)) ||
+        throw(ArgumentError("Fixed Joint budgets must be positive"))
+    rank <= parent_rank || throw(ArgumentError("rank exceeds parent_rank"))
+    ordering === :snapshot && parent_rank != rank &&
+        throw(ArgumentError("snapshot ordering requires parent_rank == rank"))
+    isfinite(condition_limit) && condition_limit >= 1 || throw(ArgumentError("condition_limit must be finite and at least one"))
+    all(isfinite, times) && all(isfinite, fieldmap) && all(isfinite, bf) && all(isfinite, kspha_err) ||
+        throw(ArgumentError("Fixed Joint phase inputs must be finite"))
+    pool_size = ordering === :snapshot ? min(8192, nVox ÷ 2) : min(fit_pool_size, nVox)
+    parent_rank <= min(length(times), pool_size, sample_count) ||
+        throw(ArgumentError("parent_rank exceeds the time or fitting budget"))
+    J = min(sample_count, pool_size)
+    temporal, spatial = joint_phase_matrices(times, fieldmap, bf, kspha_err)
+    options = (; build_seed=seed, chunk_size, fit_pool=fit_pool_size, condition_limit)
+    master = adaptive_snapshot_space(temporal, spatial, nSam, nDyn,
+        snapshots, parent_rank, options, arrayType)
+    size(master.S0, 2) == parent_rank || error("Fixed Joint parent rank is unresolved: requested $parent_rank, got $(size(master.S0, 2))")
+    stages = copy(master.stages)
+    if ordering === :coefficient
+        fitted = adaptive_fit_space(master.S0, temporal, spatial, J, options, arrayType)
+        fitted.status === :computed || error("Fixed Joint coefficient fit is ill-conditioned: $(fitted.condition)")
+        q = fitted.q[:, 1:rank]
+        S = fitted.S[:, 1:rank]
+        points = fitted.points
+        singular_values = fitted.singular_values
+        merge!(stages, fitted.stages)
+    else
+        stages["fit_map_s"] = @elapsed begin
+            order = randperm(Random.Xoshiro(seed), nVox)
+            pool = sort(order[1:pool_size])
+            points, sampled = joint_fit_points(master.S0, pool, J, seed + 4, Array)
+            fit_map = joint_fit_map(sampled)
+        end
+        device_q = nothing
+        try
+            stages["all_time_coefficients_s"] = @elapsed device_q = joint_fit_coefficients(
+                temporal, spatial, points, fit_map, chunk_size, arrayType)
+            stages["coefficient_transfer_s"] = @elapsed q = Array(device_q)
+        finally
+            joint_synchronize(arrayType)
+            joint_release!(device_q)
+        end
+        S = master.S0
+        singular_values = Float64[]
+    end
+    return (; q, S, rank, parent_rank, ordering, snapshot_indices=master.indices,
+        fit_indices=points, singular_values, stages, construction_status=:computed,
+        empirical_status=:not_evaluated, certification_status=:not_requested,
+        external_audit_status=:not_requested)
 end
 
 """
@@ -160,7 +242,6 @@ parent cap or K within the declared budgets. `rank_max` caps the parent, not
 the requested final rank. The memory estimate is approximate; `max_seconds`
 is checked between attempts, not inside a CUDA call. This setup function
 does not create NFFT plans and does not change any production default.
-The legacy name `adaptive_spatial_basis` remains an alias of this function.
 """
 function joint_adaptive_spatial_basis(
     times::AbstractMatrix{T}, fieldmap::AbstractVector{T},
@@ -195,8 +276,7 @@ function joint_adaptive_spatial_basis(
     isfinite(memory_fraction) && 0 < memory_fraction <= 1 || throw(ArgumentError("memory_fraction must lie in (0,1]"))
     all(isfinite, times) && all(isfinite, fieldmap) && all(isfinite, bf) && all(isfinite, kspha_err) ||
         throw(ArgumentError("Adaptive phase inputs must be finite"))
-    spatial = hcat(Vector{T}(fieldmap), Matrix{T}(bf))
-    temporal = hcat(vec(Matrix{T}(times)), permutedims(reshape(Array{T,3}(kspha_err), size(bf, 2), length(times))))
+    temporal, spatial = joint_phase_matrices(times, fieldmap, bf, kspha_err)
     options = (; build_seed=seed, chunk_size, hard_parent_limit=rank_max,
         snapshots, fit_points=sample_count, max_snapshots, max_fit_points=max_samples,
         fit_pool=fit_pool_size, max_attempts, max_seconds, parent_increment,
@@ -206,9 +286,6 @@ function joint_adaptive_spatial_basis(
     return adaptive_phase_factors(temporal, spatial, nSam, nDyn, epsilon_H, options;
         initial_parent, arrayType)
 end
-
-# Keep existing factor-level experiment scripts compatible with the method name.
-const adaptive_spatial_basis = joint_adaptive_spatial_basis
 
 function adaptive_internal_ranks(temporal, spatial, q, S, epsilon, options, attempt)
     nTime, nVox = size(temporal, 1), size(spatial, 1)

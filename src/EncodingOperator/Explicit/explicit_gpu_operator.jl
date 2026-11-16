@@ -46,8 +46,8 @@ end
 """
     ExplicitGPUOp(grid, kspha, times; backend=:blocked, kwargs...)
 
-Internal single-GPU implementation of `HighOrderKernelOp` resident backends.
-Use the public `HighOrderKernelOp(...; gpus=[id], backend=...)` constructor.
+Internal single-GPU implementation of `CUDAExplicitOp` resident backends.
+Use `HighOrderExplicitOp(...; implementation=:kernel, gpus=[id], backend=...)`.
 `backend=:direct` reuses the existing CUDA encoding kernels, `:blocked` builds
 one complex phase block and reuses it for both products of the weighted normal,
 and `:cached` retains the complete complex phase matrix on the GPU while
@@ -79,7 +79,7 @@ vectors must belong to the GPU selected during construction. Applications and
 # Keywords
 
 - `fieldmap`, `csm`, `mask`, `concomitant`, `recon_terms`, `k_nominal`: the same spatial
-  inputs and order-selection convention as [`HighOrderKernelOp`](@ref).
+  inputs and order-selection convention as [`HighOrderExplicitOp`](@ref).
 - `backend`: `:direct`, `:blocked` (default), `:cached`, or `:cached_full`.
 - `gpus=nothing`: use the current GPU, or pass one visible CUDA ID such as
   `gpus=[2]`. The public constructor selects the internal multi-GPU type for multiple IDs.
@@ -201,7 +201,7 @@ function explicit_direct_forward!(state::ExplicitGPUState{T}, x) where {T}
     bytes = size(state.bf, 2) * sizeof(T) + 64 * cld(threads, 32) * sizeof(T)
     for first_coil in 1:32:state.nCha
         coils = first_coil:first_coil+31
-        @cuda threads=threads blocks=state.nSam shmem=bytes CUDA_kernel_prod_HighOrderOp!(
+        @cuda threads=threads blocks=state.nSam shmem=bytes explicit_forward_kernel!(
             @view(state.signal[:, coils]), state.x, @view(state.csm[:, coils]),
             state.times, state.fieldmap, state.bf, state.kspha,
             Int32(state.nSam), Int32(32), Int32(size(state.bf, 2)), Int32(state.nVox))
@@ -215,7 +215,7 @@ function explicit_direct_adjoint!(state::ExplicitGPUState{T}) where {T}
     bytes = size(state.bf, 2) * sizeof(T) + 64 * cld(threads, 32) * sizeof(T)
     for first_coil in 1:32:state.nCha
         coils = first_coil:first_coil+31
-        @cuda threads=threads blocks=state.nVox shmem=bytes CUDA_kernel_ctprod_HighOrderOp!(
+        @cuda threads=threads blocks=state.nVox shmem=bytes explicit_adjoint_kernel!(
             state.image, @view(state.signal[:, coils]), @view(state.csm[:, coils]),
             state.times, state.fieldmap, state.bf, state.kspha,
             Int32(state.nSam), Int32(32), Int32(size(state.bf, 2)), Int32(state.nVox))
@@ -420,7 +420,7 @@ end
         weights = nothing)
 
 Create the data normal operator `Aᴴ * D * A` for a resident
-`HighOrderKernelOp` (`backend=:direct`, `:blocked`, `:cached`, or `:cached_full`), with `D = abs2.(weights)`. Raw sample weights may have one
+`CUDAExplicitOp` (`backend=:direct`, `:blocked`, `:cached`, or `:cached_full`), with `D = abs2.(weights)`. Raw sample weights may have one
 entry per sample or per sample and coil; `nothing` means unit weights.
 
 In contrast, `normalOperator(op, D)` accepts an already squared, real
@@ -446,7 +446,7 @@ function Base.close(op::ExplicitGPUOp)
 end
 
 """
-    explicit_gpu_normal(op::HighOrderKernelOp{T, F1, F2, S, O};
+    explicit_gpu_normal(op::CUDAExplicitOp{T, F1, F2, S, O};
         weights = nothing) where {T, F1, F2, S, O <: HOOp}
 
 Construct the resident wrapped operator's data normal `Aᴴ D A`, where
@@ -456,6 +456,6 @@ The result shares its parent's workspace and lifetime; regularization remains
 the solver's responsibility. `normalOperator(op, D)` instead accepts the
 already squared real nonnegative diagonal.
 """
-function explicit_gpu_normal(op::HighOrderKernelOp{T,F1,F2,S,O}; weights=nothing) where {T,F1,F2,S,O<:HOOp}
+function explicit_gpu_normal(op::CUDAExplicitOp{T,F1,F2,S,O}; weights=nothing) where {T,F1,F2,S,O<:HOOp}
     return LinearOperatorCollection.normalOperator(op, weights === nothing ? nothing : abs2.(weights))
 end

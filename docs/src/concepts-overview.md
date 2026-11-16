@@ -1,24 +1,37 @@
 # HighOrderMRI.jl overview
 
-HighOrderMRI.jl implements a field-aware MRI reconstruction framework in which the physical signal model is kept fixed while the numerical realization of the encoding operator can be changed according to the problem size and available hardware.
+The [algorithm and implementation tree](/guide/operators) separates Explicit
+from LowRank and lists their public selectors.
+
+HighOrderMRI.jl reconstructs MRI data with static off-resonance and dynamic
+higher-order phase terms. Explicit and LowRank use the same signal model,
+with different ways to evaluate its encoding operator.
 
 ```mermaid
 flowchart TD
     A["Measured k-space data"] --> G["Iterative reconstruction"]
     B["Measured or predicted dynamic fields"] --> C["Synchronization + field preprocessing"]
-    C --> D["Expanded field-aware encoding model"]
+    C --> D["Encoding with off-resonance and higher-order phase"]
 
-    D --> E1["HighOrderOp"]
-    D --> E2["HighOrderKernelOp"]
-    D --> E3["HighOrderLowRankOp"]
-
-    E1 --> G
-    E2 --> G
-    E3 --> G
-    G --> H["Reconstructed image"]
+    D --> E1["Explicit: HighOrderExplicitOp"]
+    D --> E2["LowRank: HighOrderLowRankOp"]
+    E1 --> A1["Array: CPU / GPU"]
+    E1 --> A4["CUDA acceleration"]
+    A4 --> A5["Direct kernel"]
+    A4 --> A6["GEMM and phase-reuse"]
+    E2 --> A2["Per-readout / Incremental Shared"]
+    E2 --> A3["Direct Shared: Per-readout / Global"]
+    A1 --> G
+    A5 --> G
+    A6 --> G
+    A2 --> G
+    A3 --> G
 ```
 
-The three operators therefore differ in computational strategy rather than in the target physical model: `HighOrderOp` evaluates the expanded encoding explicitly, `HighOrderKernelOp` performs the same explicit calculation with fused CUDA kernels, and `HighOrderLowRankOp` introduces a controlled approximation of the residual spatial phase term.
+The two families differ in numerical representation. Explicit selects Array,
+Direct kernel or GEMM and phase-reuse; LowRank selects Per-readout, Incremental
+Shared or Direct Shared construction. They retain the same target physical
+model, with approximation errors assessed separately.
 
 ## Core components
 
@@ -28,19 +41,24 @@ The encoding model combines Cartesian or non-Cartesian sampling, receive-coil se
 
 ### Explicit implementations
 
-`HighOrderOp` provides the array-based explicit implementation, whereas `HighOrderKernelOp` evaluates the same model using fused CUDA kernels or resident matrix backends, with supported multi-GPU execution. Agreement between these implementations assesses numerical consistency of the software pathways; it is not, by itself, an independent validation of the underlying physical model.
+`HighOrderExplicitOp` selects Array or CUDA acceleration, with
+Direct kernel and GEMM and phase-reuse in the CUDA acceleration branch. The
+selector `implementation=:kernel` retains its existing meaning.
+Its Array implementation evaluates the phase with CPU or CUDA array operations.
+Its CUDA implementation uses direct kernels or resident matrix backends, with
+supported multi-GPU execution. Agreement between these implementations assesses numerical consistency of the software pathways; it is not, by itself, an independent validation of the underlying physical model.
 
 ### Low-rank acceleration
 
-By default, `HighOrderLowRankOp` uses [Shared low-rank](/theory/low-rank):
-per-readout randomized SVD followed by incremental spatial sharing.
-[Joint adaptive low-rank](/theory/joint-adaptive-low-rank) is an opt-in
-alternative that directly builds a common snapshot parent, fits all time rows
-and selects its final rank by empirical global H residuals. Both approximate
-the residual spatial phase. The NFFT evaluates the active x/y Fourier terms
-in 2D and x/y/z terms in 3D, with its own numerical error; a 2D k_z z
-contribution remains in the residual. Their theory pages distinguish the
-conditional error bounds from construction policies and observed performance.
+`HighOrderLowRankOp` selects independent [Per-readout](/guide/per-readout)
+factors, [Incremental Shared](/guide/incremental-shared) (the existing default),
+or [Direct Shared](/guide/direct-shared). Direct Shared has Per-readout and
+Global strategies, with different coefficient orderings and rank checks.
+All approximate residual spatial phase. The NFFT evaluates active x/y Fourier
+terms in 2D and x/y/z terms in 3D; `kz*z` remains in the 2D residual. NFFT
+approximation error is separate from factor-construction error. The theory
+pages distinguish mathematical identities, empirical policies and measured
+performance.
 
 ### Validation strategy
 

@@ -69,8 +69,9 @@ end
 """
 Configuration and owned state for a low-rank reconstruction backend.
 
-Channel- and readout-distributed backends initialize on the first
-`normalOperator` request. A rank-distributed backend also initializes on the
+Channel- and readout-distributed backends, and the optional batched
+single-device backend, initialize on the first `normalOperator` request.
+A rank-distributed backend also initializes on the
 first forward or adjoint request. Before initialization, this object holds
 configuration rather than worker NFFT plans and workspaces.
 
@@ -89,8 +90,17 @@ mutable struct HighOrderNormalBackend
     weights2      :: Union{Nothing,AbstractVector}
     sample_batch_size :: Int
     primary_gpu   :: Int
+    method        :: Symbol
+    coil_batch_size :: Int
+    options       :: NamedTuple
 end
 
+HighOrderNormalBackend(distribution, gpus, verbose, operator, weights2, sample_batch_size, primary_gpu, method, coil_batch_size) =
+    HighOrderNormalBackend(distribution, gpus, verbose, operator, weights2,
+        sample_batch_size, primary_gpu, method, coil_batch_size, (;))
+HighOrderNormalBackend(distribution, gpus, verbose, operator, weights2, sample_batch_size, primary_gpu) =
+    HighOrderNormalBackend(distribution, gpus, verbose, operator, weights2,
+        sample_batch_size, primary_gpu, :standard, 8)
 HighOrderNormalBackend(distribution, gpus, verbose, operator, weights2, sample_batch_size) =
     HighOrderNormalBackend(distribution, gpus, verbose, operator, weights2, sample_batch_size,
         isempty(gpus) ? 0 : first(gpus))
@@ -112,10 +122,9 @@ concomitant terms also enter the residual. The forward phase uses
 `exp(+2π * im * phase)` and normalization `1/sqrt(nVox)`, where `nVox` is
 the number of masked voxels.
 
-Shared low-rank (`shared_basis_method=:shared_low_rank`, legacy alias
-`:rsvd`) builds local factors for each readout `i`. The default remains
-`:rsvd`. `basis_layout=:shared` incrementally merges their spatial factors;
-`:per_readout` retains independent factors from the same rSVD front end.
+Incremental Shared (`method=:incremental_shared`, the default) builds local
+factors for each readout and merges their spatial directions.
+`method=:per_readout` retains independent factors from the same rSVD front end.
 Local truncation, incremental sharing, and optional final recompression introduce distinct approximation
 errors. Incremental sharing is not a global optimal SVD of all readouts.
 
@@ -126,9 +135,9 @@ Use `close(op)` to release owned distributed resources and streaming caches.
 See [Low-rank theory](@ref LowRankTheory) for the factorization and
 [Resource ownership](@ref Resources) for reuse and cleanup.
 
-Joint adaptive low-rank (`shared_basis_method=:joint_adaptive_low_rank`,
-legacy alias `:adaptive`) selects the shared rank against global H error.
-The older `:joint` option retains its separate per-readout validation.
+Direct Shared (`method=:direct_shared`) uses `strategy=:per_readout` for
+snapshot-prefix selection with per-readout checks, or `strategy=:global`
+for all-time coefficient recompression and global H-error selection.
 """
 mutable struct HighOrderLowRankOp{
     T, F1, F2, 
@@ -216,57 +225,68 @@ end
 
 """
     HighOrderLowRankOp(
-        grid :: Grid{T} ,
-        kspha :: AbstractArray{T, 3} ,
-        times :: AbstractArray{T, 2} ;
-        fieldmap :: AbstractArray{T} = zeros(T, grid.matrixSize...) ,
-        csm :: AbstractArray{Complex{T}} = ones(Complex{T}, grid.matrixSize..., 1) ,
-        mask :: AbstractArray{Bool} = trues(grid.matrixSize...) ,
-        concomitant = nothing ,
-        recon_terms :: Union{Nothing,AbstractString} = nothing ,
-        k_nominal :: AbstractArray{T, 3} = kspha[2:4, :, :] ,
-        arrayType :: Type{<:AbstractArray} = Array ,
-        gpus :: Vector{Int} = [0] ,
-        L_rank :: Int = 15 ,
-        rsvd_seed :: Int = 1234 ,
-        rsvd_chunk :: Int = 4096 ,
-        rsvd_oversample :: Int = 5 ,
-        rsvd_finalize :: Symbol = :svd ,
-        rsvd_backend :: Symbol = :auto ,
-        rsvd_distribution :: Symbol = :auto ,
-        basis_layout :: Symbol = :shared ,
-        per_readout_storage:: Symbol = :gpu ,
-        per_readout_cache_size:: Int = 5 ,
-        per_readout_gather:: Symbol = :pipeline ,
-        per_readout_host_cache_bytes:: Int = 0 ,
-        shared_rank_max :: Int = 128 ,
-        shared_basis_tol :: T = T(1e-2) ,
-        shared_noadd_check::Bool = false ,
-        global_basis_tol :: Union{Nothing,T} = nothing ,
-        shared_basis_method:: Symbol = :rsvd ,
-        epsilon_H :: Union{Nothing,Real} = nothing ,
-        adaptive_options :: NamedTuple = (;) ,
-        joint_snapshots :: Int = 256 ,
-        joint_samples :: Int = 512 ,
-        joint_roi_tol :: Union{Nothing,T} = nothing ,
-        joint_basis_report:: Union{Nothing,Ref} = nothing ,
-        normal_distribution:: Symbol = :single ,
-        normal_sample_batch_size:: Int = 12_000_000 ,
-        nfft_center_correction :: Bool = true ,
-        verbose :: Bool = false ,
+    grid              :: Grid{T}                                                             ,
+    kspha             :: AbstractArray{T, 3}                                                 ,
+    times             :: AbstractArray{T, 2}                                                 ;
+    method            :: Symbol                    = :incremental_shared                     ,
+    strategy          :: Union{Nothing,Symbol}     = nothing                                 ,
+    fieldmap          :: AbstractArray{T}          = zeros(T, grid.matrixSize...)            ,
+    csm               :: AbstractArray{Complex{T}} = ones(Complex{T}, grid.matrixSize..., 1) ,
+    mask              :: AbstractArray{Bool}       = trues(grid.matrixSize...)               ,
+    concomitant                                    = nothing                                 ,
+    recon_terms       :: Union{Nothing,AbstractString} = nothing                            ,
+    k_nominal         :: AbstractArray{T, 3}       = kspha[2:4, :, :]                        ,
+
+    arrayType         :: Type{<:AbstractArray}     = Array                                   ,
+    gpus              :: Vector{Int}               = [0]                                     ,
+    L_rank            :: Int                       = 15                                      ,
+    rsvd_seed         :: Int                       = 1234                                    ,
+    rsvd_chunk        :: Int                       = 4096                                    ,
+    rsvd_oversample   :: Int                       = 5                                       ,
+    rsvd_finalize     :: Symbol                    = :svd                                    ,
+    rsvd_backend      :: Symbol                    = :auto                                   ,
+    rsvd_distribution :: Symbol                    = :auto                                   ,
+    per_readout_storage:: Symbol                   = :gpu                                    ,
+    per_readout_cache_size:: Int                   = 5                                       ,
+    per_readout_gather:: Symbol                    = :pipeline                               ,
+    per_readout_host_cache_bytes:: Int             = 0                                       ,
+    shared_rank_max   :: Int                       = 128                                     ,
+    shared_basis_tol  :: T                         = T(1e-2)                                 ,
+    shared_noadd_check::Bool                       = false                                   ,
+    global_basis_tol  :: Union{Nothing,T}          = nothing                                 ,
+    global_basis_rank :: Union{Nothing,Int}         = nothing                                 ,
+    global_basis_weights                            = nothing                                 ,
+    global_basis_coil_weighting :: Bool              = false                                   ,
+    shared_readout_count :: Union{Nothing,Int}       = nothing                                 ,
+    shared_fit_samples :: Union{Nothing,Int}         = nothing                                 ,
+    shared_basis_report :: Union{Nothing,Ref}        = nothing                                 ,
+    epsilon_H         :: Union{Nothing,Real}        = nothing                                 ,
+    adaptive_options  :: NamedTuple                = (;)                                     ,
+    joint_snapshots   :: Int                       = 256                                     ,
+    joint_samples     :: Int                       = 512                                     ,
+    joint_roi_tol     :: Union{Nothing,T}          = nothing                                 ,
+    joint_basis_report:: Union{Nothing,Ref}        = nothing                                 ,
+    normal_distribution:: Symbol                   = :single                                 ,
+    normal_method     :: Symbol                    = :standard                               ,
+    normal_coil_batch_size :: Int                  = 8                                       ,
+    normal_options    :: NamedTuple                = (;)                                     ,
+    normal_sample_batch_size:: Int                 = 12_000_000                              ,
+    nfft_center_correction :: Bool                 = true                                    ,
+    verbose           :: Bool                      = false                                   ,
     ) where T <: AbstractFloat
+
+Select `method=:per_readout`, `:incremental_shared` (default), or
+`:direct_shared`. Direct Shared uses `strategy=:per_readout` by default or
+`:global` with an explicit `epsilon_H`. Construction and execution options
+are independent.
 
 Construct a low-rank encoding operator for `nDyn` readouts. The defaults use
 CPU arrays, local rSVD, a shared spatial basis, and single-device execution.
 The keyword `normal_distribution` selects reconstruction execution;
 `rsvd_distribution` independently selects how the factors are built.
 
-`shared_basis_method=:shared_low_rank` names the default Shared low-rank
-front end; `:rsvd` remains its compatible default spelling.
-
-`shared_basis_method=:joint_adaptive_low_rank, epsilon_H=0.01` opts into
-experimental Joint adaptive low-rank. The legacy alias `:adaptive` remains
-supported. It builds a stable snapshot master, fits all actual
+`method=:direct_shared, strategy=:global, epsilon_H=0.01` selects
+Direct Shared Global. It builds a stable snapshot master, fits all actual
 time rows, then uses blocked QR/small SVD and paired residual checks to select
 the final shared rank. K, J and the parent cap start at 128, 512 and 32;
 only a failed check triggers bounded expansion. `shared_rank_max` remains
@@ -282,10 +302,10 @@ image-error guarantee. `joint_basis_report` receives construction, empirical,
 external-audit and certification states without retaining factor arrays.
 Budget failure fills that report and throws instead of constructing an
 operator from partial factors. Existing `shared_basis_tol` and
-`global_basis_tol` retain their old meanings; Joint adaptive low-rank requires
+`global_basis_tol` retain their old meanings; Direct Shared Global requires
 `global_basis_tol=nothing` and does not impose `joint_roi_tol`.
 
-The older `:joint` method and its `joint_*` sampling controls remain available
+The Per-readout strategy and its `joint_*` sampling controls remain available
 with their existing per-readout validation semantics.
 
 # Inputs and coordinate convention
@@ -350,7 +370,7 @@ and `1/sqrt(nVox)` are folded into `q` once.
   setup GPU. `:auto` chooses voxel distribution only with CUDA, multiple
   GPUs, kernel products, and Gram finalization. Chunked voxel setup requires
   explicit `:voxel`.
-- `basis_layout=:shared` incrementally merges the local spatial factors.
+- `method=:incremental_shared` incrementally merges the local spatial factors.
   `shared_rank_max=128` is a positive cap, clamped to
   `min(nVox,L_rank*nDyn)` for this path; exceeding it throws rather than
   silently relaxing the tolerance. `shared_basis_tol=T(1e-2)` controls the
@@ -389,7 +409,7 @@ The FP64 reduction does not make the preceding projection arithmetic FP64.
 
 # Independent factors and storage
 
-`basis_layout=:per_readout` keeps each readout's local factors independently.
+`method=:per_readout` keeps each readout's local factors independently.
 The shared-rank cap and shared tolerance do not control those factors;
 `global_basis_tol` and `shared_noadd_check=true` are unsupported here.
 
@@ -485,9 +505,9 @@ primary GPU; that wrapper does not move them automatically.
 A direct optimized `normalOperator(op,D)` instead expects real, nonnegative
 weights already representing `WᴴW`, identical for each coil. For `:channel`,
 `:readout`, or `:rank`, release the cached distributed backend before changing
-these normal weights and create a fresh view. The `:single` path has no such
-owned distributed backend. Positive semidefiniteness of the data normal alone
-does not establish the
+these normal weights and create a fresh view. Standard `:single` execution
+has no such owned backend; batched `:single` execution caches weights too.
+Positive semidefiniteness of the data normal alone does not establish the
 positive-definite conditions needed for the usual CG convergence guarantee.
 
 The parent owns distributed workers, plans, and workspaces. By default,
@@ -504,6 +524,38 @@ When replacing a large operator, close it and drop old references before
 constructing the replacement; `@rebuild_HOOp` provides this sequence for a
 plain variable. See [Resource ownership](@ref Resources) for details.
 
+Additional construction options are disabled by default. Set
+`shared_readout_count` together with `shared_fit_samples` to train the shared
+space on representative readouts and refit coefficients for **all** original
+time samples. Setting only `shared_fit_samples` uses all readouts for training.
+`shared_basis_report=Ref{Any}()` records the selections, fit condition and
+sampled phase errors. The seven-time-point selection proxy and sampled audits
+do not certify full-time coverage or image error.
+
+`global_basis_rank` selects a fixed final shared rank instead of
+`global_basis_tol`. Optional `global_basis_weights` are real nonnegative
+**D = WᴴW**, with length `nSam*nDyn`; they are not squared again.
+`global_basis_coil_weighting=true` additionally uses summed CSM energy.
+These weights define only the compression metric, not reconstruction weights.
+They use blocked FP64 Grams and the actual spatial Gram. Existing unweighted
+`global_basis_tol` calls retain their original implementation. Direct Shared methods
+reject post-validation compression and sampled rSVD options.
+
+`normal_method=:standard` preserves existing execution. Opt into `:batched`
+for shared 3D Float32 CUDA factors with the optional NonuniformFFTs backend;
+`normal_coil_batch_size` may be 2, 4 or 8 (default 8). It uses Julia CUDA
+kernels and batched cuFFT, without native CUDA binaries or VkFFT. Both
+`:single` and `:channel` distributions are supported. This changes execution,
+not factors, FFT sizes or NUFFT support. Batch size trades memory for speed.
+`normal_options=(;)` keeps Julia kernels and cuFFT. The experimental
+`normal_options=(fft=:vkfft_pruned, native_ptx=..., vkfft_library=...,
+coefficient_cache_bytes=...)` explicitly selects native/pruned execution;
+resource files must already exist. The coefficient budget is per worker and
+zero disables caching. See `deps/pruned_fft/README.md` for local build
+and validation requirements.
+The parent owns this lazy backend even in `:single` mode; `close(op)` releases
+it. Bare adjoints still apply Aᴴ, with any weighting supplied by the caller.
+
 `verbose=false` suppresses optional setup progress and diagnostic timing;
 some constructor information is still logged unconditionally. Execution cost
 and memory feasibility depend on the data, rank, backend and hardware.
@@ -512,6 +564,8 @@ function HighOrderLowRankOp(
     grid              :: Grid{T}                                                             ,
     kspha             :: AbstractArray{T, 3}                                                 , 
     times             :: AbstractArray{T, 2}                                                 ;
+    method            :: Symbol                    = :incremental_shared                     ,
+    strategy          :: Union{Nothing,Symbol}     = nothing                                 ,
     fieldmap          :: AbstractArray{T}          = zeros(T, grid.matrixSize...)            , 
     csm               :: AbstractArray{Complex{T}} = ones(Complex{T}, grid.matrixSize..., 1) , 
     mask              :: AbstractArray{Bool}       = trues(grid.matrixSize...)               ,
@@ -528,7 +582,6 @@ function HighOrderLowRankOp(
     rsvd_finalize     :: Symbol                    = :svd                                    ,
     rsvd_backend      :: Symbol                    = :auto                                   ,
     rsvd_distribution :: Symbol                    = :auto                                   ,
-    basis_layout      :: Symbol                    = :shared                                 ,
     per_readout_storage:: Symbol                   = :gpu                                    ,
     per_readout_cache_size:: Int                   = 5                                       ,
     per_readout_gather:: Symbol                    = :pipeline                               ,
@@ -537,7 +590,12 @@ function HighOrderLowRankOp(
     shared_basis_tol  :: T                         = T(1e-2)                                 , 
     shared_noadd_check::Bool                       = false                                   ,
     global_basis_tol  :: Union{Nothing,T}          = nothing                                 ,
-    shared_basis_method:: Symbol                    = :rsvd                                   ,
+    global_basis_rank :: Union{Nothing,Int}         = nothing                                 ,
+    global_basis_weights                            = nothing                                 ,
+    global_basis_coil_weighting :: Bool              = false                                   ,
+    shared_readout_count :: Union{Nothing,Int}       = nothing                                 ,
+    shared_fit_samples :: Union{Nothing,Int}         = nothing                                 ,
+    shared_basis_report :: Union{Nothing,Ref}        = nothing                                 ,
     epsilon_H         :: Union{Nothing,Real}        = nothing                                 ,
     adaptive_options  :: NamedTuple                = (;)                                     ,
     joint_snapshots   :: Int                       = 256                                     ,
@@ -545,10 +603,26 @@ function HighOrderLowRankOp(
     joint_roi_tol     :: Union{Nothing,T}          = nothing                                 ,
     joint_basis_report:: Union{Nothing,Ref}        = nothing                                 ,
     normal_distribution:: Symbol                   = :single                                 ,
+    normal_method     :: Symbol                    = :standard                               ,
+    normal_coil_batch_size :: Int                  = 8                                       ,
+    normal_options    :: NamedTuple                = (;)                                     ,
     normal_sample_batch_size:: Int                 = 12_000_000                              ,
     nfft_center_correction :: Bool                 = true                                    ,
     verbose           :: Bool                      = false                                   ,   
     ) where T <: AbstractFloat
+
+    method in (:per_readout, :incremental_shared, :direct_shared) || throw(ArgumentError(
+        "method must be :per_readout, :incremental_shared or :direct_shared"))
+    if method === :direct_shared
+        strategy = isnothing(strategy) ? :per_readout : strategy
+        strategy in (:per_readout, :global) || throw(ArgumentError(
+            "Direct Shared strategy must be :per_readout or :global"))
+    else
+        isnothing(strategy) || throw(ArgumentError("strategy requires method=:direct_shared"))
+    end
+    basis_layout = method === :per_readout ? :per_readout : :shared
+    use_joint_basis = method === :direct_shared
+    use_joint_adaptive_basis = use_joint_basis && strategy === :global
 
     nX, nY, nZ = grid.nX, grid.nY, grid.nZ
     nTerm, nSam, nDyn = size(kspha)
@@ -574,50 +648,68 @@ function HighOrderLowRankOp(
     rsvd_distribution in (:auto, :single, :voxel) || throw(ArgumentError("Unsupported rsvd_distribution=$rsvd_distribution; " * "expected :auto, :single, or :voxel"))
     normal_distribution in (:single, :channel, :readout, :rank) || throw(ArgumentError("Unsupported normal_distribution=$normal_distribution; expected :single, :channel, :readout, or :rank"))
     normal_sample_batch_size > 0 || throw(ArgumentError("normal_sample_batch_size must be positive"))
-    basis_layout in (:shared, :per_readout) || throw(ArgumentError("basis_layout must be :shared or :per_readout"))
+    normal_method in (:standard, :batched) || throw(ArgumentError("normal_method must be :standard or :batched"))
+    normal_coil_batch_size > 0 || throw(ArgumentError("normal_coil_batch_size must be positive"))
+    validate_highorder_normal_options(normal_method, normal_options)
     normal_distribution === :readout && basis_layout !== :per_readout &&
-        throw(ArgumentError("normal_distribution=:readout requires basis_layout=:per_readout"))
+        throw(ArgumentError("normal_distribution=:readout requires method=:per_readout"))
     per_readout_storage in (:gpu, :cpu, :regenerate) || throw(ArgumentError("per_readout_storage must be :gpu, :cpu, or :regenerate"))
     per_readout_host_cache_bytes >= 0 || throw(ArgumentError("per_readout_host_cache_bytes must be non-negative"))
     per_readout_cache_size > 0 || throw(ArgumentError("per_readout_cache_size must be positive"))
     per_readout_gather in (:pipeline, :synchronous) || throw(ArgumentError("per_readout_gather must be :pipeline or :synchronous"))
     if per_readout_storage in (:cpu, :regenerate)
-        basis_layout === :per_readout || throw(ArgumentError("CPU factor storage requires basis_layout=:per_readout"))
+        basis_layout === :per_readout || throw(ArgumentError("CPU factor storage requires method=:per_readout"))
         arrayType == CuArray || throw(ArgumentError("CPU factor storage with a GPU cache requires arrayType=CuArray"))
     end
-    shared_basis_method === :rsvd && (shared_basis_method = :shared_low_rank)
-    shared_basis_method === :adaptive && (shared_basis_method = :joint_adaptive_low_rank)
-    shared_basis_method in (:shared_low_rank, :joint, :joint_adaptive_low_rank) || throw(ArgumentError(
-        "shared_basis_method must be :shared_low_rank, :joint or :joint_adaptive_low_rank; legacy aliases :rsvd and :adaptive remain supported"))
-    use_joint_adaptive_basis = shared_basis_method === :joint_adaptive_low_rank
+    sampled_shared = shared_fit_samples !== nothing
+    shared_readout_count === nothing || (sampled_shared && 1 <= shared_readout_count <= nDyn) ||
+        throw(ArgumentError("shared_readout_count requires shared_fit_samples and must lie in 1:nDyn"))
+    sampled_shared && shared_fit_samples <= 0 && throw(ArgumentError("shared_fit_samples must be positive"))
+    if sampled_shared
+        method === :incremental_shared ||
+            throw(ArgumentError("sampled shared construction requires method=:incremental_shared"))
+    end
+    global_basis_rank === nothing || global_basis_rank > 0 || throw(ArgumentError("global_basis_rank must be positive"))
+    global_basis_rank !== nothing && global_basis_tol !== nothing &&
+        throw(ArgumentError("choose global_basis_rank or global_basis_tol, not both"))
+    recompress = global_basis_tol !== nothing || global_basis_rank !== nothing
+    (global_basis_weights !== nothing || global_basis_coil_weighting) && !recompress &&
+        throw(ArgumentError("compression weights require global_basis_tol or global_basis_rank"))
+    if global_basis_weights !== nothing
+        normalized_shared_weights(global_basis_weights, nSam*nDyn, "global_basis_weights")
+    end
     if use_joint_adaptive_basis
         isnothing(joint_basis_report) || (joint_basis_report[] = (
             construction_status=:not_computed, empirical_status=:not_evaluated,
             certification_status=:not_requested, external_audit_status=:not_requested,
             error_metric=:global_relative_frobenius, failure_reason=:not_completed, rank=0))
-        isnothing(epsilon_H) && throw(ArgumentError("Joint adaptive low-rank requires epsilon_H"))
+        isnothing(epsilon_H) && throw(ArgumentError("Direct Shared Global requires epsilon_H"))
         isfinite(epsilon_H) && 0 < epsilon_H < 1 || throw(ArgumentError("epsilon_H must lie in (0,1)"))
-        isnothing(joint_roi_tol) || throw(ArgumentError("Joint adaptive low-rank uses global H error, not joint_roi_tol"))
+        isnothing(joint_roi_tol) || throw(ArgumentError("Direct Shared Global uses global H error, not joint_roi_tol"))
         any(k -> k in (:epsilon_H, :arrayType, :seed, :chunk_size, :rank_max), keys(adaptive_options)) &&
             throw(ArgumentError("Use the constructor keywords for epsilon_H, arrayType, rsvd_seed, rsvd_chunk and shared_rank_max"))
     else
-        isnothing(epsilon_H) && isempty(adaptive_options) || throw(ArgumentError("epsilon_H and adaptive_options require shared_basis_method=:joint_adaptive_low_rank (legacy alias :adaptive)"))
+        isnothing(epsilon_H) && isempty(adaptive_options) || throw(ArgumentError("epsilon_H and adaptive_options require method=:direct_shared, strategy=:global"))
     end
     if basis_layout === :per_readout
-        shared_basis_method === :shared_low_rank || throw(ArgumentError("basis_layout=:per_readout requires the rSVD front end, shared_basis_method=:shared_low_rank (legacy alias :rsvd)"))
-        isnothing(global_basis_tol) || throw(ArgumentError("basis_layout=:per_readout does not support global_basis_tol"))
+        !recompress || throw(ArgumentError("method=:per_readout does not support global recompression"))
     end
     isempty(gpus) && throw(ArgumentError("gpus must contain at least one GPU id"))
     length(unique(gpus)) == length(gpus) || throw(ArgumentError("gpus contains duplicate GPU ids: $gpus"))
 
     is_gpu = arrayType == CuArray
-    use_joint_basis = shared_basis_method in (:joint, :joint_adaptive_low_rank)
     if use_joint_basis
-        isnothing(global_basis_tol) || throw(ArgumentError("shared_basis_method=$shared_basis_method requires global_basis_tol=nothing to preserve its validation"))
-        rsvd_distribution !== :voxel || throw(ArgumentError("Joint basis setup uses the primary device; use rsvd_distribution=:auto or :single"))
-        nCol <= typemax(Int32) || throw(ArgumentError("Joint operator grid indices exceed Int32"))
+        !recompress || throw(ArgumentError("method=:direct_shared does not allow post-validation global recompression"))
+        rsvd_distribution !== :voxel || throw(ArgumentError("Direct Shared setup uses the primary device; use rsvd_distribution=:auto or :single"))
+        nCol <= typemax(Int32) || throw(ArgumentError("Direct Shared grid indices exceed Int32"))
     end
     primary_gpu = first(gpus)
+    if normal_method === :batched
+        normal_coil_batch_size in (2, 4, 8) || throw(ArgumentError("normal_coil_batch_size must be 2, 4 or 8 for batched execution"))
+        is_gpu && T === Float32 && nZ > 1 && basis_layout === :shared &&
+            normal_distribution in (:single, :channel) || throw(ArgumentError(
+                "normal_method=:batched requires 3D Float32 CUDA shared factors and normal_distribution=:single or :channel"))
+    end
     if normal_distribution in (:channel, :readout, :rank)
         is_gpu || throw(ArgumentError("normal_distribution=$normal_distribution requires arrayType=CuArray"))
         length(gpus) >= 2 || throw(ArgumentError("normal_distribution=$normal_distribution requires at least two GPUs"))
@@ -628,7 +720,7 @@ function HighOrderLowRankOp(
 
     if normal_distribution === :rank
         basis_layout === :shared && (use_distributed_rsvd || use_joint_adaptive_basis) || throw(ArgumentError(
-            "normal_distribution=:rank requires shared, voxel-distributed rSVD or Joint adaptive low-rank"))
+            "normal_distribution=:rank requires shared, voxel-distributed rSVD or Direct Shared Global"))
     end
 
     if shared_noadd_check
@@ -648,7 +740,7 @@ function HighOrderLowRankOp(
     if is_gpu CUDA.device!(primary_gpu) end
     
     if verbose && use_joint_basis
-        @info("Joint shared-basis execution configuration", primary_gpu=is_gpu ? primary_gpu : nothing,
+        @info("Direct Shared execution configuration", primary_gpu=is_gpu ? primary_gpu : nothing,
             snapshots=joint_snapshots, samples=joint_samples, normal_distribution)
     elseif verbose
         @info(
@@ -755,6 +847,19 @@ function HighOrderLowRankOp(
         )
         shared_rank = joint_report.rank
         shared_errors = joint_report.audit_errors
+    elseif sampled_shared
+        q, basis, shared_errors, sampled_report = sampled_shared_spatial_basis(
+            times_host, fieldmap_host, bf_err_host, kspha_err_host;
+            arrayType, gpus, readout_count=shared_readout_count, sample_count=shared_fit_samples,
+            L_rank, rank_max=effective_shared_rank_max, tol=shared_basis_tol,
+            seed=rsvd_seed, chunk_size=rsvd_chunk, oversample=rsvd_oversample,
+            finalize=rsvd_finalize, backend=rsvd_backend, distributed=use_distributed_rsvd,
+            no_add_check=shared_noadd_check, verbose)
+        shared_rank = size(basis, 2)
+        if is_gpu CUDA.device!(primary_gpu) end
+        q = normal_distribution === :rank ? Array(q) : (q isa arrayType ? q : arrayType(q))
+        basis = normal_distribution === :rank ? Array(basis) : (basis isa arrayType ? basis : arrayType(basis))
+        isnothing(shared_basis_report) || (shared_basis_report[] = sampled_report)
     elseif use_distributed_rsvd
         q_host, basis_host, shared_rank, shared_errors = let
             distributed_workspace = DistributedRSVDWorkspace(
@@ -919,8 +1024,11 @@ function HighOrderLowRankOp(
     # Optionally rotate it using the eigensystem of qᴴq and discard weak global
     # directions.  This is an *additional* error relative to the already shared-
     # compressed representation, not an estimate of the total model error.
-    if !isnothing(global_basis_tol)
-        q, basis, global_compression = global_recompress_shared_basis(q, basis, global_basis_tol)
+    if recompress
+        coil_weights = global_basis_coil_weighting ? shared_coil_weights(csm_host) : nothing
+        q, basis, global_compression = global_recompress_shared_basis(q, basis,
+            isnothing(global_basis_tol) ? zero(T) : global_basis_tol;
+            rank=global_basis_rank, weights=global_basis_weights, coil_weights)
         shared_rank = global_compression.rank
         if verbose @info(
             "Global shared-basis recompression complete",
@@ -930,6 +1038,14 @@ function HighOrderLowRankOp(
             basis_orthogonality_error=global_compression.basis_orthogonality_error,
             global_basis_tol,
         ) end
+        if sampled_shared && shared_basis_report !== nothing
+            spatial = hcat(bf_err_host, fieldmap_host)
+            temporal = hcat(permutedims(reshape(kspha_err_host, size(bf_err_host, 2), :)), vec(times_host))
+            audit = shared_basis_phase_check(q, basis, temporal, spatial;
+                exclude_voxels=sampled_report.fit_indices)
+            shared_basis_report[] = merge(sampled_report,
+                (; compression=global_compression, compressed_phase_check=audit, rank=shared_rank))
+        end
     end
 
     if is_gpu CUDA.device!(primary_gpu) end
@@ -1004,6 +1120,9 @@ function HighOrderLowRankOp(
         similar(q, Complex{T}, nVox),
     )
     normal_backend = HighOrderNormalBackend(normal_distribution, copy(gpus), verbose, nothing, nothing)
+    normal_backend.method = normal_method
+    normal_backend.coil_batch_size = normal_coil_batch_size
+    normal_backend.options = normal_options
 
     Mv = Mtu = arrayType(Vector{Complex{T}}(undef, 0))  
     return HighOrderLowRankOp{T, Nothing, typeof(ctprod!), typeof(nfftplan), typeof(q), typeof(basis), typeof(csm), typeof(workspace), typeof(Mv)}(

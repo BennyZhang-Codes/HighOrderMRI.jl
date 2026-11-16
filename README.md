@@ -9,20 +9,30 @@ HighOrderMRI.jl is a Julia toolbox for MRI reconstruction with measured or
 predicted dynamic higher-order fields. It builds on the higher-order
 reconstruction module originally developed in
 [DataStitching](https://github.com/BennyZhang-Codes/DataStitching), a toolbox for
-dynamic field monitoring with NMR probes. It provides explicit encoding operators
-for numerical reference and a matrix-free shared-subspace operator for large
-2D and 3D reconstruction.
+dynamic field monitoring with NMR probes. It provides Explicit and LowRank
+encoding operators for 2D and 3D MRI reconstruction with simultaneous
+off-resonance and higher-order phase correction.
 
 ## Features
+
+```text
+Explicit — HighOrderExplicitOp
+├── Array (CPU / GPU)
+└── CUDA acceleration
+    ├── Direct kernel
+    └── GEMM and phase-reuse
+
+LowRank — HighOrderLowRankOp
+├── Per-readout
+├── Incremental Shared (default)
+└── Direct Shared
+    ├── Per-readout strategy
+    └── Global strategy
+```
 
 - Expanded signal encoding with real solid-harmonic terms through third order
   and optional concomitant-field phase terms.
 - 2D and 3D parallel imaging with static off-resonance correction.
-- `HighOrderOp`: array-based explicit evaluation on CPU or CUDA.
-- `HighOrderKernelOp`: explicit CUDA kernels, GPU-resident cuBLAS backends,
-  and optional phase caching.
-- `HighOrderLowRankOp`: matrix-free residual-phase approximation with shared
-  or per-readout spatial bases and NFFT-based Fourier encoding.
 - Single- and multi-GPU CUDA execution for explicit and low-rank operators,
   including distributed low-rank factor construction.
 - Global SVD coil compression with optional receive-noise prewhitening,
@@ -33,13 +43,19 @@ for numerical reference and a matrix-free shared-subspace operator for large
 - Model-based field/data synchronization for 2D acquisitions
   ([Dubovan and Baron, 2023](https://doi.org/10.1002/mrm.29460)).
 
+Execution optimizations remain opt-in.
+
+See the [algorithm overview](docs/src/guide/operators.md),
+[Explicit implementations](docs/src/guide/explicit.md), and
+[LowRank methods](docs/src/guide/low-rank.md) for selection, parameters,
+and execution. The [documentation site](https://bennyzhang-codes.github.io/HighOrderMRI.jl/dev/)
+provides the complete guide and API reference.
+
 ## How to Cite
 
 If you use this package, please cite the original
 [DataStitching](https://github.com/BennyZhang-Codes/DataStitching) paper and the
 high-order MRI workshop abstract below.
-
-### Plain Text
 
 Zhang J, Zhang Z, Zuo Z, Xue R, Zhuo Y, Cushing C, Bratch A, Auerbach E,
 Grant A, An J, Ugurbil K, Wu X. Data stitching for dynamic field monitoring

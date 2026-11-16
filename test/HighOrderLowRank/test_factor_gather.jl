@@ -61,7 +61,7 @@
                 common = (;fieldmap=problem.fieldmap, csm=problem.csm, mask=problem.mask,
                     arrayType=CuArray, gpus=gpu_ids, L_rank=2, rsvd_oversample=2,
                     rsvd_seed=2026, rsvd_finalize=:gram, rsvd_backend=:kernel,
-                    rsvd_distribution=:voxel, basis_layout=:per_readout,
+                    rsvd_distribution=:voxel, method=:per_readout,
                     per_readout_storage=:cpu)
                 synchronous = HighOrderLowRankOp(problem.grid,problem.kspha,problem.times;
                     common...,per_readout_gather=:synchronous)

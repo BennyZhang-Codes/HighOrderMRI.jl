@@ -406,6 +406,24 @@ end
         @test report["content_pages"] == 3 && report["html_pages"] == 4
         @test report["api_bindings"] == 1 && report["additional_export_dispositions"] == 1
         @test report["math_expressions"] == 1
+        issue = Dict("binding" => "unimplemented_api", "disposition" => "known_issue", "issue" => "PG-fixture")
+        push!(mapping["exports"], issue)
+        save_mapping() = open(io -> PT.TOML.print(io, mapping), joinpath(docs, "api-map.toml"), "w")
+        save_mapping()
+        @test isempty(PT.check_site(docs, dist)["errors"])
+        for bad in (Dict("binding" => "unimplemented_api", "disposition" => "known_issue"),
+                    Dict("binding" => "unimplemented_api", "disposition" => "documented", "issue" => "PG-fixture"))
+            mapping["exports"][end] = bad
+            save_mapping()
+            @test any(error -> error["reason"] == "export disposition requires a page or a recorded issue",
+                      PT.check_site(docs, dist)["errors"])
+        end
+        mapping["exports"][end] = merge(issue, Dict("page" => "reference/exports.md"))
+        save_mapping()
+        @test any(error -> error["reason"] == "export disposition has no visible binding name",
+                  PT.check_site(docs, dist)["errors"])
+        pop!(mapping["exports"])
+        save_mapping()
         for bad in [replace(op, "#L12" => "#L99"), replace(op, "<h1" => "<p id=\"op\">duplicate</p><h1"),
                     replace(op, "/edit/dev_jinyuan/" => "/edit/main/")]
             write(joinpath(dist, "reference", "op.html"), bad)

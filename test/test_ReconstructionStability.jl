@@ -38,8 +38,8 @@ end
         end
         times = collect(range(zero(T), T(1e-3); length=nSam))
         csm = cis.(rand(rng, T, 3, 3, 1, nCha)) ./ sqrt(T(nCha))
-        op = arrayType === Array ? HighOrderOp(grid, kspha, times; csm, arrayType) :
-            HighOrderKernelOp(grid, kspha, times; csm, backend=:blocked,
+        op = arrayType === Array ? HighOrderExplicitOp(grid, kspha, times; csm, arrayType) :
+            HighOrderExplicitOp(grid, kspha, times; implementation=:kernel, csm, backend=:blocked,
                 gpus=[Int(HighOrderMRI.CUDA.deviceid(HighOrderMRI.CUDA.device()))])
         params = Dict{Symbol,Any}(
             :solver => HighOrderMRI.CGNR,
@@ -63,7 +63,7 @@ end
             @test Array(data) == data_host
             @test Array(weight) == weight_host
         finally
-            op isa HighOrderKernelOp && close(op)
+            op isa HighOrderExplicitOp && close(op)
         end
     end
     check_raw_sample_weights(Array, Float32)

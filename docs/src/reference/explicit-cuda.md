@@ -1,4 +1,6 @@
-# `HighOrderKernelOp`
+# Explicit: CUDA options
+
+Select `implementation=:kernel` with [`HighOrderExplicitOp`](/reference/highorderexplicitop).
 
 Use this constructor for explicit CUDA encoding. Legacy mode partitions voxels
 and keeps solver vectors on the host. Resident modes partition sample rows
@@ -15,7 +17,7 @@ and keep solver vectors on the primary GPU. Read the
 
 Both full-cache modes initialize the matrix in blocks. For `ComplexF32`, the full matrix alone requires `8 * nSam * count(mask)` bytes per single-GPU problem. Include phase scratch, CSM, coil images, solver vectors, data, and library workspaces. A two-dimensional dataset does not necessarily fit.
 
-For resident multi-GPU backends, each device stores all masked voxels and coils but only its contiguous sample range. Phase-cache feasibility must hold on each device. The resident implementation types are internal; use `HighOrderKernelOp(...; gpus=...)` for every backend.
+For resident multi-GPU backends, each device stores all masked voxels and coils but only its contiguous sample range. Phase-cache feasibility must hold on each device. The resident implementation types are internal; use `HighOrderExplicitOp(...; implementation=:kernel, gpus=...)` for every backend.
 
 ## Partial phase caching
 
@@ -82,7 +84,7 @@ grid = Grid(8, 8, 1, 1f-3, 1f-3, 5f-3)
 kspha = zeros(Float32, 9, 32)
 kspha[2, :] .= range(-200f0, 200f0; length=32)
 times = collect(range(0f0, 3f-3; length=32))
-op = HighOrderKernelOp(grid, kspha, times;
+op = HighOrderExplicitOp(grid, kspha, times; implementation=:kernel,
     gpus=[0], backend=:blocked, block_size=16, phase_cache_bytes=0)
 image = try
     x = CUDA.ones(ComplexF32, prod(grid.matrixSize))
@@ -100,9 +102,34 @@ exceed its fixed CUDA launch's register budget. The resident direct Float64
 cap does not apply to that legacy path. Derivative mode remains forward-only
 in the sense explained in the generated constructor reference.
 
-## Constructor API
 
-<!--@include: ../../.generated/api/highorderkernelop.md-->
+## Keyword defaults
+
+These keywords are forwarded by `HighOrderExplicitOp` for this implementation.
+
+| Keyword | Default |
+|:--|:--|
+| `fieldmap` | `zeros(T, grid.matrixSize...)` |
+| `csm` | `ones(Complex{T}, grid.matrixSize..., 1)` |
+| `mask` | `trues(grid.matrixSize...)` |
+| `concomitant` | `nothing` |
+| `recon_terms` | `nothing` |
+| `k_nominal` | `kspha[2:4, :]` |
+| `kspha_dt` | `nothing` |
+| `nBlock` | `50` |
+| `arrayType` | `CuArray` |
+| `gpus` | `[0]` |
+| `backend` | `:legacy` |
+| `block_size` | `320` |
+| `phase_backend` | `:kernel` |
+| `gemm_backend` | `:cublas` |
+| `phase_cache_bytes` | `0` |
+| `forward_threads` | `256` |
+| `adjoint_threads` | `512` |
+| `verbose` | `false` |
+
+
+
 
 ## Weighted normal API
 

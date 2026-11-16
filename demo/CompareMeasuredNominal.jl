@@ -15,7 +15,7 @@ idxs           = collect(1:length(labelMeasured));
 for (idx, label, recon, kdata, weight, b0) in zip(idxs, labelMeasured, recons, kdatas, weights, b0s)
     @info "[$(idx)] $(label) $(recon)"
 
-    @CUDA.time HOOpKernel = HighOrderKernelOp(gridding, T.(ksphaMeasured'), T.(datatime);
+    @CUDA.time HOOpKernel = HighOrderExplicitOp(gridding, T.(ksphaMeasured'), T.(datatime); implementation=:kernel,
         recon_terms=recon, 
         csm=Complex{T}.(csm), 
         fieldmap=T.(b0), 
@@ -43,7 +43,7 @@ imgNominal    = Array{Complex{T},3}(undef, nX, nY, length(labelNominal));
 idxs           = collect(1:length(labelNominal));
 for (idx, label, recon, kdata, weight, b0) in zip(idxs, labelNominal, recons, kdatas, weights, b0s)
     @info "[$(idx)] $(label) $(recon)"
-    @CUDA.time HOOpKernel = HighOrderKernelOp(gridding, T.(ksphaNominal'), T.(datatime);
+    @CUDA.time HOOpKernel = HighOrderExplicitOp(gridding, T.(ksphaNominal'), T.(datatime); implementation=:kernel,
         recon_terms=recon, 
         csm=Complex{T}.(csm), 
         fieldmap=T.(b0), 

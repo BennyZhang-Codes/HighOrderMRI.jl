@@ -55,7 +55,7 @@ All real-valued inputs share `T<:AbstractFloat`; `data` and `csm` use `Complex{T
 - `data::AbstractArray{Complex{T},2}`: MRI samples, shaped `(nSample, nCha)`.
 - `kspha::AbstractArray{T,2}`: time-integrated field coefficients, shaped
   `(nFieldSample, nTerm)`, with `nTerm` equal to 9 or 16. Use the solid-harmonic
-  order and cycles-based phase units expected by `HighOrderOp`.
+  order and cycles-based phase units expected by `HighOrderExplicitOp`.
 - `datatime::AbstractVector{T}`: `nSample` ADC times, in seconds. This vector
   may have a different sampling interval from the field coefficients.
 - `StartTime::T`: offset subtracted from the field-coefficient time grid,
@@ -81,12 +81,12 @@ and the first ADC time is zero in the chosen time reference.
   static off-resonance map in Hz, shaped `(nX, nY)`.
 - `csm::Array{Complex{T},3}=ones(Complex{T},(gridding.nX, gridding.nY)..., 1)`:
   coil-sensitivity maps, shaped `(nX, nY, nCha)`.
-- `recon_terms::String="111"`: order-selection string passed to `HighOrderOp`.
+- `recon_terms::String="111"`: order-selection string passed to `HighOrderExplicitOp`.
   Use three digits for 9 coefficient columns and four digits for 16 columns.
 - `nBlock::Int64=50`: trajectory block count passed to the explicit operators
   to bound temporary storage.
 - `arrayType::Type{<:AbstractArray}=Array`: operator backend passed to
-  `HighOrderOp`. The default uses the CPU. This wrapper creates density weights
+  `HighOrderExplicitOp`. The default uses the CPU. This wrapper creates density weights
   on the CPU; changing this keyword alone is not an end-to-end GPU setup.
 - `solver::Type{<:AbstractLinearSolver}=CGNR`: inner reconstruction solver
   type from `RegularizedLeastSquares`, rather than a solver-name string.
@@ -128,7 +128,7 @@ The iteration log currently prints `Δτ/dt` and `τ/dt` with the label `[us]`.
 Those ratios are dimensionless sample offsets, not microseconds. Interpret
 the returned value using the input time unit rather than that log label.
 
-See also `InterpTrajTime`, `FindDelay_multishot`, `HighOrderOp`, and `recon_HOOp`.
+See also `InterpTrajTime`, `FindDelay_multishot`, `HighOrderExplicitOp`, and `recon_HOOp`.
 
 # Reference
 
@@ -185,9 +185,9 @@ function FindDelay(
         kspha_dt_τ = T.(InterpTrajTime(kspha_dt, dt, τ + StartTime, datatime, intermode=intermode)[1:nSample,:]');
         
         weight = samplingDensity(kspha_τ[2:3,:], (gridding.nX, gridding.nY));
-        HOOp    = HighOrderOp(gridding, kspha_τ, datatime; recon_terms=recon_terms, 
+        HOOp    = HighOrderExplicitOp(gridding, kspha_τ, datatime; recon_terms=recon_terms,
                     nBlock=nBlock, csm=csm, fieldmap=fieldmap, arrayType=arrayType, verbose=verbose);
-        HOOp_dt = HighOrderOp(gridding, kspha_τ, datatime; recon_terms=recon_terms, kspha_dt=kspha_dt_τ, 
+        HOOp_dt = HighOrderExplicitOp(gridding, kspha_τ, datatime; recon_terms=recon_terms, kspha_dt=kspha_dt_τ,
                     nBlock=nBlock, csm=csm, fieldmap=fieldmap, arrayType=arrayType, verbose=verbose);
         
         # Update image
