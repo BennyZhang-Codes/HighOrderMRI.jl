@@ -99,7 +99,7 @@ end
             original = copy(concomitant)
             common = (; fieldmap=data.fieldmap, csm=data.csm, mask=data.mask)
             reference = concomitant_dense_encoding(data)
-            op = HighOrderOp(data.grid, kspha, times;
+            op = HighOrderExplicitOp(data.grid, kspha, times;
                 common..., concomitant, arrayType=Array, nBlock=3)
             tolerance = T === Float64 ? 1e-11 : 1e-5
             @test norm(op * data.image - reference * data.image) / norm(reference * data.image) < tolerance
@@ -109,28 +109,28 @@ end
             for term = 1:4
                 isolated = zeros(T, size(data.concomitant))
                 isolated[term, :, :] .= data.concomitant[term, :, :]
-                op = HighOrderOp(data.grid, kspha, times;
+                op = HighOrderExplicitOp(data.grid, kspha, times;
                     common..., concomitant=reshape(isolated, 4, :), arrayType=Array)
                 reference = concomitant_dense_encoding(data, isolated)
                 @test norm(op * data.image - reference * data.image) / norm(reference * data.image) < tolerance
             end
-            default = HighOrderOp(data.grid, kspha, times; common..., arrayType=Array)
-            absent = HighOrderOp(data.grid, kspha, times; common..., concomitant=nothing, arrayType=Array)
+            default = HighOrderExplicitOp(data.grid, kspha, times; common..., arrayType=Array)
+            absent = HighOrderExplicitOp(data.grid, kspha, times; common..., concomitant=nothing, arrayType=Array)
             @test default * data.image == absent * data.image
-            @test_throws DimensionMismatch HighOrderOp(data.grid, kspha, times;
+            @test_throws DimensionMismatch HighOrderExplicitOp(data.grid, kspha, times;
                 common..., concomitant=concomitant[1:3, :], arrayType=Array)
-            @test_throws ArgumentError HighOrderOp(data.grid, kspha, times;
+            @test_throws ArgumentError HighOrderExplicitOp(data.grid, kspha, times;
                 common..., concomitant=complex.(concomitant), arrayType=Array)
-            derivative = HighOrderOp(data.grid, kspha, times;
+            derivative = HighOrderExplicitOp(data.grid, kspha, times;
                 common..., kspha_dt=kspha, arrayType=Array)
-            derivative_c = HighOrderOp(data.grid, kspha, times;
+            derivative_c = HighOrderExplicitOp(data.grid, kspha, times;
                 common..., concomitant, kspha_dt=kspha, arrayType=Array)
             @test derivative * data.image == derivative_c * data.image
             @test derivative' * data.signal == derivative_c' * data.signal
 
             flags = repeat("0", nTerm == 9 ? 3 : 4)
             selected = merge(data, (; kspha=zero(data.kspha)))
-            op = HighOrderOp(data.grid, kspha, times;
+            op = HighOrderExplicitOp(data.grid, kspha, times;
                 common..., concomitant, recon_terms=flags,
                 k_nominal=zeros(T, 3, length(times)), arrayType=Array)
             reference = concomitant_dense_encoding(selected)
@@ -140,7 +140,7 @@ end
                 rsvd_backend=:chunked, shared_rank_max=2nSam, shared_basis_tol=T(1e-10))
             for layout in (:shared, :per_readout), finalize in (:svd, :gram)
                 op = HighOrderLowRankOp(data.grid, data.kspha, data.times;
-                    lowrank..., basis_layout=layout, rsvd_finalize=finalize, concomitant=data.concomitant)
+                    lowrank..., method=(layout === :shared ? :incremental_shared : :per_readout), rsvd_finalize=finalize, concomitant=data.concomitant)
                 reference = concomitant_nfft_reference(data, op)
                 forward, backward = op * data.image, op' * data.signal
                 tolerance = T === Float64 ? 1e-9 : 2e-4
@@ -199,7 +199,7 @@ end
                 concomitant=data.concomitant[:, 1:2, :]))
             op = HighOrderLowRankOp(data.grid, data.kspha, data.times;
                 fieldmap=data.fieldmap, csm=data.csm, mask=data.mask, concomitant=data.concomitant,
-                shared_basis_method=:joint, shared_rank_max=4, shared_basis_tol=1e-8,
+                method=:direct_shared, strategy=:per_readout, shared_rank_max=4, shared_basis_tol=1e-8,
                 joint_snapshots=4, joint_samples=16)
             reference = concomitant_nfft_reference(data, op)
             @test norm(op * data.image - reference * data.image) / norm(reference * data.image) < 1e-8
@@ -224,7 +224,7 @@ end
                 kspha = reshape(data.kspha, 16, :)
                 times = vec(data.times)
                 common = (; fieldmap=data.fieldmap, csm=data.csm, mask=data.mask)
-                op = HighOrderKernelOp(data.grid, kspha, times;
+                op = HighOrderExplicitOp(data.grid, kspha, times; implementation=:kernel,
                     common..., concomitant=reshape(data.concomitant, 4, :), gpus=[gpu_id])
                 reference = concomitant_dense_encoding(data)
                 @test norm(op * data.image - reference * data.image) / norm(reference * data.image) < 3e-5
@@ -233,7 +233,7 @@ end
                     x, y = CuArray(data.image), CuArray(data.signal)
                     D = Float32.(range(0.2, 1.1; length=length(y)))
                     for backend in (:direct, :blocked, :cached, :cached_full), phase_backend in (:kernel, :gemm)
-                        resident = HighOrderKernelOp(data.grid, kspha, times;
+                        resident = HighOrderExplicitOp(data.grid, kspha, times; implementation=:kernel,
                             common..., concomitant=reshape(data.concomitant, 4, :),
                             gpus=[gpu_id], backend, phase_backend, block_size=5)
                         try
@@ -246,9 +246,9 @@ end
                             close(resident)
                         end
                     end
-                    absent = HighOrderKernelOp(data.grid, kspha, times;
+                    absent = HighOrderExplicitOp(data.grid, kspha, times; implementation=:kernel,
                         common..., gpus=[gpu_id], backend=:blocked)
-                    zeroed = HighOrderKernelOp(data.grid, kspha, times;
+                    zeroed = HighOrderExplicitOp(data.grid, kspha, times; implementation=:kernel,
                         common..., gpus=[gpu_id], backend=:blocked, concomitant=zeros(Float32, 4, length(times)))
                     try
                         @test Array(absent*x) ≈ Array(zeroed*x) rtol=3e-5
@@ -283,9 +283,9 @@ end
                         end
                     end
                 end
-                derivative = HighOrderKernelOp(data.grid, kspha, times;
+                derivative = HighOrderExplicitOp(data.grid, kspha, times; implementation=:kernel,
                     common..., kspha_dt=kspha, gpus=[gpu_id])
-                derivative_c = HighOrderKernelOp(data.grid, kspha, times;
+                derivative_c = HighOrderExplicitOp(data.grid, kspha, times; implementation=:kernel,
                     common..., kspha_dt=kspha, concomitant=reshape(data.concomitant, 4, :), gpus=[gpu_id])
                 @test derivative * data.image == derivative_c * data.image
                 @test derivative' * data.signal == derivative_c' * data.signal
@@ -294,11 +294,11 @@ end
                 for layout in (:shared, :per_readout)
                     cpu = HighOrderLowRankOp(data.grid, data.kspha, data.times;
                         fieldmap=data.fieldmap, csm=data.csm, mask=data.mask, concomitant=data.concomitant,
-                        L_rank=6, rsvd_oversample=0, basis_layout=layout,
+                        L_rank=6, rsvd_oversample=0, method=(layout === :shared ? :incremental_shared : :per_readout),
                         shared_rank_max=12, shared_basis_tol=0f0)
                     gpu = HighOrderLowRankOp(data.grid, data.kspha, data.times;
                         fieldmap=data.fieldmap, csm=data.csm, mask=data.mask, concomitant=data.concomitant,
-                        L_rank=6, rsvd_oversample=0, basis_layout=layout,
+                        L_rank=6, rsvd_oversample=0, method=(layout === :shared ? :incremental_shared : :per_readout),
                         shared_rank_max=12, shared_basis_tol=0f0,
                         arrayType=CuArray, gpus=[gpu_id], rsvd_backend=:kernel, rsvd_finalize=:gram)
                     @test norm(Array(gpu * CuArray(data.image)) - cpu * data.image) / norm(cpu * data.image) < 2e-3

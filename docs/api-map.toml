@@ -71,58 +71,32 @@ anchor = "api-basisfunc-spha-vector"
 argument_types = ["AbstractVector{T}", "AbstractVector{T}", "AbstractVector{T}", "Int64"]
 
 [[api]]
-id = "highorderop"
-binding = "HighOrderOp"
+id = "highorderexplicitop"
+binding = "HighOrderExplicitOp"
 module = "HighOrderMRI"
-page = "reference/highorderop.md"
-anchor = "api-highorderop"
+page = "reference/highorderexplicitop.md"
+anchor = "api-highorderexplicitop"
 status = "approved"
-fragment = "highorderop.md"
-original_documenter = true
+fragment = "highorderexplicitop.md"
+source_files = ["src/EncodingOperator/HighOrderExplicitOp.jl"]
+original_documenter = false
 
 [[api.parts]]
 kind = "type"
-title = "Type"
-anchor = "api-highorderop-type"
+title = "Explicit operator family"
+anchor = "api-highorderexplicitop-type"
 
 [[api.parts]]
 kind = "method"
-title = "Constructor"
-anchor = "api-highorderop-constructor"
-argument_types = ["Grid{T}", "AbstractArray{T,2}", "AbstractVector{T}"]
-
-[[api]]
-id = "highorderkernelop"
-binding = "HighOrderKernelOp"
-module = "HighOrderMRI"
-page = "reference/highorderkernelop.md"
-anchor = "api-highorderkernelop"
-status = "approved"
-fragment = "highorderkernelop.md"
-original_documenter = true
-
-[[api.parts]]
-kind = "type"
-title = "Type"
-anchor = "api-highorderkernelop-type"
-
-[[api.parts]]
-kind = "method"
-title = "Grid and trajectory constructor"
-anchor = "api-highorderkernelop-constructor"
-argument_types = ["Grid{T}", "AbstractArray{T,2}", "AbstractVector{T}"]
-
-[[api.parts]]
-kind = "method"
-title = "Internal operator adapter"
-anchor = "api-highorderkernelop-adapter"
-argument_types = ["HOOp{T}"]
+title = "Explicit family constructor"
+anchor = "api-highorderexplicitop-constructor"
+argument_types = ["Grid{T}", "AbstractMatrix{T}", "AbstractVector{T}"]
 
 [[api]]
 id = "explicit-gpu-normal"
 binding = "explicit_gpu_normal"
 module = "HighOrderMRI"
-page = "reference/highorderkernelop.md"
+page = "reference/explicit-cuda.md"
 anchor = "api-explicit-gpu-normal"
 status = "approved"
 fragment = "explicit-gpu-normal.md"
@@ -132,7 +106,7 @@ original_documenter = true
 kind = "method"
 title = "Resident public wrapper"
 anchor = "api-explicit-gpu-normal-public"
-argument_types = ["HighOrderKernelOp{T,F1,F2,S,O}"]
+argument_types = ["CUDAExplicitOp{T,F1,F2,S,O}"]
 
 [[api.parts]]
 kind = "method"

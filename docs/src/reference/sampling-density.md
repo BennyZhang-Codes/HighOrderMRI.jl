@@ -1,7 +1,8 @@
 # `samplingDensity`
 
 This trajectory-only helper estimates square-root density weights for the
-weighted least-squares wrapper. It is not a coil-aware or field-aware inverse.
+weighted least-squares wrapper. Coil maps and higher-order fields do not
+enter this trajectory-based estimate.
 Supply trajectory coordinates in dimension-by-sample order; all-zero inputs
 are outside the usable normalization domain.
 

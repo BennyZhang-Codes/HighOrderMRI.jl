@@ -14,7 +14,7 @@
                     arrayType=CuArray, gpus=gpu_ids, L_rank=2, rsvd_oversample=2,
                     rsvd_seed=2026, rsvd_finalize=:gram, rsvd_backend=:kernel,
                     rsvd_distribution=:voxel, normal_distribution=:channel,
-                    basis_layout=:per_readout)
+                    method=:per_readout)
                 resident = HighOrderLowRankOp(data.grid, data.kspha, data.times; common...)
                 x = CuArray(data.x)
                 y = CUDA.randn(ComplexF32, size(resident,1))
@@ -79,7 +79,7 @@
                         arrayType=CuArray, gpus=[first(gpu_ids)], L_rank=2,
                         rsvd_oversample=2, rsvd_seed=2026, rsvd_finalize=finalize,
                         rsvd_backend=:kernel, rsvd_distribution=:single,
-                        basis_layout=:per_readout)
+                        method=:per_readout)
                     resident = HighOrderLowRankOp(data.grid,data.kspha,data.times;common...)
                     staged = HighOrderLowRankOp(data.grid,data.kspha,data.times;common...,
                         per_readout_storage=:cpu,per_readout_cache_size=2)

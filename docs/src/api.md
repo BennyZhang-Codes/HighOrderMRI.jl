@@ -1,16 +1,19 @@
 # API reference
 
-The API reference is organized as a set of short pages, following the same separation used by established Julia MRI documentation: each page focuses on one public type, constructor, or closely related function family. Scientific derivations and validation requirements remain in the [Theory](/theory/encoding-model) and [Guide](/guide/operators) sections.
+Each reference page covers a public type, constructor, or related function
+group. The [Theory](/theory/encoding-model) pages explain the equations;
+the [Guide](/guide/operators) pages describe configuration and use.
 
 <!--@include: ../.generated/api/highordermri.md-->
 
 ## Encoding model and operators
 
 - [`Grid` and `basisfunc_spha`](/reference/grid-basis): physical reconstruction grid and real solid-harmonic basis evaluation.
-- [`HighOrderOp`](/reference/highorderop): array-based explicit field-aware encoding.
-- [`HighOrderKernelOp`](/reference/highorderkernelop): legacy/direct CUDA kernels and resident blocked/cached cuBLAS, with `gpus` selecting single- or multi-GPU execution.
-- [`explicit_gpu_normal`](/reference/highorderkernelop#weighted-normal): resident weighted normal from raw square-root weights; distinct from `normalOperator(op,D)` with an already squared diagonal.
-- [`HighOrderLowRankOp`](/reference/highorderlowrankop): low-rank residual-phase representation with shared or independent per-readout factors, including bounded streaming/regeneration and rank-sharded multi-GPU execution.
+- [`HighOrderExplicitOp`](/reference/highorderexplicitop): Explicit family selector for Array or CUDA acceleration.
+- [Explicit Array options](/reference/explicit-array): array-based explicit encoding.
+- [Explicit CUDA options](/reference/explicit-cuda): Direct kernel and GEMM and phase-reuse with blocked/cached cuBLAS, with `gpus` selecting single- or multi-GPU execution.
+- [`explicit_gpu_normal`](/reference/explicit-cuda#weighted-normal): resident weighted normal from raw square-root weights; distinct from `normalOperator(op,D)` with an already squared diagonal.
+- [`HighOrderLowRankOp`](/reference/highorderlowrankop): Per-readout, Incremental Shared and Direct Shared residual-phase construction, including bounded streaming/regeneration and rank-sharded multi-GPU execution.
 
 ## Reconstruction
 

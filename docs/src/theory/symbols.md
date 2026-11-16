@@ -7,7 +7,7 @@ pseudoinverse. $\|M\|_F$ is the Frobenius norm, $\|M\|_2$ the matrix
 spectral norm, and $\|x\|_2$ the Euclidean vector norm. The Frobenius inner
 product is $\langle M_1,M_2\rangle_F=\operatorname{tr}(M_1^HM_2)$.
 
-The readouts indexed by $i$ encode one unknown image. The Shared low-rank notation below distinguishes the completed incremental representation (superscript $(0)$ and rank $R_0$) from the final representation after optional recompression (rank $R$). Joint adaptive low-rank uses a snapshot parent $Q_0$ of width $r_0$; this is distinct from either $R_0$ or the local randomized range $Q_i$.
+The readouts indexed by $i$ encode one unknown image. The Incremental Shared notation below distinguishes the completed incremental representation (superscript $(0)$ and rank $R_0$) from the final representation after optional recompression (rank $R$). Direct Shared (Global strategy) uses a snapshot parent $Q_0$ of width $r_0$; this is distinct from either $R_0$ or the local randomized range $Q_i$.
 
 ## Indices and sizes
 
@@ -78,6 +78,7 @@ In the implementation, the time-integrated coefficients $k_{\ell,i}(t)$ are stor
 | $A_c$ | Encoding operator for coil $c$, including mask support and normalization | $(N_tN_{\mathrm{ro}})\times N_{\mathrm{grid}}$ |
 | $A$ | Multi-coil encoding operator, with profile blocks stacked within each coil | $(N_tN_{\mathrm{ro}}N_c)\times N_{\mathrm{grid}}$ |
 | $W$ | Diagonal operator of raw reconstruction weights, repeated over coils by `recon_HOOp` | $(N_tN_{\mathrm{ro}}N_c)\times(N_tN_{\mathrm{ro}}N_c)$ |
+| $W_c$ | Coil $c$'s diagonal block of $W$; identical across coils in `recon_HOOp` | $N\times N$ |
 | $D=W^H W$ | Nonnegative diagonal normal weights, with entries $|w|^2$ for raw weight $w$ | same as $W$ |
 
 The weighted normal operator is written
@@ -93,7 +94,7 @@ features are real and their temporal/spatial products are in cycles.
 
 For real non-negative square-root density weights, $W^H W=W^2$. For complex raw weights use $W^H W$, whose diagonal is `abs2.(weight)`.
 
-`recon_HOOp` applies the raw weights to both the data and $A$; pass the raw weights once. The lower-level `normalOperator(op, weights2)` convention instead expects the already squared real nonnegative diagonal entries of $D$. See [reconstruction weights](/reference/recon-hoop) and the [weighted-normal API](/reference/highorderkernelop#weighted-normal) for the relevant call conventions. The data normal excludes any regularization term chosen by the solver.
+`recon_HOOp` applies the raw weights to both the data and $A$; pass the raw weights once. The lower-level `normalOperator(op, weights2)` convention instead expects the already squared real nonnegative diagonal entries of $D$. See [reconstruction weights](/reference/recon-hoop) and the [weighted-normal API](/reference/explicit-cuda#weighted-normal) for the relevant call conventions. The data normal excludes any regularization term chosen by the solver.
 
 ## Low-rank quantities
 
@@ -115,6 +116,7 @@ The local rSVD sketch width is $L_{\mathrm{sk}}=L+p\leq\min(N_t,N_v)$; $\ell$ is
 | $\bar C_i$ | Saved incremental coefficient block, zero-padded to rank $R_0$ | $R_0\times L$ |
 | $\widehat q_i^{(0)}=U_{i,L}\bar C_i^H$ | Unscaled temporal factor before optional global recompression | $N_t\times R_0$ |
 | $S$ | Final shared spatial basis, orthonormal up to numerical roundoff | $N_v\times R$ |
+| $s_r^{\uparrow}$ | Column $r$ of $S$ extended by zeros outside the mask for full-grid operator formulas | $N_{\mathrm{grid}}$ |
 | $\widehat q_i$ | Final unscaled temporal factor, after optional global recompression | $N_t\times R$ |
 | $q_i$ | Stored sample-domain coefficient matrix after zeroth-order phase, NFFT-centre correction, and $1/\sqrt{N_v}$ normalization | $N_t\times R$ |
 | $\eta_i$ | Retained local rank-$L$ energy, $\|\widetilde V_i\|_F^2$ | non-negative scalar |
@@ -146,7 +148,7 @@ $$
 
 $\tau$ refers to compression of retained local factors. $\epsilon_g$ refers to additional error relative to the already shared representation. Neither is an image-error tolerance. See the [algorithm and error derivation](/theory/low-rank#two-stage-approximation-error).
 
-### Joint adaptive low-rank quantities
+### Direct Shared Global quantities {#joint-adaptive-low-rank-quantities}
 
 The [joint derivation](/theory/joint-adaptive-low-rank) uses the same H and
 distinguishes pure coefficients $\widehat q$ from folded operator coefficients
@@ -180,7 +182,7 @@ It does not refer to the spatially uniform physical phase $k_0$.
 
 ## Implementation array names
 
-The `q` and `basis` rows in this table describe `basis_layout=:shared` after optional final recompression. Dimensions describe array layout, independently of CPU/GPU placement.
+The `q` and `basis` rows in this table describe `method=:incremental_shared` after optional final recompression. Dimensions describe array layout, independently of CPU/GPU placement.
 
 | Julia name | Mathematical role | Explicit shape | Low-rank shape |
 | --- | --- | --- | --- |
@@ -197,7 +199,7 @@ The `q` and `basis` rows in this table describe `basis_layout=:shared` after opt
 
 The single-profile LowRank overload also accepts a coefficient matrix `(nTerm,nSam)` and a time vector `(nSam,)`. For one profile, `concomitant` may be `(4,nSam)`.
 
-With `basis_layout=:per_readout`, `q` instead has shape `(nSam*nDyn,L)` and the logical spatial-factor bank has shape `(nVox,L*nDyn)`. Regenerated storage need not materialize this whole bank; see [per-readout storage](/reference/highorderlowrankop#per-readout-parameters).
+With `method=:per_readout`, `q` instead has shape `(nSam*nDyn,L)` and the logical spatial-factor bank has shape `(nVox,L*nDyn)`. Regenerated storage need not materialize this whole bank; see [per-readout storage](/reference/highorderlowrankop#per-readout-parameters).
 
 Julia column-major vectorization makes samples the fastest-changing index, followed by profiles and then receive channels. For a logical output $y_{jic}$, its one-based vector index is
 

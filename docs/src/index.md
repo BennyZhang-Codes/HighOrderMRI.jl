@@ -8,8 +8,8 @@ description: GPU-accelerated Cartesian and non-Cartesian MRI reconstruction with
 
 hero:
   name: HighOrderMRI.jl
-  text: High-order field-aware MRI reconstruction
-  tagline: A Julia framework for Cartesian and non-Cartesian MRI reconstruction using measured or predicted dynamic magnetic fields, with explicit, CUDA-kernel, and low-rank implementations of a common encoding model.
+  text: Higher-order MRI reconstruction
+  tagline: Explicit and LowRank encoding operators for Cartesian and non-Cartesian MRI, with off-resonance and higher-order phase correction.
   actions:
     - theme: brand
       text: Get Started
@@ -27,10 +27,10 @@ features:
     link: /theory/encoding-model
   - title: Explicit GPU encoding
     details: Evaluate the expanded signal model with array-based or fused CUDA implementations, including supported multi-GPU execution.
-    link: /guide/operators
-  - title: Shared spatial subspace
-    details: Approximate dynamic residual encoding using per-readout rSVD and an incrementally constructed spatial basis shared across dynamics.
-    link: /theory/low-rank
+    link: /guide/explicit
+  - title: LowRank construction methods
+    details: Choose Per-readout, Incremental Shared, or Direct Shared with Per-readout and Global strategies.
+    link: /guide/low-rank
   - title: Field-monitoring workflow
     details: Combine dynamic field measurements or predictions with synchronization, preprocessing, and iterative reconstruction.
     link: /guide/field-preprocessing
@@ -42,13 +42,17 @@ HighOrderMRI.jl is under active development. Regression tests establish implemen
 
 ## Common signal model, alternative numerical implementations
 
-HighOrderMRI.jl keeps the target MRI signal model fixed while changing how the encoding operator is evaluated. `HighOrderOp` and `HighOrderKernelOp` are explicit implementations of the expanded model. `HighOrderLowRankOp` approximates the residual spatial phase representation; its NFFT also has a separate numerical approximation error.
+HighOrderMRI.jl keeps the target signal model fixed while selecting either
+[Explicit](/guide/explicit) or [LowRank](/guide/low-rank) execution.
 
-| Operator | Numerical representation | Backend | Typical use |
-| --- | --- | --- | --- |
-| `HighOrderOp` | Explicit expanded encoding | CPU or array-based CUDA | Small reference problems, debugging, derivative products |
-| `HighOrderKernelOp` | Explicit expanded encoding with fused kernels | CUDA, including supported multi-GPU execution | Explicit GPU calculations and implementation-consistency testing |
-| `HighOrderLowRankOp` | Per-dynamic rSVD + incremental shared spatial basis | CPU/CUDA with optional multi-GPU stages | Repeated large-scale forward/adjoint evaluations and iterative reconstruction |
+| Family entry | Numerical representation | Choices |
+|:--|:--|:--|
+| `HighOrderExplicitOp` | Explicit expanded phase | Array; CUDA acceleration with Direct kernel or GEMM and phase-reuse |
+| `HighOrderLowRankOp` | NFFT plus low-rank residual phase | Per-readout, Incremental Shared, Direct Shared |
+
+Direct Shared has Per-readout and Global strategies. Explicit uses Array by
+default; LowRank uses Incremental Shared. LowRank factorization and NFFT
+interpolation introduce separate numerical errors.
 
 The common signal model is:
 

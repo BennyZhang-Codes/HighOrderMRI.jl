@@ -48,7 +48,8 @@ isempty(ARGS) || error("Unknown documentation check arguments")
 end
 
 pages = [
-    "reference/grid-basis.md", "reference/highorderop.md",
+    "reference/grid-basis.md", "reference/explicit-array.md",
+    "reference/highorderexplicitop.md",
     "reference/highorderlowrankop.md", "reference/coil-compression-transform.md",
     "reference/estimate-noise-covariance.md", "reference/noise-prewhitening-scale.md",
     "reference/fit-coil-compression.md", "reference/apply-coil-compression.md",
@@ -69,7 +70,7 @@ pages = [
                 @test all(isfinite, mod.signal) && all(isfinite, mod.backprojection)
                 expected = similar(mod.signal)
                 for i in 1:mod.nDyn
-                    op = HighOrderOp(mod.grid, mod.kspha[:, :, i], mod.times[:, i];
+                    op = HighOrderExplicitOp(mod.grid, mod.kspha[:, :, i], mod.times[:, i];
                         fieldmap=mod.fieldmap, csm=mod.csm, mask=mod.mask,
                         arrayType=Array, nBlock=4)
                     expected[:, i, :] = reshape(op * vec(mod.image), mod.nSam, mod.nCha)

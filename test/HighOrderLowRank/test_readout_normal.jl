@@ -19,7 +19,7 @@
                 common = (; fieldmap=data.fieldmap, csm=coil_maps, mask=data.mask,
                     arrayType=CuArray, gpus=gpu_ids, L_rank=2, rsvd_oversample=2,
                     rsvd_seed=2026, rsvd_finalize=:gram, rsvd_backend=:kernel,
-                    rsvd_distribution=:single, basis_layout=:per_readout)
+                    rsvd_distribution=:single, method=:per_readout)
                 reference_op = HighOrderLowRankOp(data.grid, data.kspha, data.times; common...)
                 x = CuArray(data.x)
                 z = CUDA.randn(ComplexF32, length(x))

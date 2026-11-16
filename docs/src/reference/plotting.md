@@ -57,10 +57,8 @@ println(output_dir)
   both from quantiles. Supply both to retain explicit limits.
 - `plt_scatter` currently accepts but does not forward `marker`, `marker_size`
   or `marker_linewidth`. Their values do not control the plotted markers.
-- `plt_images` and `plt_trajs` are declared exports without definitions (PG-11).
-  Use the defined `plt_image` overloads. The loaded, unexported
-  `HighOrderMRI.plt_traj` expects `(nPoint,3)` columns `[kx,ky,kz]` and draws only
-  kx/ky; it is not the undefined `plt_trajs` export.
+- The unexported `HighOrderMRI.plt_traj` expects `(nPoint,3)` columns
+  `[kx,ky,kz]` and draws only kx/ky.
 
 These are documented limits of the current implementation, not fixes introduced
 by the documentation migration. The unreferenced `src/plot/plt_plotscatter.jl`

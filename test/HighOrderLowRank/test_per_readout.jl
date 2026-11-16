@@ -65,7 +65,7 @@ per_readout_relative_error(actual, expected) =
             rsvd_finalize=:svd, rsvd_backend=:chunked,
         )
         op = HighOrderLowRankOp(data.grid, data.kspha, data.times;
-            common..., basis_layout=:per_readout)
+            common..., method=:per_readout)
         reference = per_readout_dense_encoding(data)
         rng = Random.Xoshiro(2026)
         y = randn(rng, Complex{T}, size(op, 1))
@@ -101,7 +101,7 @@ per_readout_relative_error(actual, expected) =
             shared_rank_max=rank * nDyn, shared_basis_tol=T(1e-6),
         )
         per_readout = HighOrderLowRankOp(data.grid, data.kspha, data.times;
-            common..., basis_layout=:per_readout)
+            common..., method=:per_readout)
         shared = HighOrderLowRankOp(data.grid, data.kspha, data.times; common...)
         @test shared.basis_layout === :shared
         @test isempty(shared.readout_plans)
@@ -120,7 +120,7 @@ per_readout_relative_error(actual, expected) =
         # Shared compression controls cannot truncate independent readout blocks.
         ignored_shared_controls = merge(common, (; shared_rank_max=0, shared_basis_tol=T(0.5)))
         uncompressed = HighOrderLowRankOp(data.grid, data.kspha, data.times;
-            ignored_shared_controls..., basis_layout=:per_readout)
+            ignored_shared_controls..., method=:per_readout)
         @test size(uncompressed.basis) == size(per_readout.basis)
         @test per_readout_relative_error(uncompressed * data.x, per_readout * data.x) < T(1e-6)
         close(uncompressed)
@@ -128,11 +128,11 @@ per_readout_relative_error(actual, expected) =
         close(shared)
 
         @test_throws ArgumentError HighOrderLowRankOp(data.grid, data.kspha, data.times;
-            common..., basis_layout=:invalid)
+            common..., method=:invalid)
         @test_throws ArgumentError HighOrderLowRankOp(data.grid, data.kspha, data.times;
-            common..., basis_layout=:per_readout, shared_basis_method=:joint)
+            common..., method=:per_readout, strategy=:global)
         @test_throws ArgumentError HighOrderLowRankOp(data.grid, data.kspha, data.times;
-            common..., basis_layout=:per_readout, global_basis_tol=T(0.1))
+            common..., method=:per_readout, global_basis_tol=T(0.1))
     end
 end
 
@@ -160,7 +160,7 @@ end
                 fieldmap=data.fieldmap, csm=data.csm, mask=data.mask,
                 L_rank=nSam, rsvd_oversample=0, rsvd_seed=2026,
                 rsvd_finalize=:gram, rsvd_backend=:kernel,
-                basis_layout=:per_readout, arrayType=CuArray, gpus=gpu_ids,
+                method=:per_readout, arrayType=CuArray, gpus=gpu_ids,
             )
             source_op = HighOrderLowRankOp(data.grid, data.kspha, data.times;
                 common..., rsvd_distribution=:single, normal_distribution=:channel)

@@ -33,7 +33,7 @@ end
 """
     ExplicitMultiGPUOp(grid, kspha, times; gpus, kwargs...)
 
-Internal implementation of `HighOrderKernelOp` with multiple GPUs and a
+Internal implementation of `CUDAExplicitOp` with multiple GPUs and a
 resident backend. Explicit encoding is split over contiguous sample ranges.
 The first device owns CG vectors. Each persistent GPU worker retains the full
 masked spatial model and all coils, generates its own phase blocks, and reuses

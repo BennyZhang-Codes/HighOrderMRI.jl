@@ -10,11 +10,11 @@ nVirtualCoils = 16
 kdata_cc, csm_cc, coil_transform = compress_coils(Complex{T}.(kdata), Complex{T}.(csm); data_coil_dim=2, csm_coil_dim=3, n_virtual_coils=nVirtualCoils)
 @info "Coil compression" physical_coils=size(coil_transform, 1) virtual_coils=size(coil_transform, 2) retained_energy=coil_transform.retained_energy
 
-## 1. HighOrderOp
+## 1. Explicit Array
 begin
-    label  = "Measured_HighOrderOp_1111";
+    label  = "Measured_ExplicitArray_$(recon)";
     @CUDA.time begin
-        HOOp = HighOrderOp(gridding, T.(ksphaMeasured'), T.(datatime); 
+        HOOp = HighOrderExplicitOp(gridding, T.(ksphaMeasured'), T.(datatime);
             recon_terms=recon, 
             nBlock=nBlock, 
             csm=Complex{T}.(csm), 
@@ -27,9 +27,9 @@ begin
 end
 
 begin
-    label  = "Measured_HighOrderOp_1111_cc";
+    label  = "Measured_ExplicitArray_$(recon)_cc";
     @CUDA.time begin
-        HOOp = HighOrderOp(gridding, T.(ksphaMeasured'), T.(datatime); 
+        HOOp = HighOrderExplicitOp(gridding, T.(ksphaMeasured'), T.(datatime);
             recon_terms=recon, 
             nBlock=nBlock, 
             csm=Complex{T}.(csm_cc), 
@@ -42,11 +42,11 @@ begin
 end
 # fig.savefig("$(path)/result/$(data_mat[1:end-4])_$(label).png", dpi=300, transparent=false, bbox_inches="tight", pad_inches=0.0)
 
-## 2. HighOrderKernelOp
+## 2. Explicit CUDA
 begin
-    label  = "Measured_HighOrderKernelOp_1111";
+    label  = "Measured_ExplicitCUDA_$(recon)";
     @CUDA.time begin
-        HOOp_Kernel = HighOrderKernelOp(gridding, T.(ksphaMeasured'), T.(datatime);
+        HOOp_Kernel = HighOrderExplicitOp(gridding, T.(ksphaMeasured'), T.(datatime); implementation=:kernel,
             recon_terms=recon, 
             csm=Complex{T}.(csm), 
             fieldmap=T.(b0), 
@@ -60,9 +60,9 @@ begin
 end
 
 begin
-    label  = "Measured_HighOrderKernelOp_1111_cc";
+    label  = "Measured_ExplicitCUDA_$(recon)_cc";
     @CUDA.time begin
-        HOOp_Kernel = HighOrderKernelOp(gridding, T.(ksphaMeasured'), T.(datatime);
+        HOOp_Kernel = HighOrderExplicitOp(gridding, T.(ksphaMeasured'), T.(datatime); implementation=:kernel,
             recon_terms=recon, 
             csm=Complex{T}.(csm_cc), 
             fieldmap=T.(b0), 

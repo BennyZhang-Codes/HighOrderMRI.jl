@@ -8,7 +8,11 @@ Resident explicit operators own CUDA workspaces and optional phase caches; CUDA 
 close(op)
 ```
 
-For resident `HighOrderKernelOp`, `close` synchronizes and releases its workspaces, phase caches, and multi-GPU workers. Derived normals share those resources and must no longer be used. Call it explicitly after `recon_HOOp`.
+For resident `HighOrderExplicitOp`, `close` synchronizes and releases its workspaces, phase caches, and multi-GPU workers. Derived normals share those resources and must no longer be used. Call it explicitly after `recon_HOOp`.
+
+Array execution and the host-vector CUDA backend have no persistent worker
+backend to shut down. Array `close` is a no-op. Their captured model arrays
+remain referenced until the operator and any derived views are dropped.
 
 For `HighOrderLowRankOp`, this releases the owned execution backend and
 the source operator's streaming/regeneration queue when present. Stored

@@ -1,7 +1,6 @@
-export HighOrderOp
 
 """
-    HighOrderOp
+    ArrayExplicitOp
 
 Explicit array-based MRI encoding operator on CPU or CUDA. It evaluates the
 selected field phase directly, with forward sign `exp(+2πim * phase)` and
@@ -9,7 +8,7 @@ normalization `1/sqrt(count(mask))`. Input vectors span the full image grid;
 output vectors order samples first and receive coils second. The ordinary
 adjoint conjugates both phase and coil sensitivities.
 """
-mutable struct HighOrderOp{T,F1,F2,S<:AbstractVector{T}} <: HOOp{T}
+mutable struct ArrayExplicitOp{T,F1,F2,S<:AbstractVector{T}} <: HighOrderExplicitOp{T}
     nrow       :: Int
     ncol       :: Int
     symmetric  :: Bool
@@ -23,11 +22,11 @@ mutable struct HighOrderOp{T,F1,F2,S<:AbstractVector{T}} <: HOOp{T}
     Mv         :: S
     Mtu        :: S
 end
-LinearOperators.storage_type(op::HighOrderOp) = typeof(op.Mv)
+LinearOperators.storage_type(op::ArrayExplicitOp) = typeof(op.Mv)
 
 
 """
-    HighOrderOp(grid::Grid{T},
+    ArrayExplicitOp(grid::Grid{T},
         kspha::AbstractArray{T, 2},
         times::AbstractVector{T};
         fieldmap::AbstractArray{T} = zeros(T, grid.matrixSize...),
@@ -81,7 +80,7 @@ The returned operator has size `(nSam*nCha, prod(grid.matrixSize))` and complex
 element type `Complex{T}`. It represents the full image grid, including zero
 columns outside the mask; the adjoint is a backprojection, not an inverse.
 """
-function HighOrderOp(
+function ArrayExplicitOp(
     grid        :: Grid{T}                                                             ,
     kspha       :: AbstractArray{T, 2}                                                 , 
     times       :: AbstractVector{T}                                                   ;
@@ -98,7 +97,7 @@ function HighOrderOp(
     ) where {T<:AbstractFloat}
 
     is_gpu = arrayType <: CuArray
-    (is_gpu || arrayType <: Array) || throw(ArgumentError("HighOrderOp supports arrayType=Array or CuArray"))
+    (is_gpu || arrayType <: Array) || throw(ArgumentError("ArrayExplicitOp supports arrayType=Array or CuArray"))
 
     nX, nY, nZ = grid.nX, grid.nY, grid.nZ
     nTerm, nSam = size(kspha)
@@ -111,7 +110,7 @@ function HighOrderOp(
     csm      = ndims(csm) == 3      ? reshape(csm, nX, nY, 1, nCha) : csm
     mask     = ndims(mask) == 2     ? reshape(mask, nX, nY, 1) : mask
 
-    @info "HighOrderOp nRow=$nRow [nSam*nCha=$nSam*$nCha], nCol=$nCol [prod(matrixSize=$((nX,nY,nZ))], nVox in mask=$nVox, nBlock=$nBlock, arrayType=$arrayType"
+    @info "ArrayExplicitOp nRow=$nRow [nSam*nCha=$nSam*$nCha], nCol=$nCol [prod(matrixSize=$((nX,nY,nZ))], nVox in mask=$nVox, nBlock=$nBlock, arrayType=$arrayType"
 
     @assert nTerm              in [9, 16]       "kspha must have 9 or 16 terms (row) for up to 2nd or 3rd order terms"
     @assert size(k_nominal, 1) == 3             "k_nominal must have 3 terms (row) for kx, ky, kz"
@@ -153,27 +152,27 @@ function HighOrderOp(
 
     if isnothing(kspha_dt)
         func_prod = (res,xm)->begin
-            values = prod_HighOrderOp(xm, mask, bf, nVox, nSam, nCha, kspha, times, fieldmap, csm; nBlock=nBlock, parts=parts, use_gpu=is_gpu, verbose=verbose)
+            values = explicit_array_forward(xm, mask, bf, nVox, nSam, nCha, kspha, times, fieldmap, csm; nBlock=nBlock, parts=parts, use_gpu=is_gpu, verbose=verbose)
             copyto!(res, arrayType(values))
             res
         end
     else # for calculation of Bx (2023, https://doi.org/10.1002/mrm.29460)
         @assert size(kspha_dt) == size(kspha) "kspha_dt must have same size as kspha"
         func_prod = (res,xm)->begin
-            values = prod_dt_HighOrderOp(xm, mask, bf, nVox, nSam, nCha, kspha, kspha_dt, times, fieldmap, csm; nBlock=nBlock, parts=parts, use_gpu=is_gpu, verbose=verbose)
+            values = explicit_array_derivative(xm, mask, bf, nVox, nSam, nCha, kspha, kspha_dt, times, fieldmap, csm; nBlock=nBlock, parts=parts, use_gpu=is_gpu, verbose=verbose)
             copyto!(res, arrayType(values))
             res
         end
     end
     func_ctprod = (res,ym)->begin
-        values = ctprod_HighOrderOp(ym, mask, bf, nVox, nSam, nCha, kspha, times, fieldmap, csm; nBlock=nBlock, parts=parts, use_gpu=is_gpu, verbose=verbose)
+        values = explicit_array_adjoint(ym, mask, bf, nVox, nSam, nCha, kspha, times, fieldmap, csm; nBlock=nBlock, parts=parts, use_gpu=is_gpu, verbose=verbose)
         copyto!(res, arrayType(values))
         res
     end
 
     Mv = Mtu = arrayType(Vector{Complex{T}}(undef, 0))
     
-    return HighOrderOp{Complex{T},Nothing,Function,typeof(Mv)}(
+    return ArrayExplicitOp{Complex{T},Nothing,Function,typeof(Mv)}(
                         nRow, nCol, 
                         false, false,
                         func_prod, nothing, func_ctprod,
@@ -182,10 +181,10 @@ function HighOrderOp(
 end
 
 """
-    prod_dt_HighOrderOp
+    explicit_array_derivative
     for calculation of Bx (2023, https://doi.org/10.1002/mrm.29460)
 """
-function prod_dt_HighOrderOp(
+function explicit_array_derivative(
     x         :: AbstractVector{T}                   , 
     mask      :: AbstractVector{Bool}                ,   # [prod(MatrixSize)]
     bf        :: AbstractArray{D, 2}                 ,
@@ -204,7 +203,7 @@ function prod_dt_HighOrderOp(
     ) where {D<:AbstractFloat, T<:Union{Real,Complex}}
     x = Vector(x)[mask.!=0]
     if verbose
-        @info "HighOrderOp prod_dt nBlock=$nBlock, use_gpu=$use_gpu"
+        @info "ArrayExplicitOp prod_dt nBlock=$nBlock, use_gpu=$use_gpu"
     end
     if use_gpu
         x   = x |> gpu
@@ -237,9 +236,9 @@ end
 
 
 """
-    Forward operator for HighOrderOp
+    Forward operator for ArrayExplicitOp
 """
-function prod_HighOrderOp(
+function explicit_array_forward(
     x         :: AbstractVector{T}                   , 
     mask      :: AbstractVector{Bool}                ,   # [prod(MatrixSize)]
     bf        :: AbstractArray{D, 2}                 ,
@@ -257,7 +256,7 @@ function prod_HighOrderOp(
     ) where {D<:AbstractFloat, T<:Union{Real,Complex}}
     x = Vector(x)[mask.!=0]
     if verbose
-        @info "HighOrderOp prod nBlock=$nBlock, use_gpu=$use_gpu"
+        @info "ArrayExplicitOp prod nBlock=$nBlock, use_gpu=$use_gpu"
     end
     if use_gpu
         x   = x |> gpu
@@ -290,9 +289,9 @@ end
 
 
 """
-    Adjoint of prod_HighOrderOp
+    Adjoint of explicit_array_forward
 """
-function ctprod_HighOrderOp(
+function explicit_array_adjoint(
     y         :: AbstractVector{T}                   , 
     mask      :: AbstractVector{Bool}                ,   # [prod(MatrixSize)]
     bf        :: AbstractArray{D, 2}                 ,
@@ -312,7 +311,7 @@ function ctprod_HighOrderOp(
     y    = reshape(y, nSam, nCha)
 
     if verbose
-        @info "HighOrderOp ctprod nBlock=$nBlock, use_gpu=$use_gpu"
+        @info "ArrayExplicitOp ctprod nBlock=$nBlock, use_gpu=$use_gpu"
     end
     
     if use_gpu
@@ -349,7 +348,7 @@ function ctprod_HighOrderOp(
 end
 
 
-function Base.adjoint(op::HighOrderOp{T}) where T
+function Base.adjoint(op::ArrayExplicitOp{T}) where T
   return LinearOperator{T}(
                             op.ncol, 
                             op.nrow, 
@@ -359,3 +358,5 @@ function Base.adjoint(op::HighOrderOp{T}) where T
                             nothing, 
                             op.prod!)
 end
+
+Base.close(::ArrayExplicitOp) = nothing

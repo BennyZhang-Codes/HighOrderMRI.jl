@@ -8,10 +8,10 @@ const sharedBasisFigure = computed(() => withBase(
 ))
 </script>
 
-# Shared low-rank
+# Incremental Shared {#shared-low-rank}
 
-Shared low-rank (`shared_basis_method=:shared_low_rank`, with the compatible
-default spelling `:rsvd`) reduces repeated encoding cost with two
+Incremental Shared (`method=:incremental_shared`, the default) reduces
+repeated encoding cost with two
 successive approximations: local randomized SVD (rSVD), then incremental
 sharing of the retained spatial factors. An optional final recompression
 introduces a third approximation stage. The image and coil maps are not
@@ -26,7 +26,7 @@ is an encoding profile of the same unknown image, not a separately
 reconstructed frame.
 
 Readouts use index $i$, with $N_t$ samples each and $N_{\mathrm{ro}}$ readouts (`nSam`, `nDyn` in Julia).
-The distinct [Joint adaptive low-rank](/theory/joint-adaptive-low-rank) path
+The distinct [Direct Shared (Global strategy)](/theory/joint-adaptive-low-rank) path
 constructs a common snapshot space directly and selects its final rank using
 global residual checks. Both approximate the same pure residual phase matrix;
 they share the downstream forward, adjoint and weighted normal representation.
@@ -37,7 +37,7 @@ they share the downstream forward, adjoint and weighted normal representation.
   <img :src="sharedBasisFigure" alt="Signal model, shared-basis reconstruction, and sequential adaptive spatial compression across readouts i" />
 </a>
 
-**Figure 1. Shared low-rank reconstruction.**
+**Figure 1. Incremental Shared reconstruction.**
 (a) The signal model separates zeroth-order phase, Fourier encoding, and
 residual field modulation. (b) Local rSVD factors are combined into a shared
 spatial basis and readout-specific temporal factors. (c) Readouts $i$ are
@@ -82,6 +82,12 @@ It cannot recover components discarded earlier.
 Separable temporal-spatial representations of higher-order MRI encoding have previously been obtained using singular-vector separation, and related decompositions are used in expanded-model reconstruction such as MaxGIRF. [[2]](/references#ref-2 "Wilm BJ, Barmet C, Pruessmann KP. Fast higher-order MR image reconstruction using singular-vector separation. IEEE Trans Med Imaging. 2012;31:1396-1403.") [[3]](/references#ref-3 "Lee NG, Ramasawmy R, Lim Y, Campbell-Washburn AE, Nayak KS. MaxGIRF: Image reconstruction incorporating concomitant field and gradient impulse response function effects. Magn Reson Med. 2022;88:691-710.") The randomized range-finding step used here follows standard rSVD methods. [[4]](/references#ref-4 "Halko N, Martinsson PG, Tropp JA. Finding structure with randomness: Probabilistic algorithms for constructing approximate matrix decompositions. SIAM Rev. 2011;53:217-288.")
 
 HighOrderMRI combines matrix-free per-dynamic factorization with an incrementally constructed shared spatial basis and a global-trajectory NFFT representation. The resulting shared basis is not an exact post-hoc global SVD of all dynamic-specific matrices. Consequently, the Eckart-Young optimality result for a truncated SVD of a fixed matrix does not apply directly to the completed incremental representation. [[5]](/references#ref-5 "Eckart C, Young G. The approximation of one matrix by another of lower rank. Psychometrika. 1936;1:211-218.")
+
+Related inverse problems include hybrid regularization with static
+off-resonance correction [[18]](/references#ref-18) and Cartesian MaxGIRF
+for EPI with gradient nonlinearity and concomitant fields.
+[[19]](/references#ref-19) Their field models and reconstruction objectives
+should be specified separately from the choice of low-rank factorization.
 
 The implementation's contribution is the combination of singular-value-weighted
 online sharing, matrix-free phase products and reuse of the completed common
@@ -355,24 +361,27 @@ methods discuss these requirements explicitly. [[21]](/references#ref-21 "Yu W, 
 
 ## Independent per-readout representation
 
-Set `basis_layout=:per_readout` to retain each local pair
+Set `method=:per_readout` to retain each local pair
 $U_{i,L},\widetilde V_i$ directly, bypassing the shared-basis construction:
 
 ```julia
 op = HighOrderLowRankOp(grid, kspha, times;
     fieldmap, csm, mask,
-    basis_layout=:per_readout,
+    method=:per_readout,
     L_rank=6,
     rsvd_oversample=5,
 )
 ```
 
-For each readout and coil, the forward operation is
+For each readout and coil, let $\bar u_{i,l}$ include the temporal
+phase and normalization factors, and extend the masked spatial factor
+$\widetilde v_{i,l}$ by zeros to the full image grid, denoted
+$\widetilde v_{i,l}^{\uparrow}$. The forward operation is
 
 $$
 A_{i,c}m \approx \sum_{l=1}^{L}
-\operatorname{diag}(u_{i,l})\mathcal F_i
-\left(m\odot C_c\odot\widetilde v_{i,l}^{*}\right).
+\operatorname{diag}(\bar u_{i,l})\mathcal F_i
+\left(m\odot C_c\odot(\widetilde v_{i,l}^{\uparrow})^{*}\right).
 $$
 
 The same zeroth-order phase, centre correction, and normalization are folded
@@ -392,7 +401,7 @@ host RAM and use a readout queue:
 op = HighOrderLowRankOp(grid, kspha, times;
     fieldmap, csm, mask,
     arrayType=CuArray,
-    basis_layout=:per_readout,
+    method=:per_readout,
     per_readout_storage=:cpu,
     per_readout_cache_size=5,
     L_rank=6,
@@ -483,10 +492,9 @@ recreated lazily if the operator is subsequently reused.
 ### Comparison scope
 
 Both representations use the same local rSVD model. Changing
-`basis_layout` changes how retained factors are stored and combined.
+`method` selects independent or shared factors.
 `shared_rank_max` and `shared_basis_tol` are unused for independent factors;
-`global_basis_tol` must be `nothing`, and `shared_basis_method` must select
-`:shared_low_rank` (or its compatible alias `:rsvd`). A zero shared tolerance still constructs a shared basis and does
+`global_basis_tol` must be `nothing` for `method=:per_readout`. A zero shared tolerance still constructs a shared basis and does
 not select the independent representation. See the
 [storage reference](/reference/highorderlowrankop#per-readout-parameters).
 
@@ -707,6 +715,67 @@ can be inconsistent with the forced minimum rank of one. Do not treat that
 diagnostic as a checked error bound in this range; no numerical implementation
 change is included here.
 
+### Sampled construction and coefficient refitting
+
+`shared_fit_samples` replaces the saved local temporal coefficients with an
+all-time gappy fit to the completed spatial basis. If fitting voxels J are
+selected by $M_J$, the unscaled coefficients are
+
+$$
+\widehat q=HM_J^T\bigl((M_JS^{(0)})^\dagger\bigr)^H.
+$$
+
+The code forms the sampled pseudoinverse in ComplexF64 and evaluates all
+original time rows in chunks. Without `shared_readout_count`, every readout
+still contributes local factors to the basis. With that option, readouts
+are selected by farthest-point traversal of a sampled phase-geometry proxy:
+1024 spatial draws estimate feature covariance, and up to seven evenly
+spaced time samples represent each readout. The original readout indices
+determine their local rSVD seeds. Fitting voxels are a uniform subset without
+replacement, distinct from Direct Shared's pivoted-QR selection.
+
+Refitting changes the approximation: $\widehat q_i$ need no longer lie in
+the range of the local $U_{i,L}$. The local-projection error identities
+[below](#two-stage-approximation-error) therefore describe the original
+construction, not this opt-in path. The [gappy-fit bound](/theory/joint-adaptive-low-rank#oversampled-coefficient-fitting)
+applies under its full-rank and orthogonality assumptions. Reported phase
+checks sample the original H; they are diagnostics and do not enforce a
+full-H acceptance tolerance.
+
+### Fixed-rank and weighted recompression
+
+`global_basis_rank`, `global_basis_weights`, or
+`global_basis_coil_weighting=true` select a separate compression path that
+accounts for the actual spatial Gram. For input factors $\widehat q_0,S_0$,
+let $D_t,D_v$ be nonnegative diagonal metric weights, with identity defaults:
+
+$$
+G_q=\widehat q_0^HD_t\widehat q_0,\qquad
+G_s=S_0^HD_vS_0,\qquad T=G_s^{1/2}.
+$$
+
+When $G_s$ is positive definite, take the leading eigenvectors $Z_R$ of
+$TG_qT$ and set
+
+$$
+\widehat q_R=\widehat q_0TZ_R,\qquad S_R=S_0T^{-1}Z_R.
+$$
+
+In exact arithmetic, this gives the best rank-R approximation of the
+input representation in
+$\|D_t^{1/2}(\widehat q_0S_0^H-\widehat q_RS_R^H)D_v^{1/2}\|_F$.
+The squared error is the discarded eigenvalue sum. A fixed rank sets R
+directly; a tolerance limits the tail relative to the input's weighted
+energy. The implementation accumulates both Grams in ComplexF64 and rejects
+a numerically rank-deficient spatial metric. This is still a Gram method,
+with the associated conditioning limits.
+
+`global_basis_weights` supplies $D_t$ as already squared sample weights;
+the coil option supplies $D_v(v,v)=\sum_c|C_{vc}|^2$. Each supplied diagonal
+is normalized to mean one, which leaves relative weighted errors unchanged.
+These weights define compression only; the solver retains its own weights.
+None of these options is enabled by default.
+
 ## Construction scope {#direct-joint-shared-basis}
 
 <a id="phase-geometry-and-representative-snapshots"></a>
@@ -714,13 +783,13 @@ change is included here.
 <a id="oversampled-coefficient-fitting"></a>
 <a id="rank-selection-and-final-audit"></a>
 
-This page derives Shared low-rank, the local-rSVD plus incremental-sharing
-path. [Joint adaptive low-rank](/theory/joint-adaptive-low-rank) instead
+This page derives Incremental Shared, the local-rSVD plus incremental-sharing
+path. [Direct Shared (Global strategy)](/theory/joint-adaptive-low-rank) instead
 constructs one common snapshot parent, fits all actual time rows and
 recompresses the completed coefficient matrix. Its global H target, conditional
 error bounds and empirical rank-selection policy are described separately.
-The older `shared_basis_method=:joint` keeps its sampled per-readout checks;
-it is not an alias for `:joint_adaptive_low_rank`. The retained anchors above
+Direct Shared's Per-readout strategy uses sampled per-readout checks. Its
+construction and acceptance differ from Global. The retained anchors above
 preserve existing links; the corresponding derivations are now on the
 [joint theory page](/theory/joint-adaptive-low-rank#phase-geometry-and-representative-snapshots).
 
@@ -758,7 +827,11 @@ forward/adjoint dimensions consistent in either configuration.
 
 ## Forward and adjoint operators
 
-Let $\mathcal F$ denote the global NFFT containing the first-order trajectories of all dynamics, let $s_r$ denote column $r$ of the completed shared basis, and let $q_r$ denote column $r$ of the stored sample-domain coefficient matrix. For receive coil $c$,
+Let $\mathcal F$ denote the global NFFT containing the first-order trajectories
+of all dynamics, $s_r$ column $r$ of the shared basis on the mask, and $q_r$
+column $r$ of the stored sample-domain coefficient matrix. In the operator
+formulas below, $s_r^{\uparrow}$ extends $s_r$ by zeros to the full image grid;
+$m$ and the coil vector $C_c$ also use that full grid. For receive coil $c$,
 
 $$
 A_c m
@@ -766,7 +839,7 @@ A_c m
 \sum_{r=1}^{R}
 \operatorname{diag}(q_r)
 \mathcal F
-\left(m\odot C_c\odot s_r^*\right).
+\left(m\odot C_c\odot(s_r^{\uparrow})^*\right).
 $$
 
 The complex conjugation of $s_r$ follows from $H_i\approx\widehat q_iS^H$.
@@ -777,7 +850,7 @@ $$
 A^Hy
 \approx
 \sum_{r=1}^{R}
-s_r\odot
+s_r^{\uparrow}\odot
 \sum_{c=1}^{N_c}
 C_c^*\odot
 \mathcal F^H
@@ -799,13 +872,15 @@ For independent per-dynamic spatial factorizations, the corresponding transform 
 
 ### Weighted normal and rank execution
 
-Let $W$ contain the raw sample weights repeated identically for each coil.
-The data normal is $\sum_c A_c^H W^H W A_c$. For a rank partition
+Let $W_c\in\mathbb C^{N\times N}$ be the raw sample-weight block for coil
+$c$, and $W=\operatorname{diag}(W_1,\ldots,W_{N_c})$ the full data weighting
+operator. `recon_HOOp` repeats the same block for every coil. The data normal
+is $\sum_c A_c^H W_c^H W_c A_c$. For a rank partition
 $A_c=\sum_g A_{c,g}$, its application must preserve
 
 $$
 A^H W^H W A m
-=\sum_c\sum_g A_{c,g}^H W^H W
+=\sum_c\sum_g A_{c,g}^H W_c^H W_c
 \left(\sum_h A_{c,h}m\right).
 $$
 
@@ -955,7 +1030,7 @@ truncation can mix these columns, so $\langle E_{\mathrm{sh}},D_g\rangle_F$
 need not vanish. Adding all three squared error percentages is therefore
 unjustified. The optional legacy global stage
 uses a coefficient Gram and subtractive tail accounting, unlike the blocked
-QR/SVD in Joint adaptive low-rank. Its ideal spectral interpretation does
+QR/SVD in Direct Shared (Global strategy). Its ideal spectral interpretation does
 not remove the numerical limitations stated above.
 
 ## Guarantees, empirical choices and contribution
@@ -1044,7 +1119,7 @@ For the default rSVD construction:
 
 | Parameter | Stage | Meaning |
 |:--|:--|:--|
-| `basis_layout` | Representation | Shared spatial columns or independent per-readout factors. |
+| `method` | Construction | Per-readout, Incremental Shared, or Direct Shared factors. |
 | `L_rank` | Local rSVD | Fixed retained rank $L$ per dynamic. |
 | `rsvd_oversample` | Local rSVD | Additional sketch columns; $L+p\leq\min(N_t,N_v)$. |
 | `rsvd_seed` | Local rSVD | Base seed; backend and partition also determine the actual sketch. |

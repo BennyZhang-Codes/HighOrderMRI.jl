@@ -1,15 +1,14 @@
-export HighOrderKernelOp
 
 """
-    HighOrderKernelOp
+    CUDAExplicitOp
 
 CUDA kernel implementation of the explicit MRI encoding model. Its ordinary
 forward/adjoint use the same phase, normalization, mask and sample/coil ordering
-as [`HighOrderOp`](@ref). `backend=:legacy` keeps solver vectors on the host;
+as [`HighOrderExplicitOp`](@ref). `backend=:legacy` keeps solver vectors on the host;
 resident backends keep them on the primary GPU and own reusable workspaces.
 See the constructor for backend-specific restrictions.
 """
-mutable struct HighOrderKernelOp{T,F1,F2,S<:AbstractVector{T},O} <: HOOp{T}
+mutable struct CUDAExplicitOp{T,F1,F2,S<:AbstractVector{T},O} <: HighOrderExplicitOp{T}
     nrow       :: Int
     ncol       :: Int
     symmetric  :: Bool
@@ -24,18 +23,18 @@ mutable struct HighOrderKernelOp{T,F1,F2,S<:AbstractVector{T},O} <: HOOp{T}
     Mtu        :: S         # Dynamically adapted CPU/GPU Vector
     gpu_operator :: O       # Resident single-/multi-GPU implementation, or nothing
 end
-LinearOperators.storage_type(op::HighOrderKernelOp) = typeof(op.Mv)
+LinearOperators.storage_type(op::CUDAExplicitOp) = typeof(op.Mv)
 
 """
-    HighOrderKernelOp(op::HOOp{T}) where T
+    CUDAExplicitOp(op::HOOp{T}) where T
 
 Wrap an existing internal high-order operator, delegating forward, adjoint,
 normal construction and resource release to it. This is the adapter used by
 the resident constructors; ordinary callers should use the grid/trajectory
 constructor. The wrapper shares its operand's storage and lifetime.
 """
-function HighOrderKernelOp(op::HOOp{T}) where {T}
-    return HighOrderKernelOp{T,typeof(op.prod!),typeof(op.ctprod!),typeof(op.Mv),typeof(op)}(
+function CUDAExplicitOp(op::HOOp{T}) where {T}
+    return CUDAExplicitOp{T,typeof(op.prod!),typeof(op.ctprod!),typeof(op.Mv),typeof(op)}(
         op.nrow, op.ncol, op.symmetric, op.hermitian,
         op.prod!, nothing, op.ctprod!, 0, 0, 0, op.Mv, op.Mtu, op)
 end
@@ -43,17 +42,17 @@ end
 # Delegate normal construction once; the returned normal uses the original
 # resident workspace directly, with no wrapper in its iteration path.
 function LinearOperatorCollection.normalOperator(
-    op::HighOrderKernelOp{T,F1,F2,S,O}, weights=nothing; kwargs...,
+    op::CUDAExplicitOp{T,F1,F2,S,O}, weights=nothing; kwargs...,
 ) where {T,F1,F2,S,O<:HOOp}
     return LinearOperatorCollection.normalOperator(op.gpu_operator, weights; kwargs...)
 end
 
-function Base.close(op::HighOrderKernelOp)
+function Base.close(op::CUDAExplicitOp)
     isnothing(op.gpu_operator) || close(op.gpu_operator)
     return nothing
 end
 
-mutable struct HighOrderKernelGPUWorkspace{T<:AbstractFloat}
+mutable struct ExplicitKernelWorkspace{T<:AbstractFloat}
     gpu_id   :: Int
     voxels   :: UnitRange{Int}
     x        :: CuVector{Complex{T}}
@@ -79,12 +78,12 @@ function split_highorder_voxel_ranges(nVox::Int, nGPU::Int)
     return ranges
 end
 
-function HighOrderKernelGPUWorkspace(gpu_id::Int, voxels::UnitRange{Int}, ::Type{T}, nSam::Int, nCha::Int, nChaPad::Int, times, kspha, fieldmap, bf, csm) where {T<:AbstractFloat}
+function ExplicitKernelWorkspace(gpu_id::Int, voxels::UnitRange{Int}, ::Type{T}, nSam::Int, nCha::Int, nChaPad::Int, times, kspha, fieldmap, bf, csm) where {T<:AbstractFloat}
     CUDA.device!(gpu_id)
     nLocal = length(voxels)
     csm_local = zeros(Complex{T}, nLocal, nChaPad)
     @views csm_local[:, 1:nCha] .= csm[voxels, :]
-    return HighOrderKernelGPUWorkspace{T}(gpu_id, voxels, CUDA.zeros(Complex{T}, nLocal), CuArray(csm_local), CuArray(fieldmap[voxels]), CuArray(bf[voxels, :]), CuArray(times), CuArray(kspha), CUDA.zeros(Complex{T}, nSam, nChaPad), CUDA.zeros(Complex{T}, nLocal))
+    return ExplicitKernelWorkspace{T}(gpu_id, voxels, CUDA.zeros(Complex{T}, nLocal), CuArray(csm_local), CuArray(fieldmap[voxels]), CuArray(bf[voxels, :]), CuArray(times), CuArray(kspha), CUDA.zeros(Complex{T}, nSam, nChaPad), CUDA.zeros(Complex{T}, nLocal))
 end
 
 function run_highorder_gpu_tasks!(f, workspaces)
@@ -95,7 +94,7 @@ end
 
 
 """
-    HighOrderKernelOp(grid::Grid{T},
+    CUDAExplicitOp(grid::Grid{T},
         kspha::AbstractArray{T, 2},
         times::AbstractVector{T};
         fieldmap::AbstractArray{T} = zeros(T, grid.matrixSize...),
@@ -119,7 +118,7 @@ end
 
 # Description
 
-Construct a `HighOrderKernelOp` that explicitly evaluates the MRI high-order
+Construct a `CUDAExplicitOp` that explicitly evaluates the MRI high-order
 Fourier encoding operator.
 
 # Arguments
@@ -183,7 +182,7 @@ Fourier encoding operator.
 
 The ordinary operator has size `(nSam*nCha, prod(grid.matrixSize))` and
 complex element type `Complex{T}`. Use metres, seconds, Hz and integrated
-cycles/m^p coefficients, as for [`HighOrderOp`](@ref).
+cycles/m^p coefficients, as for [`HighOrderExplicitOp`](@ref).
 
 With `kspha_dt`, only the forward callback evaluates the derivative model;
 the adjoint remains the ordinary encoding adjoint. Do not use that object for
@@ -197,7 +196,7 @@ Resident backends accept host model inputs. Pass GPU data and weights to
 after all derived normal operators are no longer used. The workspaces are not
 reentrant. `kspha_dt` requires `backend=:legacy`.
 """
-function HighOrderKernelOp(
+function CUDAExplicitOp(
     grid        :: Grid{T}                                                             ,
     kspha       :: AbstractArray{T, 2}                                                 , 
     times       :: AbstractVector{T}                                                   ;
@@ -221,7 +220,7 @@ function HighOrderKernelOp(
     verbose     :: Bool                      = false                                   , 
     ) where {T<:AbstractFloat}
 
-    arrayType <: CuArray || throw(ArgumentError("HighOrderKernelOp requires arrayType=CuArray"))
+    arrayType <: CuArray || throw(ArgumentError("CUDAExplicitOp requires arrayType=CuArray"))
     isempty(gpus) && throw(ArgumentError("gpus must contain at least one CUDA device id"))
     length(unique(gpus)) == length(gpus) || throw(ArgumentError("gpus contains duplicate device ids: $gpus"))
     all(id -> 0 <= id < length(collect(CUDA.devices())), gpus) || throw(ArgumentError("invalid visible GPU ID"))
@@ -233,7 +232,7 @@ function HighOrderKernelOp(
         op = constructor(grid, kspha, times; gpus, fieldmap, csm, mask,
             concomitant, recon_terms, k_nominal, backend, block_size, phase_backend,
             gemm_backend, phase_cache_bytes, forward_threads, adjoint_threads)
-        return HighOrderKernelOp(op)
+        return CUDAExplicitOp(op)
     end
     iszero(phase_cache_bytes) || throw(ArgumentError("phase_cache_bytes requires backend=:blocked"))
 
@@ -248,7 +247,7 @@ function HighOrderKernelOp(
     csm      = ndims(csm) == 3      ? reshape(csm, nX, nY, 1, nCha) : csm
     mask     = ndims(mask) == 2     ? reshape(mask, nX, nY, 1) : mask
 
-    @info "HighOrderKernelOp nRow=$nRow [nSam*nCha=$nSam*$nCha], nCol=$nCol [prod(matrixSize=$((nX,nY,nZ))], nVox in mask=$nVox, gpus=$gpus"
+    @info "CUDAExplicitOp nRow=$nRow [nSam*nCha=$nSam*$nCha], nCol=$nCol [prod(matrixSize=$((nX,nY,nZ))], nVox in mask=$nVox, gpus=$gpus"
 
     @assert nTerm              in [9, 16]       "kspha must have 9 or 16 terms (row) for up to 2nd or 3rd order terms"
     @assert size(k_nominal, 1) == 3             "k_nominal must have 3 terms (row) for kx, ky, kz"
@@ -281,33 +280,33 @@ function HighOrderKernelOp(
     nChaPad = 32 * cld(nCha, 32)
     ranges = split_highorder_voxel_ranges(nVox, length(gpus))
     warn_if_insufficient_gpu_worker_threads(length(gpus); operation=:explicit_highorder_kernel)
-    workspace_tasks = [Threads.@spawn HighOrderKernelGPUWorkspace(gpus[i], ranges[i], T, nSam, nCha, nChaPad, times, kspha, fieldmap, bf, csm) for i in eachindex(gpus)]
-    workspaces = HighOrderKernelGPUWorkspace{T}[fetch(task) for task in workspace_tasks]
+    workspace_tasks = [Threads.@spawn ExplicitKernelWorkspace(gpus[i], ranges[i], T, nSam, nCha, nChaPad, times, kspha, fieldmap, bf, csm) for i in eachindex(gpus)]
+    workspaces = ExplicitKernelWorkspace{T}[fetch(task) for task in workspace_tasks]
     forward_partial = zeros(Complex{T}, nSam, nCha)
 
     if isnothing(kspha_dt)
         func_prod = (res,xm)->begin
-            values = prod_HighOrderKernelOp(xm, mask, workspaces, forward_partial, nSam, nCha, nTerm, nVox; verbose=verbose)
+            values = explicit_kernel_forward(xm, mask, workspaces, forward_partial, nSam, nCha, nTerm, nVox; verbose=verbose)
             copyto!(res, values)
             res
         end
     else # for calculation of Bx (2023, https://doi.org/10.1002/mrm.29460)
         @assert size(kspha_dt) == size(kspha) "kspha_dt must have same size as kspha"
         func_prod = (res,xm)->begin
-            values = prod_dt_HighOrderOp(xm, mask, bf, nVox, nSam, nCha, kspha, kspha_dt, times, fieldmap, csm; nBlock=nBlock, parts=parts, use_gpu=false, verbose=verbose)
+            values = explicit_array_derivative(xm, mask, bf, nVox, nSam, nCha, kspha, kspha_dt, times, fieldmap, csm; nBlock=nBlock, parts=parts, use_gpu=false, verbose=verbose)
             copyto!(res, values)
             res
         end
     end
     func_ctprod = (res,ym)->begin
-        values = ctprod_HighOrderKernelOp(ym, mask, workspaces, nSam, nCha, nTerm, nVox; verbose=verbose)
+        values = explicit_kernel_adjoint(ym, mask, workspaces, nSam, nCha, nTerm, nVox; verbose=verbose)
         copyto!(res, values)
         res
     end
 
     Mv = Mtu = Vector{Complex{T}}(undef, 0)
     
-    return HighOrderKernelOp{Complex{T},typeof(func_prod),typeof(func_ctprod),typeof(Mv),Nothing}(
+    return CUDAExplicitOp{Complex{T},typeof(func_prod),typeof(func_ctprod),typeof(Mv),Nothing}(
                         nRow, nCol, 
                         false, false,
                         func_prod, nothing, func_ctprod,
@@ -317,12 +316,12 @@ end
 
 
 """
-    Forward operator for HighOrderKernelOp
+    Forward operator for CUDAExplicitOp
 """
-function prod_HighOrderKernelOp(
+function explicit_kernel_forward(
     x               :: AbstractVector{T},
     mask            :: AbstractVector{Bool},
-    workspaces      :: AbstractVector{<:HighOrderKernelGPUWorkspace{D}},
+    workspaces      :: AbstractVector{<:ExplicitKernelWorkspace{D}},
     forward_partial :: Matrix{Complex{D}},
     nSam            :: Int64,
     nCha            :: Int64,
@@ -330,7 +329,7 @@ function prod_HighOrderKernelOp(
     nVox            :: Int64;
     verbose         :: Bool = false,
     ) where {D<:AbstractFloat, T<:Union{Real,Complex}}
-    if verbose @info "HighOrderOp: Kernel-based prod" end
+    if verbose @info "Explicit CUDA prod" end
     t_total = @elapsed begin
         x_masked = Vector(x)[mask]
         out = zeros(Complex{D}, nSam, nCha)
@@ -352,19 +351,19 @@ end
 
 
 """
-    Adjoint of prod_HighOrderKernelOp
+    Adjoint of explicit_kernel_forward
 """
-function ctprod_HighOrderKernelOp(
+function explicit_kernel_adjoint(
     y          :: AbstractVector{T},
     mask       :: AbstractVector{Bool},
-    workspaces :: AbstractVector{<:HighOrderKernelGPUWorkspace{D}},
+    workspaces :: AbstractVector{<:ExplicitKernelWorkspace{D}},
     nSam       :: Int64,
     nCha       :: Int64,
     nTerm      :: Int64,
     nVox       :: Int64;
     verbose    :: Bool = false,
     ) where {D<:AbstractFloat, T<:Union{Real,Complex}}
-    if verbose @info "HighOrderOp: Kernel-based ctprod" end
+    if verbose @info "Explicit CUDA ctprod" end
     t_total = @elapsed begin
         y_matrix = reshape(y, nSam, nCha)
         x_masked = zeros(Complex{D}, nVox)
@@ -384,7 +383,7 @@ function ctprod_HighOrderKernelOp(
 end
 
 
-function Base.adjoint(op::HighOrderKernelOp{T}) where T
+function Base.adjoint(op::CUDAExplicitOp{T}) where T
   return LinearOperator{T}(
                             op.ncol, 
                             op.nrow, 

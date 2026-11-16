@@ -31,7 +31,7 @@ Run the Julia blocks below in order. Website sources and tools live in the packa
 
 ## First CPU operator
 
-`HighOrderOp` evaluates the full encoding phase explicitly. Its forward product maps an image to samples; its adjoint maps samples back to the image grid. Reconstructing an image from measured data is a separate inverse problem.
+`HighOrderExplicitOp(...; implementation=:array)` evaluates the full encoding phase explicitly. Its forward product maps an image to samples; its adjoint maps samples back to the image grid. Reconstructing an image from measured data is a separate inverse problem.
 
 The example uses an 8 × 8 grid, one readout, one coil, and a complete Cartesian first-order trajectory. Coordinates are in metres, `times` in seconds, and `fieldmap` in Hz. `kspha` contains time-integrated coefficients in cycles per corresponding basis unit; the constructor does not integrate them.
 
@@ -59,7 +59,7 @@ fieldmap = reshape(
 csm = ones(Complex{T}, nX, nY, 1)
 mask = trues(nX, nY)
 
-op = HighOrderOp(grid, kspha, times;
+op = HighOrderExplicitOp(grid, kspha, times;
     fieldmap, csm, mask, arrayType=Array, nBlock=4)
 
 image = zeros(Complex{T}, nX, nY)
