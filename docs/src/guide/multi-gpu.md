@@ -431,10 +431,10 @@ memory reported by `nvidia-smi` immediately.
 
 ## Implementation sources
 
-- [Constructor defaults and execution restrictions](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/d141e7dc48e8d18380050aaa970ee4ae364d916d/src/EncodingOperator/HighOrderLowRankOp.jl).
-- [Rank partitioning, batching, host communication, and cleanup](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/d141e7dc48e8d18380050aaa970ee4ae364d916d/src/EncodingOperator/LowRankApproximation/rank_sharded_shared.jl).
-- [Channel/readout evaluation and normal ownership](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/d141e7dc48e8d18380050aaa970ee4ae364d916d/src/EncodingOperator/LowRankApproximation/multi_gpu_normal_operator.jl).
-- [FP64 no-add check and guarded fallback](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/d141e7dc48e8d18380050aaa970ee4ae364d916d/src/EncodingOperator/LowRankApproximation/distributed_shared_spatial_basis.jl).
+- [Constructor defaults and execution restrictions](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/6f056503645309e33ed77b6b849dd534c9d58c12/src/EncodingOperator/HighOrderLowRankOp.jl).
+- [Rank partitioning, batching, host communication, and cleanup](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/6f056503645309e33ed77b6b849dd534c9d58c12/src/EncodingOperator/LowRank/rank_sharded_shared.jl).
+- [Channel/readout evaluation and normal ownership](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/6f056503645309e33ed77b6b849dd534c9d58c12/src/EncodingOperator/LowRank/multi_gpu_normal_operator.jl).
+- [FP64 no-add check and guarded fallback](https://github.com/BennyZhang-Codes/HighOrderMRI.jl/blob/6f056503645309e33ed77b6b849dd534c9d58c12/src/EncodingOperator/LowRank/distributed_shared_spatial_basis.jl).
 
 See [Low-rank shared subspace](/theory/low-rank) and
 [References and source notes](/references) for the approximation algorithms
