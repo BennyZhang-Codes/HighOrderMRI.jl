@@ -1,7 +1,7 @@
 {
   "dev_code_sha": "232d850e40f3af61199dd5206187f06e834a38e5",
   "schema_version": 1,
-  "source_ref": "refs/heads/dev_jinyuan",
-  "source_sha": "232d850e40f3af61199dd5206187f06e834a38e5",
-  "stable": "v0.1.1"
+  "source_ref": "refs/tags/v0.1.2",
+  "source_sha": "9af532a4c5e255980ea80960a57f20358a643609",
+  "stable": "v0.1.2"
 }

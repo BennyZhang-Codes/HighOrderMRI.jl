@@ -1,6 +1,11 @@
 {
   "releases": [
     {
+      "code_sha": "9af532a4c5e255980ea80960a57f20358a643609",
+      "docs_sha": "9af532a4c5e255980ea80960a57f20358a643609",
+      "version": "v0.1.2"
+    },
+    {
       "code_sha": "5d6ac7247163ccd611372dc27a998ba855570be4",
       "docs_sha": "5d6ac7247163ccd611372dc27a998ba855570be4",
       "version": "v0.1.1"
@@ -12,13 +17,18 @@
     }
   ],
   "schema_version": 1,
-  "source_sha": "232d850e40f3af61199dd5206187f06e834a38e5",
-  "stable": "v0.1.1",
+  "source_sha": "9af532a4c5e255980ea80960a57f20358a643609",
+  "stable": "v0.1.2",
   "targets": [
     {
       "code_sha": "232d850e40f3af61199dd5206187f06e834a38e5",
       "docs_sha": "232d850e40f3af61199dd5206187f06e834a38e5",
       "version": "dev"
+    },
+    {
+      "code_sha": "9af532a4c5e255980ea80960a57f20358a643609",
+      "docs_sha": "9af532a4c5e255980ea80960a57f20358a643609",
+      "version": "v0.1.2"
     },
     {
       "code_sha": "5d6ac7247163ccd611372dc27a998ba855570be4",
@@ -31,9 +41,9 @@
       "version": "v0.1.0"
     },
     {
-      "code_sha": "5d6ac7247163ccd611372dc27a998ba855570be4",
-      "docs_sha": "5d6ac7247163ccd611372dc27a998ba855570be4",
-      "release": "v0.1.1",
+      "code_sha": "9af532a4c5e255980ea80960a57f20358a643609",
+      "docs_sha": "9af532a4c5e255980ea80960a57f20358a643609",
+      "release": "v0.1.2",
       "version": "stable"
     }
   ]
