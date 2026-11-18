@@ -62,7 +62,12 @@ function resolve_versions(repo, published, archive, source, event, ref;
     end
     for release in formal_releases(published)
         version = release["tag_name"]
-        code = git(repo, "rev-parse", "--verify", "refs/tags/$version^{commit}")
+        tag = "refs/tags/$version"
+        # A release may be published after the workflow's initial checkout.
+        if git_status(repo, "rev-parse", "--verify", "$tag^{commit}").code != 0
+            git(repo, "fetch", "--no-tags", "origin", "$tag:$tag")
+        end
+        code = git(repo, "rev-parse", "--verify", "$tag^{commit}")
         if haskey(rows, version)
             require(rows[version]["code_sha"] == code, "Published release tag cannot move")
         else

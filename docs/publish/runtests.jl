@@ -36,7 +36,7 @@ function with_repository(f)
         source = PT.git(repo, "rev-parse", "HEAD")
         PT.git(repo, "remote", "add", "origin", remote)
         PT.git(repo, "push", "origin", "main", "dev_jinyuan", "--tags")
-        return f((; root, repo, remote, code, legacy, release, source, dev=code))
+        return f((; root, repo, remote, code, legacy, release, source))
     end
 end
 
@@ -70,6 +70,8 @@ end
     end
     for (repository, event, ref) in [("other/repo", "push", "refs/heads/main"),
                                    (PT.REPOSITORY, "pull_request", "refs/heads/main"),
+                                   (PT.REPOSITORY, "push", "refs/heads/dev_jinyuan"),
+                                   (PT.REPOSITORY, "workflow_dispatch", "refs/heads/dev_jinyuan"),
                                    (PT.REPOSITORY, "push", "refs/heads/docs"),
                                    (PT.REPOSITORY, "push", PT.ARCHIVE_REF)]
         @test_throws ArgumentError PT.validate_context(repository, event, ref)
@@ -85,9 +87,9 @@ end
     @test_throws ArgumentError PT.validate_release_catalog(config, [published(), published("v0.2.0")])
     @test_throws ArgumentError PT.version_number("../outside")
     @test PT.version_number("v0.10.0") > PT.version_number("v0.9.0")
-    @test PT.is_preview("push", "refs/heads/main")
+    @test !PT.is_preview("push", "refs/heads/main")
     @test PT.is_preview("pull_request", "refs/pull/1/merge")
-    @test !PT.is_preview("push", "refs/heads/dev_jinyuan")
+    @test PT.SOURCE_REFS == ("dev" => "refs/heads/main",)
     @test !PT.is_preview("workflow_dispatch", "refs/heads/main")
     @test !PT.is_preview("release", "refs/tags/v0.1.0")
 end
@@ -98,8 +100,8 @@ end
         plan = fixture_plan(f)
         rows = Dict(row["version"] => row for row in plan["targets"])
         @test Set(keys(rows)) == Set(["dev", "stable", "v0.1.0"])
-        @test rows["dev"]["code_sha"] == f.code
-        @test rows["dev"]["docs_sha"] == rows["v0.1.0"]["docs_sha"] == f.legacy
+        @test rows["dev"]["code_sha"] == rows["dev"]["docs_sha"] == f.source
+        @test rows["v0.1.0"]["docs_sha"] == f.legacy
         @test isempty(PT.git(f.repo, "ls-remote", "origin", "refs/heads/docs"))
         preview = fixture_plan(f; event="pull_request", ref="refs/pull/1/merge", base="dev_jinyuan")
         @test first(preview["targets"])["code_sha"] == first(preview["targets"])["docs_sha"] == f.source
@@ -130,6 +132,36 @@ end
         @test_throws ArgumentError PT.resolve_versions(f.repo, [published()], archive, code, "push", "refs/heads/main"; legacy=f.legacy)
         PT.git(f.repo, "update-ref", "refs/tags/v0.1.0", code)
         @test_throws ArgumentError fixture_plan(f)
+    end
+end
+
+@testset "Release tags published after checkout" begin
+    flush(stdout)
+    with_repository() do f
+        write(joinpath(f.repo, "Project.toml"), "version = \"0.2.0\"\n")
+        PT.git(f.repo, "add", ".")
+        PT.git(f.repo, "commit", "-m", "prepare next release")
+        code = PT.git(f.repo, "rev-parse", "HEAD")
+        PT.git(f.repo, "push", "origin", "main")
+        checkout = joinpath(f.root, "checkout")
+        run(pipeline(`git clone $(f.remote) $checkout`; stdout=devnull, stderr=devnull))
+        PT.git(checkout, "checkout", "--detach", code)
+        PT.git(f.repo, "tag", "-a", "v0.2.0", "-m", "release after checkout")
+        PT.git(f.repo, "push", "origin", "refs/tags/v0.2.0")
+        @test PT.git_status(checkout, "rev-parse", "--verify", "refs/tags/v0.2.0^{commit}").code != 0
+        catalog = [published(), published("v0.2.0")]
+        plan = PT.resolve_versions(checkout, catalog, Dict(), code, "push", "refs/heads/main"; legacy=f.legacy)
+        @test plan["stable"] == "v0.2.0"
+        @test PT.git(checkout, "rev-parse", "refs/tags/v0.2.0^{commit}") == code
+        @test first(plan["releases"]) == Dict("version" => "v0.2.0", "code_sha" => code, "docs_sha" => code)
+        @test last(plan["releases"]) == f.release
+        @test PT.verify_releases(checkout, plan; allow_unpublished=true) === nothing
+        @test isempty(PT.git(checkout, "status", "--porcelain"))
+        PT.git(checkout, "remote", "set-url", "origin", joinpath(f.root, "offline.git"))
+        @test PT.resolve_versions(checkout, catalog, Dict(), code, "push", "refs/heads/main"; legacy=f.legacy) == plan
+        # Fetch failures must not silently omit a published formal version.
+        @test_throws ProcessFailedException PT.resolve_versions(checkout, [catalog; published("v0.3.0")], Dict(), code,
+            "push", "refs/heads/main"; legacy=f.legacy)
     end
 end
 
@@ -177,13 +209,13 @@ end
     flush(stdout)
     with_repository() do f
         site = joinpath(f.root, "site")
-        manifest = site_fixture(site; code=f.dev, source=f.legacy, release=f.release)
+        manifest = site_fixture(site; code=f.source, source=f.source, release=f.release)
         first = PT.publish(f.repo, site, f.source, manifest; legacy=f.legacy)
         @test first["publish"] && first["updated"]
         @test PT.git(f.repo, "show", "-s", "--format=%an|%ae|%cn|%ce", first["sha"]) == join([PT.COMMIT_NAME, PT.COMMIT_EMAIL, PT.COMMIT_NAME, PT.COMMIT_EMAIL], "|")
         files = Set(split(PT.git(f.repo, "ls-tree", "--name-only", first["sha"]), '\n'))
         @test files == Set([".nojekyll", "archive-info.json", "index.html", "versions.json", "dev", "stable", "v0.1.0"])
-        previous = site_fixture(joinpath(f.root, "previous"); code=f.dev, source=f.legacy,
+        previous = site_fixture(joinpath(f.root, "previous"); code=f.source, source=f.source,
                                 main=f.source, main_source=f.source, release=f.release)
         @test PT.preserve_releases(previous, manifest) === nothing
         again = PT.publish(f.repo, site, f.source, manifest; legacy=f.legacy)
@@ -204,7 +236,7 @@ end
     end
     with_repository() do f
         site = joinpath(f.root, "site")
-        manifest = site_fixture(site; code=f.dev, source=f.legacy, release=f.release)
+        manifest = site_fixture(site; code=f.source, source=f.source, release=f.release)
         @test PT.current_sources(f.repo, manifest; source_sha=f.source, source_ref="refs/tags/v0.1.0", legacy=f.legacy)
         PT.git(f.repo, "commit", "--allow-empty", "-m", "superseding code")
         PT.git(f.repo, "push", "origin", "main")
@@ -215,15 +247,16 @@ end
     end
     with_repository() do f
         site = joinpath(f.root, "site")
-        manifest = site_fixture(site; code=f.dev, source=f.legacy, release=f.release)
-        PT.git(f.repo, "update-ref", "refs/heads/dev_jinyuan", f.source)
-        PT.git(f.repo, "push", "origin", "dev_jinyuan")
-        @test !PT.publish(f.repo, site, f.source, manifest; source_ref="refs/heads/dev_jinyuan", legacy=f.legacy)["publish"]
+        manifest = site_fixture(site; code=f.source, source=f.source, release=f.release)
+        PT.git(f.repo, "commit", "--allow-empty", "-m", "advance main after site build")
+        source = PT.git(f.repo, "rev-parse", "HEAD")
+        PT.git(f.repo, "push", "origin", "main")
+        @test !PT.publish(f.repo, site, source, manifest; source_ref="refs/heads/main", legacy=f.legacy)["publish"]
         @test PT.remote_ref(f.repo, PT.ARCHIVE_REF) === nothing
     end
     with_repository() do f
         site = joinpath(f.root, "site")
-        manifest = site_fixture(site; code=f.dev, source=f.legacy, release=f.release)
+        manifest = site_fixture(site; code=f.source, source=f.source, release=f.release)
         # The local tag still matches. A moved remote tag must reject publication.
         PT.git(f.remote, "update-ref", "refs/tags/v0.1.0", f.source)
         @test PT.git(f.repo, "rev-parse", "refs/tags/v0.1.0") == f.code
@@ -396,7 +429,7 @@ end
         open(io -> PT.TOML.print(io, index), joinpath(docs, ".generated", "api", "index.toml"), "w")
         PT.write_json(joinpath(docs, ".generated", "api", "build-meta.json"), Dict("codeRef" => SHA_A, "preview" => false))
         home = "<html><a href=\"/HighOrderMRI.jl/dev/reference/op#op\">op</a><mjx-container><math><mi>x</mi></math></mjx-container></html>"
-        op = "<html><h1 id=\"op\">op</h1><a href=\"https://github.com/$(PT.REPOSITORY)/blob/$SHA_A/src/op.jl#L12\">Source</a><a href=\"https://github.com/$(PT.REPOSITORY)/edit/dev_jinyuan/docs/src/reference/op.md\">Edit</a></html>"
+        op = "<html><h1 id=\"op\">op</h1><a href=\"https://github.com/$(PT.REPOSITORY)/blob/$SHA_A/src/op.jl#L12\">Source</a><a href=\"https://github.com/$(PT.REPOSITORY)/edit/main/docs/src/reference/op.md\">Edit</a></html>"
         write(joinpath(dist, "index.html"), home)
         write(joinpath(dist, "reference", "op.html"), op)
         write(joinpath(dist, "reference", "exports.html"), "<html><h1 id=\"exported-value\">exported_value</h1></html>")
@@ -425,7 +458,7 @@ end
         pop!(mapping["exports"])
         save_mapping()
         for bad in [replace(op, "#L12" => "#L99"), replace(op, "<h1" => "<p id=\"op\">duplicate</p><h1"),
-                    replace(op, "/edit/dev_jinyuan/" => "/edit/main/")]
+                    replace(op, "/edit/main/" => "/edit/dev_jinyuan/")]
             write(joinpath(dist, "reference", "op.html"), bad)
             @test !isempty(PT.check_site(docs, dist)["errors"])
         end
@@ -459,8 +492,6 @@ end
 @testset "Independent archive CLI process and exact workflow outputs" begin
     flush(stdout)
     with_repository() do f
-        PT.git(f.repo, "update-ref", "refs/heads/dev_jinyuan", f.source)
-        PT.git(f.repo, "push", "origin", "dev_jinyuan")
         site = joinpath(f.root, "site")
         manifest = site_fixture(site; code=f.source, source=f.source, release=f.release)
         plan = PT.resolve_versions(f.repo, [published()], Dict(), f.source, "workflow_dispatch", "refs/heads/main")
@@ -486,7 +517,7 @@ end
         repeated = PT.parse_json(read(addenv(again, env), String))
         @test repeated["publish"] && !repeated["updated"] && repeated["sha"] == result["sha"]
         check_only = joinpath(f.root, "check-only-output")
-        withenv(merge(env, Dict("GITHUB_EVENT_NAME" => "push"))...) do
+        withenv(merge(env, Dict("GITHUB_EVENT_NAME" => "pull_request"))...) do
             @test_throws ArgumentError PT.archive_main(["--artifact-tar", artifact, "--site", check_only, "--source-sha", f.source])
         end
         @test !ispath(check_only)
