@@ -5,7 +5,7 @@ import { mermaidPlugin } from './plugins/vitepress-mermaid/index'
 const siteUrl = 'https://bennyzhang-codes.github.io/HighOrderMRI.jl'
 const docsVersion = process.env.DOCS_VERSION || 'dev'
 const docsBase = process.env.DOCS_BASE || '/HighOrderMRI.jl/dev/'
-const editRef = docsVersion === 'dev' ? 'dev_jinyuan' : 'main'
+const editRef = 'main'
 const unifiedOperators = existsSync(new URL('../reference/highorderexplicitop.md', import.meta.url))
 const jointPages = existsSync(new URL('../theory/joint-adaptive-low-rank.md', import.meta.url))
 const lowRankItems = [

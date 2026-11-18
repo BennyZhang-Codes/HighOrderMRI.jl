@@ -2,9 +2,9 @@ name: Documentation
 
 on:
   push:
-    branches: [main, dev_jinyuan]
+    branches: [main]
   pull_request:
-    branches: [main, dev_jinyuan]
+    branches: [main]
   release:
     types: [published]
   workflow_dispatch:

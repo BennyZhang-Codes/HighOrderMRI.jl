@@ -106,8 +106,7 @@ function check_site(docs, dist; base="/HighOrderMRI.jl/dev/", version="dev")
             link = meta["preview"] ? prefix : prefix * "#L$(source["line"])"
             link in page.links || fail(target, "source link does not match generated metadata", link)
         end
-        branch = version == "dev" ? "dev_jinyuan" : "main"
-        edit = "https://github.com/$REPOSITORY/edit/$branch/docs/src/$(entry["page"])"
+        edit = "https://github.com/$REPOSITORY/edit/main/docs/src/$(entry["page"])"
         version in ("dev", "main") && !(edit in page.links) && fail(target, "edit link does not target its code branch")
     end
     for entry in get(mapping, "exports", [])
