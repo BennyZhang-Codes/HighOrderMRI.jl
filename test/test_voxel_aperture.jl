@@ -35,8 +35,9 @@ using Random, Statistics
         end
         times = collect(range(0f0, 1f-3; length=37))
         csm = cis.(rand(rng, Float32, 3, 3, 1, 2)) ./ sqrt(2f0)
-        op = arrayType === Array ? HighOrderOp(grid, k, times; csm, arrayType) :
-            HighOrderKernelOp(grid, k, times; csm, backend=:blocked, gpus=[Int(CUDA.deviceid(CUDA.device()))])
+        op = arrayType === Array ? HighOrderExplicitOp(grid, k, times; csm, arrayType) :
+            HighOrderExplicitOp(grid, k, times; implementation=:kernel, csm,
+                backend=:blocked, gpus=[Int(CUDA.deviceid(CUDA.device()))])
         params = Dict{Symbol,Any}(:solver=>HighOrderMRI.CGNR, :reg=>HighOrderMRI.L2Regularization(0f0),
             :reconSize=>(3,3,1), :iterations=>9, :relTol=>1f-8)
         try
@@ -57,7 +58,7 @@ using Random, Statistics
             @test_throws DimensionMismatch recon_HOOp(op, data, weight, params; encoding_weights=factor[1:end-1])
             @test_throws ArgumentError recon_HOOp(op, data, weight, params; encoding_weights=ones(Float64,37))
         finally
-            op isa HighOrderKernelOp && close(op)
+            close(op)
         end
     end
     test_encoding_weights(Array)
