@@ -22,6 +22,6 @@ npm run docs:check-tools --prefix docs
 CUDA_VISIBLE_DEVICES='' MPLBACKEND=Agg JULIA_NUM_THREADS=1 JULIA_LOAD_PATH='@:@stdlib' julia --startup-file=no --project=. docs/scripts/check-version.jl . docs
 ```
 
-Publishing and deployment use the independent Julia environment in `docs/publish/`. Pushes to `dev_jinyuan` publish `dev`; pushes to `main` validate a candidate without publishing. Formal releases add their version directory and update `stable`. Generated sites and historical versions are archived on `gh-pages`.
+Publishing and deployment use the independent Julia environment in `docs/publish/`. Pushes to `main` publish `dev`; pushes to `dev_jinyuan` do not run documentation tests, builds or deployment. Pull requests to `main` validate candidates without publishing. Formal releases add their version directory and update `stable`. Generated sites and historical versions are archived on `gh-pages`.
 
 The source mechanism uses [Julia documentation](https://docs.julialang.org/en/v1.12/manual/documentation/); the website uses [VitePress file inclusion](https://vitepress.dev/guide/markdown#markdown-file-inclusion). Neither generation nor validation installs or depends on Documenter. A rendered page is not evidence that all Julia examples or GPU paths ran: test results must identify their actual scope.

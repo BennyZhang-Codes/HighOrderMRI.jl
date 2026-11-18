@@ -7,8 +7,9 @@ branch is needed.
 
 ## Branches and releases
 
-- A push to `dev_jinyuan` updates `dev/` from that code commit's own `docs/`.
-- A push to `main` checks that commit's documentation as an unpublished candidate.
+- A push to `main` updates `dev/` from that code commit's own `docs/`.
+- A push to `dev_jinyuan` does not run the documentation workflow. Pull requests
+  to `main` check documentation as unpublished candidates; code CI remains separate.
 - Publishing a non-prerelease GitHub Release with a `vMAJOR.MINOR.PATCH` tag
   adds that version and selects the newest formal release as `stable/`.
 - The root URL opens stable. Drafts, prereleases and unpublished tags do not
@@ -25,7 +26,9 @@ and remains available through the preserved Git history and version registry.
 ## Build and publication checks
 
 The build resolves branch heads, published release metadata and existing
-archive provenance into a temporary publication plan. Each target uses its
+archive provenance into a temporary publication plan. If a published release's
+tag arrived after checkout, the planner fetches that missing tag without
+overwriting existing tags. Each target uses its
 exact clean code checkout, source Markdown, public figures and API mapping.
 The shared VitePress theme supplies the complete version menu. Release pages
 show their frozen commits and omit the edit-current-page action; branch pages
@@ -42,7 +45,7 @@ identity; GitHub retains its own workflow execution audit identity.
 
 ## Rebuild an existing formal release
 
-Run the Documentation workflow from `main` or `dev_jinyuan` and set
+Run the Documentation workflow from `main` and set
 `release_tag` to an existing published formal tag, such as `v0.1.0`. The tag
 and its recorded documentation source are not changed. This is also the
 recovery entry point for rebuilding the complete archive after a failed run.

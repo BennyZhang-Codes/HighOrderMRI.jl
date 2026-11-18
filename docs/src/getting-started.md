@@ -10,11 +10,11 @@ This guide walks through installation, a small CPU encoding problem, and a CG re
 
 The package resolves `MRIGeometry` from its included local source tree. These
 development pages are bound to the code SHA shown by the site's source links.
-Install from a clone of `dev_jinyuan` for the development documentation. For an
+Install from a clone of `main` for the development documentation. For an
 exact reproduction, check out the displayed source SHA before instantiating.
 
 ```bash
-git clone --branch dev_jinyuan https://github.com/BennyZhang-Codes/HighOrderMRI.jl.git HighOrderMRI-code
+git clone --branch main https://github.com/BennyZhang-Codes/HighOrderMRI.jl.git HighOrderMRI-code
 cd HighOrderMRI-code
 julia --project=. -e 'using Pkg; Pkg.instantiate()'
 ```
@@ -148,10 +148,11 @@ selected code commits. Publication, page validation and preview tools use an
 independent Julia environment in `docs/publish`; PyCall/PyPlot remain the
 existing plotting backend for package examples.
 
-Pushes to `dev_jinyuan` publish `dev/`; pushes to `main` only check candidates.
+Pushes to `main` publish `dev/`. Pushes to `dev_jinyuan` do not run the
+documentation workflow; code CI remains separate.
 A published, non-prerelease `vX.Y.Z` release adds its version directory and
 advances `stable/` to the newest formal release. The root URL opens stable.
-Pull requests build labelled candidates without publishing. Published navigation
+Pull requests to `main` build labelled candidates without publishing. Published navigation
 contains `dev/`, `stable/` and formal versions.
 
 The workflow resolves exact code and documentation commits at build time.
@@ -169,7 +170,7 @@ synchronization commit is required. Handwritten guides and theory are edited
 in `docs/src/`; API fragments are generated from code docstrings.
 
 For an existing formal release, run the Documentation workflow from `main`
-or `dev_jinyuan` with `release_tag` set to that existing published tag. This
+with `release_tag` set to that existing published tag. This
 rebuilds its frozen inputs without moving the tag. See `docs/RELEASING.md`
 for the release and local-build contract.
 
